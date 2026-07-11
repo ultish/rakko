@@ -23,6 +23,11 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # Allow large messages (Kafka default is ~1 MiB). 20 MiB for rakko producer/replay tests.
+      # socket.request.max.bytes must be >= message.max.bytes.
+      KAFKA_MESSAGE_MAX_BYTES: "20971520"
+      KAFKA_SOCKET_REQUEST_MAX_BYTES: "20971520"
+      KAFKA_REPLICA_FETCH_MAX_BYTES: "20971520"
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.6.1
