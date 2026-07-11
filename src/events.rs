@@ -166,12 +166,8 @@ pub enum Action {
     RequestReplay,
     /// Confirm replay (raw bytes, same topic, no decode).
     ConfirmReplay,
-    /// From the replay confirm dialog: open the optional add-header form.
-    ReplayWithHeaderAppend,
-    /// Tab between header key / value fields on the replay header form.
-    ReplayHeaderFocusNext,
-    /// Esc from the header form: return to the replay confirm dialog.
-    ReplayHeaderBack,
+    /// From the replay confirm dialog: open the producer prefilled for edit.
+    ReplayEdit,
     /// Cancel the replay wizard entirely.
     CancelReplay,
     /// Open export for the highlighted message (or the one open in the inspector).

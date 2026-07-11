@@ -38,7 +38,9 @@ over dumping raw commit subjects.
   overwritten).
 - Export: **e** exports the selected/open message; **E** exports all visible.
 - Cursor-aware text fields (←/→/Home/End/Delete) for export/import, producer,
-  filter, offset-reset input, and replay header form.
+  filter, and offset-reset input.
+- Replay: removed “add header”; **e** opens producer prefilled with decoded
+  key/value for edit (raw **y**/Enter still byte-identical).
 
 ### Changed
 

@@ -157,8 +157,7 @@ On first launch a **splash** shows the stream otter:
 | **Groups** | **Enter** detail · **r**/**R** refresh list |
 | **Group detail** | **x** reset offsets · **r**/**R** refresh lag (also auto every ~3s while open) |
 | **Producer** | **Tab** focus · **F3**/Ctrl-m mode (inline / file / `$EDITOR`) · **F2**/Ctrl-p send · **Esc** back |
-| **Replay** | **y**/**Enter** replay as-is · **h** add one header then replay · **n**/**Esc** cancel |
-| **Replay + header** | **Tab** key ↔ value · **Enter** send · **Esc** back to confirm |
+| **Replay** | **y**/**Enter** raw replay (byte-identical) · **e** edit in producer · **n**/**Esc** cancel |
 | **Export/import** | type path · **←**/**→**/**Home**/**End** cursor · **Delete** · **Tab** (import: path ↔ topic) · **Enter** run · **Esc** back |
 
 Offset reset only works reliably when the group has **no active members** — the UI warns if members are present.

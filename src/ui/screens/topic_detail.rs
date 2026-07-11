@@ -4,9 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{
-    App, BrowseMode, MessageViewState, ReplayHeaderFocus, ReplayPhase, TopicDetailState,
-};
+use crate::app::{App, BrowseMode, MessageViewState, ReplayPhase, TopicDetailState};
 use crate::kafka::schema_registry::SchemaRegistry;
 use crate::raw_message::RawMessage;
 use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
@@ -420,62 +418,22 @@ fn render_replay_overlay(frame: &mut Frame, area: Rect, phase: &ReplayPhase) {
                 message
                     .headers
                     .iter()
-                    .map(|(k, v)| {
-                        format!("{k}={}", String::from_utf8_lossy(v))
-                    })
+                    .map(|(k, v)| format!("{k}={}", String::from_utf8_lossy(v)))
                     .collect::<Vec<_>>()
                     .join(", ")
             };
             let (_, key_preview) = bytes_display(message.key.as_deref(), None);
             let body = format!(
-                "Replay onto the same topic (raw bytes — no decode, no edit).\n\n\
+                "Replay onto the same topic.\n\n\
                  partition {} · offset {}\n\
                  key: {key_preview}\n\
-                 existing headers: {existing}\n\n\
-                 y/Enter: replay as-is\n\
-                 h: add one header, then replay\n\
+                 headers: {existing}\n\n\
+                 y/Enter: replay raw (byte-identical, keeps headers)\n\
+                 e: edit in producer (decoded text; headers not carried)\n\
                  n/Esc: cancel",
                 message.partition, message.offset
             );
             render_confirm_dialog(frame, area, "Replay message", &body, None);
-        }
-        ReplayPhase::HeaderInput {
-            message,
-            key_input,
-            value_input,
-            focus,
-            cursor,
-        } => {
-            let key_disp = if *focus == ReplayHeaderFocus::Key {
-                crate::text_field::display_with_cursor(key_input, *cursor)
-            } else {
-                key_input.clone()
-            };
-            let val_disp = if *focus == ReplayHeaderFocus::Value {
-                crate::text_field::display_with_cursor(value_input, *cursor)
-            } else {
-                value_input.clone()
-            };
-            let key_mark = if *focus == ReplayHeaderFocus::Key {
-                "◀"
-            } else {
-                " "
-            };
-            let val_mark = if *focus == ReplayHeaderFocus::Value {
-                "◀"
-            } else {
-                " "
-            };
-            let body = format!(
-                "Add one extra header, then replay partition {} offset {}.\n\
-                 Original headers are kept; this is appended.\n\n\
-                 {key_mark} key:   {key_disp}\n\
-                 {val_mark} value: {val_disp}\n\n\
-                 ←/→/Home/End: cursor   Tab: field   Enter: replay\n\
-                 Esc: back to confirm",
-                message.partition, message.offset
-            );
-            render_confirm_dialog(frame, area, "Replay · add header", &body, None);
         }
     }
 }

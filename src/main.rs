@@ -261,32 +261,8 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
                         Some(Action::ForceQuit)
                     }
                     KeyCode::Char('y') | KeyCode::Enter => Some(Action::ConfirmReplay),
-                    // `h` = add header (keep `a` as alias for older muscle memory).
-                    KeyCode::Char('h') | KeyCode::Char('a') => {
-                        Some(Action::ReplayWithHeaderAppend)
-                    }
+                    KeyCode::Char('e') => Some(Action::ReplayEdit),
                     KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelReplay),
-                    _ => None,
-                },
-                ReplayPhase::HeaderInput { .. } => match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        Some(Action::ForceQuit)
-                    }
-                    KeyCode::Tab => Some(Action::ReplayHeaderFocusNext),
-                    KeyCode::Char(c)
-                        if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                    {
-                        Some(Action::FilterChar(c))
-                    }
-                    KeyCode::Backspace => Some(Action::FilterBackspace),
-                    KeyCode::Delete => Some(Action::FilterDelete),
-                    KeyCode::Left => Some(Action::FilterCursorLeft),
-                    KeyCode::Right => Some(Action::FilterCursorRight),
-                    KeyCode::Home => Some(Action::FilterCursorHome),
-                    KeyCode::End => Some(Action::FilterCursorEnd),
-                    KeyCode::Enter => Some(Action::Confirm),
-                    // Esc returns to the confirm dialog (where n/Esc can cancel fully).
-                    KeyCode::Esc => Some(Action::ReplayHeaderBack),
                     _ => None,
                 },
             };

@@ -602,27 +602,12 @@ impl MessageSort {
     }
 }
 
-/// Which field is focused while editing an optional replay header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplayHeaderFocus {
-    Key,
-    Value,
-}
-
-/// Single-message replay wizard (M5). Never decodes — holds a clone of the raw message.
+/// Single-message replay wizard: confirm raw same-topic resend, or open producer to edit.
 #[derive(Debug, Clone)]
 pub enum ReplayPhase {
-    /// Confirm same-topic raw replay; optional path to add one extra header first.
+    /// Confirm same-topic raw replay (byte-identical; no decode).
     Confirm {
         message: RawMessage,
-    },
-    /// Optional header form: separate key / value fields (Tab to switch), then Enter to send.
-    HeaderInput {
-        message: RawMessage,
-        key_input: String,
-        value_input: String,
-        focus: ReplayHeaderFocus,
-        cursor: usize,
     },
 }
 
@@ -1143,41 +1128,8 @@ impl App {
             Action::ProducerLoadFile => self.producer_load_file(),
             Action::ProducerOpenExternalEditor => self.producer_open_external_editor(),
             Action::RequestReplay => self.request_replay(),
-            Action::ConfirmReplay => self.confirm_replay(None),
-            Action::ReplayWithHeaderAppend => self.begin_replay_header_input(),
-            Action::ReplayHeaderFocusNext => {
-                if let Some(detail) = self.topic_detail.as_mut() {
-                    if let Some(ReplayPhase::HeaderInput {
-                        key_input,
-                        value_input,
-                        focus,
-                        cursor,
-                        ..
-                    }) = detail.replay_phase.as_mut()
-                    {
-                        *focus = match focus {
-                            ReplayHeaderFocus::Key => ReplayHeaderFocus::Value,
-                            ReplayHeaderFocus::Value => ReplayHeaderFocus::Key,
-                        };
-                        let text = match focus {
-                            ReplayHeaderFocus::Key => key_input.as_str(),
-                            ReplayHeaderFocus::Value => value_input.as_str(),
-                        };
-                        *cursor = text.chars().count();
-                    }
-                }
-                vec![]
-            }
-            Action::ReplayHeaderBack => {
-                // Esc from the header form returns to the confirm dialog (not full cancel).
-                if let Some(detail) = self.topic_detail.as_mut() {
-                    if let Some(ReplayPhase::HeaderInput { message, .. }) = detail.replay_phase.take()
-                    {
-                        detail.replay_phase = Some(ReplayPhase::Confirm { message });
-                    }
-                }
-                vec![]
-            }
+            Action::ConfirmReplay => self.confirm_replay(),
+            Action::ReplayEdit => self.open_replay_edit(),
             Action::CancelReplay => {
                 if let Some(detail) = self.topic_detail.as_mut() {
                     detail.replay_phase = None;
@@ -1532,26 +1484,10 @@ impl App {
         if self.profile_create.is_some() {
             return self.submit_profile_create();
         }
-        // Replay wizard: Enter confirms as-is, or submits the header form.
+        // Replay wizard: Enter confirms raw same-topic resend.
         if let Some(detail) = self.topic_detail.as_ref() {
-            match detail.replay_phase.clone() {
-                Some(ReplayPhase::HeaderInput {
-                    key_input,
-                    value_input,
-                    ..
-                }) => {
-                    let key = key_input.trim();
-                    if key.is_empty() {
-                        self.status_message = Some("header key is required".into());
-                        return vec![];
-                    }
-                    return self.confirm_replay(Some((
-                        key.to_string(),
-                        value_input.as_bytes().to_vec(),
-                    )));
-                }
-                Some(ReplayPhase::Confirm { .. }) => return self.confirm_replay(None),
-                None => {}
+            if matches!(detail.replay_phase, Some(ReplayPhase::Confirm { .. })) {
+                return self.confirm_replay();
             }
         }
 
@@ -1986,42 +1922,55 @@ impl App {
         self.status_message = Some(format!("sort: {}", detail.sort.label()));
     }
 
-    fn begin_replay_header_input(&mut self) -> Vec<Command> {
+    /// Open the producer prefilled with decoded key/value for editing, then produce
+    /// as UTF-8 text (does not re-encode Confluent Avro wire format).
+    fn open_replay_edit(&mut self) -> Vec<Command> {
+        if self.screen != Screen::TopicDetail {
+            return vec![];
+        }
         let Some(detail) = self.topic_detail.as_mut() else {
             return vec![];
         };
-        let Some(ReplayPhase::Confirm { message }) = detail.replay_phase.clone() else {
+        let Some(ReplayPhase::Confirm { message }) = detail.replay_phase.take() else {
             return vec![];
         };
-        detail.replay_phase = Some(ReplayPhase::HeaderInput {
-            message,
-            key_input: String::new(),
-            value_input: String::new(),
-            focus: ReplayHeaderFocus::Key,
-            cursor: 0,
-        });
-        vec![]
+        let topic = detail.topic.clone();
+        let registry = self.schema_registry.as_ref();
+        let key_text = editable_bytes_text(message.key.as_deref(), registry);
+        let value_text = editable_bytes_text(message.value.as_deref(), registry);
+        let mut producer = ProducerState::new(topic);
+        producer.key_input = key_text;
+        producer.value_input = value_text;
+        producer.focus = ProducerFocus::Value;
+        producer.cursor = producer.value_input.chars().count();
+        self.producer = Some(producer);
+        self.screen = Screen::Producer;
+        let header_note = if message.headers.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({} header(s) not carried into edit — raw replay keeps them)",
+                message.headers.len()
+            )
+        };
+        self.status_message = Some(format!(
+            "edit mode: decoded text in producer{header_note}; F2/C-p to send"
+        ));
+        vec![Command::StopTail]
     }
 
-    /// Replays the selected message's raw bytes onto the **same topic**. Optional extra
-    /// header is appended after the original headers (never replaces them).
-    fn confirm_replay(&mut self, extra_header: Option<(String, Vec<u8>)>) -> Vec<Command> {
+    /// Replays the selected message's raw bytes onto the **same topic** (byte-identical).
+    fn confirm_replay(&mut self) -> Vec<Command> {
         let Some(profile) = self.active_profile.clone() else {
             return vec![];
         };
         let Some(detail) = self.topic_detail.as_mut() else {
             return vec![];
         };
-        let message = match detail.replay_phase.take() {
-            Some(ReplayPhase::Confirm { message }) => message,
-            Some(ReplayPhase::HeaderInput { message, .. }) => message,
-            None => return vec![],
+        let Some(ReplayPhase::Confirm { message }) = detail.replay_phase.take() else {
+            return vec![];
         };
         let topic = detail.topic.clone();
-        let mut headers = message.headers.clone();
-        if let Some(header) = extra_header {
-            headers.push(header);
-        }
         self.status_message = Some(format!(
             "replaying message partition={} offset={}...",
             message.partition, message.offset
@@ -2031,11 +1980,11 @@ impl App {
             topic,
             key: message.key,
             value: message.value,
-            headers,
+            headers: message.headers,
         }]
     }
 
-    /// Active text entry surface for shared cursor editing (filter / reset / replay / …).
+    /// Active text entry surface for shared cursor editing (filter / offset-reset).
     fn text_insert(&mut self, c: char) {
         if let Some(detail) = self.group_detail.as_mut() {
             if let Some(OffsetResetPhase::Input { input, cursor, .. }) = detail.reset_phase.as_mut()
@@ -2047,21 +1996,6 @@ impl App {
             }
         }
         if let Some(detail) = self.topic_detail.as_mut() {
-            if let Some(ReplayPhase::HeaderInput {
-                key_input,
-                value_input,
-                focus,
-                cursor,
-                ..
-            }) = detail.replay_phase.as_mut()
-            {
-                let text = match focus {
-                    ReplayHeaderFocus::Key => key_input,
-                    ReplayHeaderFocus::Value => value_input,
-                };
-                crate::text_field::insert_char(text, cursor, c);
-                return;
-            }
             if detail.filter_active {
                 crate::text_field::insert_char(
                     &mut detail.filter_input,
@@ -2081,21 +2015,6 @@ impl App {
             }
         }
         if let Some(detail) = self.topic_detail.as_mut() {
-            if let Some(ReplayPhase::HeaderInput {
-                key_input,
-                value_input,
-                focus,
-                cursor,
-                ..
-            }) = detail.replay_phase.as_mut()
-            {
-                let text = match focus {
-                    ReplayHeaderFocus::Key => key_input,
-                    ReplayHeaderFocus::Value => value_input,
-                };
-                crate::text_field::backspace(text, cursor);
-                return;
-            }
             if detail.filter_active {
                 crate::text_field::backspace(&mut detail.filter_input, &mut detail.filter_cursor);
             }
@@ -2111,21 +2030,6 @@ impl App {
             }
         }
         if let Some(detail) = self.topic_detail.as_mut() {
-            if let Some(ReplayPhase::HeaderInput {
-                key_input,
-                value_input,
-                focus,
-                cursor,
-                ..
-            }) = detail.replay_phase.as_mut()
-            {
-                let text = match focus {
-                    ReplayHeaderFocus::Key => key_input,
-                    ReplayHeaderFocus::Value => value_input,
-                };
-                crate::text_field::delete_forward(text, cursor);
-                return;
-            }
             if detail.filter_active {
                 crate::text_field::delete_forward(
                     &mut detail.filter_input,
@@ -2143,10 +2047,6 @@ impl App {
             }
         }
         if let Some(detail) = self.topic_detail.as_mut() {
-            if let Some(ReplayPhase::HeaderInput { cursor, .. }) = detail.replay_phase.as_mut() {
-                crate::text_field::cursor_left(cursor);
-                return;
-            }
             if detail.filter_active {
                 crate::text_field::cursor_left(&mut detail.filter_cursor);
             }
@@ -2162,21 +2062,6 @@ impl App {
             }
         }
         if let Some(detail) = self.topic_detail.as_mut() {
-            if let Some(ReplayPhase::HeaderInput {
-                key_input,
-                value_input,
-                focus,
-                cursor,
-                ..
-            }) = detail.replay_phase.as_mut()
-            {
-                let text = match focus {
-                    ReplayHeaderFocus::Key => key_input.as_str(),
-                    ReplayHeaderFocus::Value => value_input.as_str(),
-                };
-                crate::text_field::cursor_right(text, cursor);
-                return;
-            }
             if detail.filter_active {
                 crate::text_field::cursor_right(&detail.filter_input, &mut detail.filter_cursor);
             }
@@ -2191,10 +2076,6 @@ impl App {
             }
         }
         if let Some(detail) = self.topic_detail.as_mut() {
-            if let Some(ReplayPhase::HeaderInput { cursor, .. }) = detail.replay_phase.as_mut() {
-                crate::text_field::cursor_home(cursor);
-                return;
-            }
             if detail.filter_active {
                 crate::text_field::cursor_home(&mut detail.filter_cursor);
             }
@@ -2210,21 +2091,6 @@ impl App {
             }
         }
         if let Some(detail) = self.topic_detail.as_mut() {
-            if let Some(ReplayPhase::HeaderInput {
-                key_input,
-                value_input,
-                focus,
-                cursor,
-                ..
-            }) = detail.replay_phase.as_mut()
-            {
-                let text = match focus {
-                    ReplayHeaderFocus::Key => key_input.as_str(),
-                    ReplayHeaderFocus::Value => value_input.as_str(),
-                };
-                crate::text_field::cursor_end(text, cursor);
-                return;
-            }
             if detail.filter_active {
                 crate::text_field::cursor_end(&detail.filter_input, &mut detail.filter_cursor);
             }
@@ -2841,6 +2707,28 @@ fn parse_reset_input(kind: ResetInputKind, input: &str) -> Result<OffsetResetTar
         }
         ResetInputKind::TimestampMillis => Ok(OffsetResetTarget::Timestamp(value)),
     }
+}
+
+/// Text for the producer when editing a replayed message: prefer decoded view
+/// (JSON / Avro-as-JSON / text); null/empty becomes an empty field.
+fn editable_bytes_text(
+    bytes: Option<&[u8]>,
+    registry: Option<&crate::kafka::schema_registry::SchemaRegistry>,
+) -> String {
+    let Some(bytes) = bytes else {
+        return String::new();
+    };
+    if bytes.is_empty() {
+        return String::new();
+    }
+    let decoded = crate::serde_detect::decode_value(bytes, registry);
+    let text = decoded.as_str();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Ok(pretty) = serde_json::to_string_pretty(&value) {
+            return pretty;
+        }
+    }
+    text.to_string()
 }
 
 #[cfg(test)]
@@ -3762,66 +3650,29 @@ mod tests {
     }
 
     #[test]
-    fn replay_with_header_append() {
+    fn replay_edit_opens_producer_with_decoded_fields() {
         let mut app = app_in_topic_detail("orders", 1);
         if let Some(detail) = app.topic_detail.as_mut() {
             if let BrowseMode::Tail(buffer) = &mut detail.mode {
-                buffer.push(message("k", "v"));
+                let mut msg = message("k1", r#"{"a":1}"#);
+                msg.headers = vec![("x".into(), b"1".to_vec())];
+                buffer.push(msg);
             }
         }
         app.update(Action::RequestReplay);
-        app.update(Action::ReplayWithHeaderAppend);
-        // Type key, Tab to value, type value.
-        app.update(Action::FilterChar('x'));
-        app.update(Action::ReplayHeaderFocusNext);
-        app.update(Action::FilterChar('1'));
-        let commands = app.update(Action::Confirm);
-        match commands.as_slice() {
-            [Command::ProduceMessage { headers, .. }] => {
-                assert_eq!(headers, &vec![("x".into(), b"1".to_vec())]);
-            }
-            other => panic!("expected ProduceMessage with header, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn replay_header_back_returns_to_confirm() {
-        let mut app = app_in_topic_detail("orders", 1);
-        if let Some(detail) = app.topic_detail.as_mut() {
-            if let BrowseMode::Tail(buffer) = &mut detail.mode {
-                buffer.push(message("k", "v"));
-            }
-        }
-        app.update(Action::RequestReplay);
-        app.update(Action::ReplayWithHeaderAppend);
-        assert!(matches!(
-            app.topic_detail.as_ref().unwrap().replay_phase,
-            Some(ReplayPhase::HeaderInput { .. })
-        ));
-        app.update(Action::ReplayHeaderBack);
-        assert!(matches!(
-            app.topic_detail.as_ref().unwrap().replay_phase,
-            Some(ReplayPhase::Confirm { .. })
-        ));
-    }
-
-    #[test]
-    fn replay_header_requires_key() {
-        let mut app = app_in_topic_detail("orders", 1);
-        if let Some(detail) = app.topic_detail.as_mut() {
-            if let BrowseMode::Tail(buffer) = &mut detail.mode {
-                buffer.push(message("k", "v"));
-            }
-        }
-        app.update(Action::RequestReplay);
-        app.update(Action::ReplayWithHeaderAppend);
-        let commands = app.update(Action::Confirm);
-        assert!(commands.is_empty());
-        assert_eq!(app.status_message.as_deref(), Some("header key is required"));
-        assert!(matches!(
-            app.topic_detail.as_ref().unwrap().replay_phase,
-            Some(ReplayPhase::HeaderInput { .. })
-        ));
+        let commands = app.update(Action::ReplayEdit);
+        assert_eq!(app.screen, Screen::Producer);
+        assert!(app.topic_detail.as_ref().unwrap().replay_phase.is_none());
+        let state = app.producer.as_ref().unwrap();
+        assert_eq!(state.topic, "orders");
+        assert_eq!(state.key_input, "k1");
+        assert!(state.value_input.contains("\"a\""));
+        assert_eq!(state.focus, ProducerFocus::Value);
+        assert!(matches!(commands.as_slice(), [Command::StopTail]));
+        assert!(app
+            .status_message
+            .as_ref()
+            .is_some_and(|s| s.contains("edit mode") && s.contains("header")));
     }
 
     #[test]
