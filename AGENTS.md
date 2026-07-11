@@ -66,9 +66,14 @@ architecture decisions change, don't let it silently drift from the code.
   buffer, serde_detect, seek pagination math, etc.).
 - `cargo build` / `cargo clippy` — should stay warning-clean modulo expected
   dead-code on not-yet-wired pieces.
-- For anything touching connection/TLS/consumer/producer logic, a manual check
-  against `docker compose up -d` + `config.example.toml`'s `local` profile is worth
-  it — `cargo test` doesn't touch a live broker.
+- For anything touching connection/TLS/consumer/producer/group-offset logic:
+  `docker compose up -d` then `cargo test -- --ignored` runs the docker-compose-gated
+  integration tier (produce/consume round-trip incl. a 20MiB message, topic listing,
+  consumer-group lag + offset reset idle/active-member paths, live Schema Registry
+  fetch) — see `kafka::integration_support`'s doc comment for the pattern to extend.
+  These are `#[ignore]`d so plain `cargo test` never touches a live broker; still worth
+  a manual pass against `config.example.toml`'s `local` profile for anything the
+  automated tier doesn't reach (TLS/mTLS handshakes, the actual TUI).
 - **User-facing changes:** update `CHANGELOG.md` under `[Unreleased]` (see
   **Changelog** below). Skip pure refactors, test-only, and docs-only work unless
   the user-facing surface changed.

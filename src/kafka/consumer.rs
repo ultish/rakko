@@ -487,3 +487,78 @@ mod tests {
         assert_immediate(outcome, 50, true, false);
     }
 }
+
+/// Docker-compose-gated: `docker compose up -d` then `cargo test -- --ignored`.
+/// See `kafka::integration_support` for the shared setup rationale.
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::kafka::integration_support::{local_profile, unique_name};
+    use crate::kafka::producer;
+
+    async fn seek_latest(profile: Profile, topic: String) -> Vec<RawMessage> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        load_seek_page(
+            profile,
+            topic,
+            0,
+            SeekPageRequest::Latest { page_size: 10 },
+            tx,
+        )
+        .await;
+
+        match rx.recv().await.expect("load_seek_page should report an event") {
+            AppEvent::SeekPageLoaded { messages, .. } => messages,
+            other => panic!("expected SeekPageLoaded, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    async fn produce_then_seek_round_trips_raw_bytes() {
+        let profile = local_profile();
+        let topic = unique_name("roundtrip");
+
+        // Includes a null byte and a 0xff byte to prove this never goes through a
+        // decode/re-encode step that could mangle non-UTF8 bytes.
+        let key = b"integration-key".to_vec();
+        let value = b"integration-value \x00\x01\xff".to_vec();
+        let headers = vec![("h1".to_string(), b"hv1".to_vec())];
+
+        producer::produce(&profile, &topic, Some(key.clone()), Some(value.clone()), headers.clone())
+            .await
+            .expect("produce should succeed against the local broker");
+
+        let messages = seek_latest(profile, topic.clone()).await;
+
+        assert_eq!(messages.len(), 1, "expected exactly the one message just produced");
+        let msg = &messages[0];
+        assert_eq!(msg.topic, topic);
+        assert_eq!(msg.key.as_deref(), Some(key.as_slice()));
+        assert_eq!(msg.value.as_deref(), Some(value.as_slice()));
+        assert_eq!(msg.headers, headers);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    async fn produce_then_seek_round_trips_a_20mib_message() {
+        // Exercises the docker-compose broker's raised message.max.bytes (20 MiB =
+        // 20_971_520 bytes) — the ~1 MiB default would reject both this send and the
+        // client-side check. Client cap matches the broker's; payload leaves headroom
+        // under it for record/batch overhead.
+        let mut profile = local_profile();
+        profile.message_max_bytes = Some(20_971_520);
+        let topic = unique_name("large");
+
+        let value = vec![0x42u8; 19 * 1024 * 1024];
+
+        producer::produce(&profile, &topic, None, Some(value.clone()), Vec::new())
+            .await
+            .expect("20MiB produce should succeed with the broker's raised message.max.bytes");
+
+        let messages = seek_latest(profile, topic).await;
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].value.as_deref(), Some(value.as_slice()));
+    }
+}

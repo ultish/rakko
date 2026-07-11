@@ -11,6 +11,13 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Fixed
+
+- Consumer group listing, group detail, and offset reset no longer occasionally
+  fail with a spurious "Group list fetch error: BrokerTransportFailure" right
+  after connecting — a fresh connection is now warmed up with a metadata call
+  first, since that path retries internally where the group-list call doesn't.
+
 ## [0.1.0] - 2026-07-11
 
 ### Added

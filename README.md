@@ -270,8 +270,10 @@ Requires a working container runtime with **linux/amd64** support (on Apple Sili
 ## Development
 
 ```bash
-cargo test          # pure-logic tests (no broker)
-cargo run           # UI against your config
+cargo test                     # pure-logic tests (no broker)
+docker compose up -d           # start the local Kafka + Schema Registry stack
+cargo test -- --ignored        # integration tests against that stack
+cargo run                      # UI against your config
 ```
 
 Design notes and milestone plan: [PLAN.md](./PLAN.md).

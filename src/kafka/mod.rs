@@ -5,6 +5,11 @@ pub mod group_offsets;
 pub mod producer;
 pub mod schema_registry;
 
+/// Docker-compose-gated integration test helpers — see `integration_support`'s doc
+/// comment. Compiled only under `cargo test`, unused otherwise.
+#[cfg(test)]
+pub(crate) mod integration_support;
+
 /// Thin per-profile facade over the free functions in this module's submodules, so
 /// callers hold one handle per connected cluster instead of threading a `Profile`
 /// through every call site.

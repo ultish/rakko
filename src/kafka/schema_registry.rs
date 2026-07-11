@@ -124,3 +124,52 @@ mod tests {
         assert!(sr.cached_schema(99).is_none());
     }
 }
+
+/// Docker-compose-gated: `docker compose up -d` then `cargo test -- --ignored`.
+/// See `kafka::integration_support` for the shared setup rationale.
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::kafka::integration_support::{unique_name, SCHEMA_REGISTRY_URL};
+
+    #[derive(serde::Serialize)]
+    struct RegisterRequest<'a> {
+        schema: &'a str,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RegisterResponse {
+        id: u32,
+    }
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:8081)"]
+    async fn fetch_schema_by_id_round_trips_a_registered_schema() {
+        let client = reqwest::Client::new();
+        let subject = unique_name("subject");
+        let schema_str =
+            r#"{"type":"record","name":"IntegrationTestRecord","fields":[{"name":"id","type":"long"}]}"#;
+
+        let register_url = format!("{SCHEMA_REGISTRY_URL}/subjects/{subject}/versions");
+        let response = client
+            .post(&register_url)
+            .header("Content-Type", "application/vnd.schemaregistry.v1+json")
+            .json(&RegisterRequest { schema: schema_str })
+            .send()
+            .await
+            .expect("register-schema request should reach the local registry");
+        assert!(
+            response.status().is_success(),
+            "schema registration failed: {}",
+            response.status()
+        );
+        let registered: RegisterResponse = response.json().await.expect("register response body");
+
+        let fetched = fetch_schema_by_id(&client, SCHEMA_REGISTRY_URL, registered.id)
+            .await
+            .expect("fetch_schema_by_id should succeed against the live registry");
+
+        let expected = Schema::parse_str(schema_str).expect("parse expected schema");
+        assert_eq!(fetched.canonical_form(), expected.canonical_form());
+    }
+}

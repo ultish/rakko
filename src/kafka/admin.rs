@@ -181,3 +181,45 @@ mod tests {
         assert_eq!(parse_message_max_bytes("not-a-number"), None);
     }
 }
+
+/// Docker-compose-gated: `docker compose up -d` then `cargo test -- --ignored`.
+/// See `kafka::integration_support` for the shared setup rationale.
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::kafka::integration_support::{local_profile, unique_name};
+    use crate::kafka::producer;
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    async fn list_topics_finds_a_freshly_produced_topic() {
+        let profile = local_profile();
+        let topic = unique_name("listing");
+
+        producer::produce(&profile, &topic, None, Some(b"v".to_vec()), Vec::new())
+            .await
+            .expect("produce should succeed against the local broker");
+
+        let topics = list_topics(&profile).await.expect("list_topics");
+        let found = topics
+            .iter()
+            .find(|t| t.name == topic)
+            .unwrap_or_else(|| panic!("topic {topic} not found in {topics:?}"));
+
+        assert_eq!(found.partition_count, 1);
+        assert_eq!(found.total_message_count, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    async fn fetch_broker_message_max_bytes_reflects_the_compose_override() {
+        let profile = local_profile();
+
+        // docker-compose.yml sets KAFKA_MESSAGE_MAX_BYTES=20971520 for rakko
+        // producer/replay testing (see the file's comment).
+        let detected = fetch_broker_message_max_bytes(&profile)
+            .await
+            .expect("fetch_broker_message_max_bytes");
+        assert_eq!(detected, Some(20_971_520));
+    }
+}

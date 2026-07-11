@@ -132,6 +132,12 @@ pub async fn list_groups(profile: &Profile) -> AppResult<Vec<GroupSummary>> {
 
 fn list_groups_blocking(profile: &Profile) -> AppResult<Vec<GroupSummary>> {
     let consumer: BaseConsumer = consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+    // A freshly created client's initial broker connection isn't always up yet.
+    // fetch_metadata is retried internally by librdkafka until connected (within
+    // TIMEOUT); fetch_group_list is not, and can otherwise racily fail with a local
+    // transport error before the client ever reaches the broker. Warm up the
+    // connection with a metadata call first.
+    consumer.fetch_metadata(None, TIMEOUT)?;
     let group_list = consumer.fetch_group_list(None, TIMEOUT)?;
 
     let mut groups: Vec<GroupSummary> = group_list
@@ -162,6 +168,9 @@ pub async fn describe_group(profile: &Profile, group_id: &str) -> AppResult<Grou
 fn describe_group_blocking(profile: &Profile, group_id: &str) -> AppResult<GroupDetail> {
     let listing_consumer: BaseConsumer =
         consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+    // See the matching comment in `list_groups_blocking`: warm up the connection
+    // before the less-robustly-retried fetch_group_list call.
+    listing_consumer.fetch_metadata(None, TIMEOUT)?;
     let group_list = listing_consumer.fetch_group_list(Some(group_id), TIMEOUT)?;
 
     let group_info = group_list
@@ -284,6 +293,9 @@ fn reset_group_offsets_blocking(
     // Re-check membership immediately before the destructive commit so a group that
     // became active between dialog open and confirm still surfaces a hard error.
     let listing: BaseConsumer = consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+    // See the matching comment in `list_groups_blocking`: warm up the connection
+    // before the less-robustly-retried fetch_group_list call.
+    listing.fetch_metadata(None, TIMEOUT)?;
     let group_list = listing.fetch_group_list(Some(group_id), TIMEOUT)?;
     if let Some(info) = group_list.groups().iter().find(|g| g.name() == group_id) {
         if !info.members().is_empty() {
@@ -422,5 +434,106 @@ mod tests {
         };
         assert!(detail.has_active_members());
         assert_eq!(detail.total_lag(), 5);
+    }
+}
+
+/// Docker-compose-gated: `docker compose up -d` then `cargo test -- --ignored`.
+/// See `kafka::integration_support` for the shared setup rationale. These two tests
+/// are PLAN.md's "M3 lag matches kafka-consumer-groups.sh --describe, offset reset
+/// tested both idle and with an active consumer" manual checkpoint, automated.
+#[cfg(test)]
+mod integration_tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration as StdDuration;
+
+    use super::*;
+    use crate::kafka::integration_support::{local_profile, unique_name};
+    use crate::kafka::producer;
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    async fn describe_group_lag_and_reset_offsets_while_idle() {
+        let profile = local_profile();
+        let topic = unique_name("lag");
+        let group = unique_name("group-idle");
+
+        for i in 0..5 {
+            producer::produce(&profile, &topic, None, Some(format!("v{i}").into_bytes()), Vec::new())
+                .await
+                .expect("produce");
+        }
+
+        // Establishes committed-offset history without joining the group (assign, not
+        // subscribe) — same trick `reset_group_offsets_blocking` itself relies on.
+        reset_group_offsets(&profile, &group, OffsetResetTarget::Earliest, &[(topic.clone(), 0)])
+            .await
+            .expect("initial commit on an idle group should succeed");
+
+        let detail = describe_group(&profile, &group).await.expect("describe_group");
+        assert!(!detail.has_active_members());
+        assert_eq!(detail.lags.len(), 1);
+        assert_eq!(detail.lags[0].committed_offset, Some(0));
+        assert_eq!(detail.lags[0].high_watermark, 5);
+        assert_eq!(detail.lags[0].lag, Some(5));
+        assert_eq!(detail.total_lag(), 5);
+
+        reset_group_offsets(&profile, &group, OffsetResetTarget::Latest, &[(topic.clone(), 0)])
+            .await
+            .expect("reset to latest should succeed while idle");
+
+        let detail_after = describe_group(&profile, &group).await.expect("describe_group after reset");
+        assert_eq!(detail_after.lags[0].committed_offset, Some(5));
+        assert_eq!(detail_after.lags[0].lag, Some(0));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    async fn reset_group_offsets_rejects_while_group_has_an_active_member() {
+        let profile = local_profile();
+        let topic = unique_name("active-member");
+        let group = unique_name("group-active");
+
+        producer::produce(&profile, &topic, None, Some(b"v".to_vec()), Vec::new())
+            .await
+            .expect("produce");
+
+        // A real subscribing consumer, kept alive (and polling, to hold its group
+        // membership) on a background thread for the duration of the test.
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = stop.clone();
+        let sub_profile = profile.clone();
+        let sub_topic = topic.clone();
+        let sub_group = group.clone();
+        let handle = std::thread::spawn(move || {
+            let consumer: BaseConsumer =
+                consumer_client_config(&sub_profile, &sub_group).create().expect("create consumer");
+            consumer.subscribe(&[sub_topic.as_str()]).expect("subscribe");
+            while !stop_for_thread.load(Ordering::Relaxed) {
+                consumer.poll(StdDuration::from_millis(200));
+            }
+        });
+
+        let mut became_active = false;
+        for _ in 0..30 {
+            if let Ok(groups) = list_groups(&profile).await {
+                if groups.iter().any(|g| g.name == group && g.member_count > 0) {
+                    became_active = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(StdDuration::from_millis(500)).await;
+        }
+        assert!(became_active, "consumer group never showed an active member within 15s");
+
+        let result =
+            reset_group_offsets(&profile, &group, OffsetResetTarget::Earliest, &[(topic.clone(), 0)]).await;
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().expect("subscriber thread should not panic");
+
+        let err = result.expect_err("reset should be rejected while the group has an active member");
+        let message = err.to_string();
+        assert!(message.contains("active member"), "error should mention active members: {message}");
     }
 }
