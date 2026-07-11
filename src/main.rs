@@ -83,20 +83,25 @@ fn producer_key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
             let state = app.producer.as_ref()?;
             match state.mode {
                 ProducerInputMode::Inline => {
-                    if state.focus == ProducerFocus::Value {
+                    // Key and value are multi-line; Tab switches focus.
+                    Some(Action::ProducerNewline)
+                }
+                ProducerInputMode::FilePath => {
+                    if state.focus == ProducerFocus::FilePath {
+                        Some(Action::ProducerLoadFile)
+                    } else if state.focus == ProducerFocus::Key {
                         Some(Action::ProducerNewline)
                     } else {
                         Some(Action::ProducerFocusNext)
                     }
                 }
-                ProducerInputMode::FilePath => {
-                    if state.focus == ProducerFocus::FilePath {
-                        Some(Action::ProducerLoadFile)
+                ProducerInputMode::ExternalEditor => {
+                    if state.focus == ProducerFocus::Key {
+                        Some(Action::ProducerNewline)
                     } else {
-                        Some(Action::ProducerFocusNext)
+                        Some(Action::ProducerOpenExternalEditor)
                     }
                 }
-                ProducerInputMode::ExternalEditor => Some(Action::ProducerOpenExternalEditor),
             }
         }
         KeyCode::Backspace => Some(Action::ProducerBackspace),

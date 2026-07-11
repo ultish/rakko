@@ -1082,8 +1082,14 @@ impl App {
             }
             Action::ProducerNewline => {
                 if let Some(state) = self.producer.as_mut() {
-                    if state.mode == ProducerInputMode::Inline && state.focus == ProducerFocus::Value
-                    {
+                    // Multi-line key/value editing (inline); key also accepts newlines in
+                    // file-path / external-editor modes when the key field is focused.
+                    let allow = matches!(
+                        (state.mode, state.focus),
+                        (ProducerInputMode::Inline, ProducerFocus::Key | ProducerFocus::Value)
+                            | (_, ProducerFocus::Key)
+                    );
+                    if allow {
                         state.insert_char('\n');
                     }
                 }
@@ -3753,6 +3759,11 @@ mod tests {
         app.update(Action::ProducerChar('b'));
         app.update(Action::ProducerBackspace);
         assert_eq!(app.producer.as_ref().unwrap().key_input, "a");
+
+        // Key accepts newlines (multi-line key pane).
+        app.update(Action::ProducerNewline);
+        app.update(Action::ProducerChar('c'));
+        assert_eq!(app.producer.as_ref().unwrap().key_input, "a\nc");
 
         app.update(Action::ProducerFocusNext);
         app.update(Action::ProducerChar('x'));

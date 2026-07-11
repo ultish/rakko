@@ -71,11 +71,27 @@ WORKDIR /src
 # Context is repo root (Cargo.toml + src/ at the root of the context)
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY assets ./assets
+
+# Workaround for a librdkafka 2.12.1 cmake-build bug: rdkafka_conf.c guards
+# `#include <curl/curl.h>` with `#ifdef WITH_OAUTHBEARER_OIDC`, but CMake's
+# config.h.in always defines that macro (0 or 1) via #cmakedefine01, so the
+# #ifdef is always true and curl.h is required even with WITH_CURL=0/no "curl"
+# cargo feature. Fixed upstream in librdkafka 2.15.0
+# (https://github.com/confluentinc/librdkafka/pull/5136) but rdkafka-sys's
+# newest crates.io release (4.10.0+2.12.1) still vendors the buggy 2.12.1 —
+# see https://github.com/fede1024/rust-rdkafka/issues/829. Patch the vendored
+# source in place; drop this once rdkafka-sys ships librdkafka >= 2.15.0.
+RUN rustup target add x86_64-unknown-linux-gnu \
+    && cargo fetch --target x86_64-unknown-linux-gnu \
+    && rdkafka_conf="$(find /root/.cargo/registry/src -path '*/rdkafka-sys-*/librdkafka/src/rdkafka_conf.c' -print -quit)" \
+    && test -n "$rdkafka_conf" \
+    && sed -i 's/#ifdef WITH_OAUTHBEARER_OIDC/#if WITH_OAUTHBEARER_OIDC/' "$rdkafka_conf" \
+    && grep -n '#if WITH_OAUTHBEARER_OIDC' "$rdkafka_conf" | head -1
 
 # Explicit target for clarity when platform is linux/amd64.
 # rdkafka builds librdkafka + vendored OpenSSL from source — expect a long first build.
-RUN rustup target add x86_64-unknown-linux-gnu \
-    && cargo build --release --target x86_64-unknown-linux-gnu \
+RUN cargo build --release --offline --target x86_64-unknown-linux-gnu \
     && mkdir -p /out \
     && cp target/x86_64-unknown-linux-gnu/release/rakko /out/rakko \
     && cp /out/rakko /out/rakko-linux-amd64 \

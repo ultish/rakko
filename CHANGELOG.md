@@ -11,6 +11,8 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-11
+
 ### Added
 
 - Kafka TUI (**rakko**): topics, live tail + seek browse, filters, consumer
@@ -41,12 +43,22 @@ over dumping raw commit subjects.
   filter, and offset-reset input.
 - Replay: removed “add header”; **e** opens producer prefilled with decoded
   key/value for edit (raw **y**/Enter still byte-identical).
+- Producer: **Key** field is now multi-line (previously value-only); a
+  high-contrast block cursor auto-scrolls both key and value panes to keep
+  the caret in view.
 
 ### Changed
 
 - Project renamed from **kaf-tui** to **rakko** (binary, config dir, group ids,
   env `RAKKO_TRUECOLOR`, docs/scripts).
 - Message list Value column truncates to terminal width (not a fixed 60-char cap).
+
+### Fixed
+
+- RHEL 9 / airgap release build (`Dockerfile.rhel9`) — patches a vendored
+  librdkafka 2.12.1 bug that required `libcurl` even with curl support
+  disabled, and copies `assets/` into the build context so the startup
+  splash image compiles in.
 
 <!--
 When cutting a release, move bullets from [Unreleased] into a new section:

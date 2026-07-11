@@ -1,8 +1,19 @@
 # rakko
 
-Terminal UI for monitoring and managing Kafka clusters (macOS + Linux). Built with [ratatui](https://ratatui.rs/) and [rdkafka](https://github.com/fede1024/rust-rdkafka).
+<img src="assets/otter.jpg" alt="rakko — a sea otter, the project's mascot" width="480" />
 
-Browse topics and messages (live tail + seek), inspect consumer groups and lag, reset offsets, produce/replay messages, and export/import JSONL. Clusters in Kubernetes are fine — you handle the port-forward; the app is a plain TLS/mTLS client.
+**rakko** (ラッコ, Japanese for "sea otter") is a fast, keyboard-driven terminal UI for Kafka — everything you need for day-to-day cluster work without waiting on a browser tab or a bloated desktop client. Built with [ratatui](https://ratatui.rs/) and [rdkafka](https://github.com/fede1024/rust-rdkafka).
+
+Browse topics and messages (live tail + seek), inspect consumer groups and lag, reset offsets, produce/replay messages, and export/import JSONL — all from the terminal, all scriptable, all fast.
+
+**Why rakko over the usual Kafka GUI:**
+
+- **No message-size ceiling on replay.** Replay and export operate on raw wire bytes, never a decode-then-re-encode round trip — resend a message byte-identical, Avro schema ID and all, no matter how large. Most GUI tools quietly cap this around 1MB; rakko doesn't.
+- **Avro just works.** Auto-detects Confluent-wire-format Avro, fetches and caches the schema from your registry, and decodes it inline for browsing and filtering — without ever mutating the bytes you'd actually resend.
+- **JSONL export/import is a real backup format**, not a debugging dump — base64 raw bytes are the source of truth, so reimporting is byte-identical too.
+- **Kubernetes-friendly by staying out of the way** — no baked-in `kubectl`/port-forward magic to trust or debug. Point it at your tunnel like any other TLS/mTLS client.
+- **Airgap-ready.** Ships as a single statically-linked binary for RHEL 9 — no runtime deps to smuggle into a locked-down environment.
+- **It's a TUI.** No Electron, no browser tab, no waiting for a page to load — `j`/`k` and it's already there.
 
 ## Prerequisites
 

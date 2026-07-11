@@ -21,12 +21,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    // Key and value both get multi-line panes; remaining height is shared.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // header
-            Constraint::Length(3), // key
-            Constraint::Min(5),    // value / file path body
+            Constraint::Min(6),    // key (multi-line)
+            Constraint::Min(6),    // value / file path body
             Constraint::Length(1), // status
             Constraint::Length(1), // footer
         ])
@@ -56,33 +57,28 @@ fn mode_label(mode: ProducerInputMode) -> &'static str {
 fn render_key(frame: &mut Frame, area: Rect, state: &ProducerState) {
     let focused = state.focus == ProducerFocus::Key;
     let title = if focused { "Key (focused)" } else { "Key" };
-    let display = state.display_field(ProducerFocus::Key);
-    let border_style = if focused {
-        Style::default().add_modifier(Modifier::BOLD)
+    let cursor = if focused {
+        Some(state.cursor)
     } else {
-        Style::default()
+        None
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .title_style(if focused {
-            TITLE_STYLE.add_modifier(Modifier::REVERSED)
-        } else {
-            TITLE_STYLE
-        })
-        .border_style(border_style);
-    frame.render_widget(Paragraph::new(display).style(STATUS_STYLE).block(block), area);
+    render_editor_pane(frame, area, &state.key_input, cursor, title);
 }
 
 fn render_body(frame: &mut Frame, area: Rect, state: &ProducerState) {
     match state.mode {
         ProducerInputMode::Inline => {
             let focused = state.focus == ProducerFocus::Value;
+            let cursor = if focused {
+                Some(state.cursor)
+            } else {
+                None
+            };
             render_editor_pane(
                 frame,
                 area,
-                &state.display_field(ProducerFocus::Value),
-                focused,
+                &state.value_input,
+                cursor,
                 if focused {
                     "Value (focused)"
                 } else {
@@ -121,7 +117,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &ProducerState) {
                 Paragraph::new(display).style(STATUS_STYLE).block(block),
                 chunks[0],
             );
-            render_editor_pane(frame, chunks[1], &state.value_input, false, "Loaded value");
+            render_editor_pane(frame, chunks[1], &state.value_input, None, "Loaded value");
         }
         ProducerInputMode::ExternalEditor => {
             let hint = "Press Enter to open $EDITOR for the value body.";
@@ -130,7 +126,13 @@ fn render_body(frame: &mut Frame, area: Rect, state: &ProducerState) {
                 .constraints([Constraint::Length(2), Constraint::Min(2)])
                 .split(area);
             frame.render_widget(Paragraph::new(hint).style(STATUS_STYLE), chunks[0]);
-            render_editor_pane(frame, chunks[1], &state.value_input, false, "Value (from editor)");
+            render_editor_pane(
+                frame,
+                chunks[1],
+                &state.value_input,
+                None,
+                "Value (from editor)",
+            );
         }
     }
 }
@@ -143,7 +145,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
 fn render_footer(frame: &mut Frame, area: Rect, state: &ProducerState) {
     let text = match state.mode {
         ProducerInputMode::Inline => {
-            "Tab: focus  ←/→/Home/End: cursor  F3/C-m: mode  Enter: newline (value)  F2/C-p: produce  Esc: back"
+            "Tab: focus  ←/→/Home/End: cursor  F3/C-m: mode  Enter: newline  F2/C-p: produce  Esc: back"
         }
         ProducerInputMode::FilePath => {
             "Tab: focus  F3/C-m: mode  Enter: load file  F2/C-p: produce  Esc: back"
