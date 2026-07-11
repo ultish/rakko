@@ -53,10 +53,11 @@ Config lives at **`~/.config/rakko/config.toml`** on both macOS and Linux (not `
 
 If the config file is missing or has **no profiles**, rakko opens a **create-profile form** on startup:
 
-- **Name**, **bootstrap servers** (default `localhost:9092`), **TLS** on/off, optional **Schema Registry URL**
-- **Tab** / **Shift-Tab** move fields · **←**/**→**/**Home**/**End** edit within a field · **Delete** forward-delete · **Space**/**t** toggles TLS · **Enter** saves · **Esc** quits (when no profiles exist yet)
+- **Name**, **bootstrap servers** (default `localhost:9092`), **Auth**, optional **Schema Registry URL**
+- **Tab** / **Shift-Tab** move fields · **←**/**→**/**Home**/**End** edit within a field · **Delete** forward-delete · **Space**/**t** cycles **Auth** (plaintext → TLS, system trust store → TLS, private CA → mTLS) while it's focused · **Enter** saves · **Esc** quits (when no profiles exist yet)
+- Picking **TLS, private CA** or **mTLS** reveals **CA path** (and, for mTLS, **client cert path** / **client key path**) fields
 - Saves to `~/.config/rakko/config.toml` (creates the directory if needed)
-- Auth is saved as `none`; for **mTLS** cert paths, edit the TOML after save (or write the file by hand)
+- Editing an existing profile (**e**) prefills its current auth mode and cert/key/CA paths, and saving changes them
 
 On the **profile picker** (after you have at least one profile): **n** opens the same form to add another. **Esc** from the topic list returns to the picker.
 
@@ -161,7 +162,7 @@ On first launch a **splash** shows the stream otter:
 | Screen | Keys |
 |--------|------|
 | **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **q** quit |
-| **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** TLS · **Enter** save · **Esc** cancel/quit |
+| **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
 | **Topics** | **Enter** open topic · **g** consumer groups · **r**/**R** refresh list |
 | **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r**/**R** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **e** export selected · **E** export all visible · **i** import |
 | **Message view** | **j**/**k** or arrows scroll · **PgUp**/**PgDn** page · **Enter**/**Esc** close · **y** replay · **e** export this message |

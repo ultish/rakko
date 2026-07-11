@@ -18,7 +18,7 @@ mod tests;
 pub use export_import::{ExportImportFocus, ExportImportMode, ExportImportState};
 pub use group_detail::{GroupDetailState, OffsetResetPhase, ResetInputKind};
 pub use producer::{ProducerFocus, ProducerInputMode, ProducerState};
-pub use profile_create::{ProfileCreateFocus, ProfileCreateState};
+pub use profile_create::{ProfileCreateAuthChoice, ProfileCreateFocus, ProfileCreateState};
 pub use topic_detail::{BrowseMode, MessageSort, MessageViewState, ReplayPhase, TopicDetailState};
 
 use export_import::ExportScope;
@@ -607,11 +607,9 @@ impl App {
                 }
                 vec![]
             }
-            Action::ProfileCreateToggleTls => {
+            Action::ProfileCreateCycleAuth => {
                 if let Some(state) = self.profile_create.as_mut() {
-                    if state.focus == ProfileCreateFocus::Tls {
-                        state.tls_enabled = !state.tls_enabled;
-                    }
+                    state.cycle_auth();
                 }
                 vec![]
             }

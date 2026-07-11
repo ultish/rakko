@@ -11,6 +11,15 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- Create-profile / edit-profile wizard: an **Auth** field (Space/t to cycle
+  plaintext / TLS / TLS with a private CA / mTLS) with CA-path, client-cert-path,
+  and client-key-path inputs that appear when needed. Previously TLS-with-CA and
+  mTLS profiles could only be configured by hand-editing `config.toml` after
+  saving; editing an existing profile now also prefills and can change its auth
+  mode, instead of always preserving whatever was already on disk.
+
 ### Fixed
 
 - Consumer group listing, group detail, and offset reset no longer occasionally

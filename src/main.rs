@@ -169,9 +169,9 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
                 if app
                     .profile_create
                     .as_ref()
-                    .is_some_and(|s| s.focus == app::ProfileCreateFocus::Tls) =>
+                    .is_some_and(|s| s.focus == app::ProfileCreateFocus::Auth) =>
             {
-                Some(Action::ProfileCreateToggleTls)
+                Some(Action::ProfileCreateCycleAuth)
             }
             KeyCode::Backspace => Some(Action::ProfileCreateBackspace),
             KeyCode::Delete => Some(Action::ProfileCreateDelete),

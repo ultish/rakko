@@ -228,7 +228,7 @@ fn start_edit_profile_prefills_form() {
     assert_eq!(state.edit_index, Some(0));
     assert_eq!(state.name, "prod");
     assert_eq!(state.bootstrap_servers, "kafka:9093");
-    assert!(state.tls_enabled);
+    assert_eq!(state.auth_choice, ProfileCreateAuthChoice::TlsSystemTrust);
     assert_eq!(state.schema_registry_url, "http://sr:8081");
 }
 
@@ -256,10 +256,16 @@ fn submit_profile_edit_preserves_advanced_fields() {
     );
     app.selected_profile_index = 0;
     app.update(Action::StartEditProfile);
+    // Auth (Tls with its ca_path) is prefilled by from_profile() and left untouched
+    // here, so it round-trips through the wizard rather than being force-preserved.
+    assert_eq!(
+        app.profile_create.as_ref().unwrap().auth_choice,
+        ProfileCreateAuthChoice::TlsCustomCa
+    );
+    assert_eq!(app.profile_create.as_ref().unwrap().ca_path, "/certs/ca.pem");
     {
         let state = app.profile_create.as_mut().unwrap();
         state.bootstrap_servers = "192.168.1.10:9093".into();
-        state.tls_enabled = true;
         state.schema_registry_url = "http://localhost:8081".into();
     }
     app.update(Action::ProfileCreateSubmit);
@@ -354,6 +360,158 @@ fn profile_create_cursor_left_right_insert_and_backspace() {
     assert_eq!(state.name, "ocal");
     state.cursor_end();
     assert_eq!(state.cursor, 4);
+}
+
+#[test]
+fn cycle_auth_moves_through_all_four_choices_and_wraps() {
+    let mut state = ProfileCreateState::new();
+    state.focus = ProfileCreateFocus::Auth;
+    assert_eq!(state.auth_choice, ProfileCreateAuthChoice::Plaintext);
+    state.cycle_auth();
+    assert_eq!(state.auth_choice, ProfileCreateAuthChoice::TlsSystemTrust);
+    state.cycle_auth();
+    assert_eq!(state.auth_choice, ProfileCreateAuthChoice::TlsCustomCa);
+    state.cycle_auth();
+    assert_eq!(state.auth_choice, ProfileCreateAuthChoice::Mtls);
+    state.cycle_auth();
+    assert_eq!(state.auth_choice, ProfileCreateAuthChoice::Plaintext);
+}
+
+#[test]
+fn cycle_auth_is_a_noop_when_a_different_field_is_focused() {
+    let mut state = ProfileCreateState::new();
+    state.focus = ProfileCreateFocus::Name;
+    state.cycle_auth();
+    assert_eq!(state.auth_choice, ProfileCreateAuthChoice::Plaintext);
+}
+
+#[test]
+fn focus_cycle_skips_cert_key_ca_fields_for_plaintext() {
+    let mut state = ProfileCreateState::new();
+    state.focus = ProfileCreateFocus::Auth;
+    state.focus_next();
+    assert_eq!(state.focus, ProfileCreateFocus::SchemaRegistry);
+    state.focus_next();
+    assert_eq!(state.focus, ProfileCreateFocus::Name);
+}
+
+#[test]
+fn focus_cycle_includes_ca_path_only_for_tls_custom_ca() {
+    let mut state = ProfileCreateState::new();
+    state.focus = ProfileCreateFocus::Auth;
+    state.cycle_auth();
+    state.cycle_auth(); // TlsCustomCa
+    state.focus_next();
+    assert_eq!(state.focus, ProfileCreateFocus::CaPath);
+    state.focus_next();
+    assert_eq!(state.focus, ProfileCreateFocus::SchemaRegistry);
+}
+
+#[test]
+fn focus_cycle_includes_cert_key_ca_for_mtls() {
+    let mut state = ProfileCreateState::new();
+    state.focus = ProfileCreateFocus::Auth;
+    state.cycle_auth();
+    state.cycle_auth();
+    state.cycle_auth(); // Mtls
+    state.focus_next();
+    assert_eq!(state.focus, ProfileCreateFocus::CaPath);
+    state.focus_next();
+    assert_eq!(state.focus, ProfileCreateFocus::CertPath);
+    state.focus_next();
+    assert_eq!(state.focus, ProfileCreateFocus::KeyPath);
+    state.focus_next();
+    assert_eq!(state.focus, ProfileCreateFocus::SchemaRegistry);
+}
+
+#[test]
+fn to_profile_with_tls_custom_ca_requires_ca_path() {
+    let mut state = ProfileCreateState::new();
+    state.auth_choice = ProfileCreateAuthChoice::TlsCustomCa;
+    assert!(state.to_profile().is_err());
+    state.ca_path = "/certs/ca.pem".into();
+    let profile = state.to_profile().unwrap();
+    assert!(profile.tls_enabled);
+    assert!(matches!(
+        &profile.auth,
+        AuthMode::Tls { ca_path } if ca_path == "/certs/ca.pem"
+    ));
+}
+
+#[test]
+fn to_profile_with_mtls_requires_cert_key_and_ca_path() {
+    let mut state = ProfileCreateState::new();
+    state.auth_choice = ProfileCreateAuthChoice::Mtls;
+    state.ca_path = "/certs/ca.pem".into();
+    // cert/key still missing.
+    assert!(state.to_profile().is_err());
+
+    state.cert_path = "/certs/client.pem".into();
+    state.key_path = "/certs/client.key".into();
+    let profile = state.to_profile().unwrap();
+    assert!(profile.tls_enabled);
+    assert!(matches!(
+        &profile.auth,
+        AuthMode::Mtls { cert_path, key_path, ca_path }
+            if cert_path == "/certs/client.pem"
+                && key_path == "/certs/client.key"
+                && ca_path == "/certs/ca.pem"
+    ));
+}
+
+#[test]
+fn create_profile_with_mtls_end_to_end_via_actions() {
+    let path = test_config_path();
+    let mut app = App::new(Config::default(), path.clone());
+
+    // Defaults: name=local, bootstrap=localhost:9092, focus starts on Name.
+    app.update(Action::ProfileCreateFocusNext); // -> Bootstrap
+    app.update(Action::ProfileCreateFocusNext); // -> Auth
+    app.update(Action::ProfileCreateCycleAuth); // TlsSystemTrust
+    app.update(Action::ProfileCreateCycleAuth); // TlsCustomCa
+    app.update(Action::ProfileCreateCycleAuth); // Mtls
+    app.update(Action::ProfileCreateFocusNext); // -> CaPath
+    for c in "/certs/ca.pem".chars() {
+        app.update(Action::ProfileCreateChar(c));
+    }
+    app.update(Action::ProfileCreateFocusNext); // -> CertPath
+    for c in "/certs/client.pem".chars() {
+        app.update(Action::ProfileCreateChar(c));
+    }
+    app.update(Action::ProfileCreateFocusNext); // -> KeyPath
+    for c in "/certs/client.key".chars() {
+        app.update(Action::ProfileCreateChar(c));
+    }
+
+    app.update(Action::ProfileCreateSubmit);
+    assert!(app.profile_create.is_none(), "submit should succeed and close the wizard");
+    assert_eq!(app.config.profiles.len(), 1);
+    let saved = &app.config.profiles[0];
+    assert!(saved.tls_enabled);
+    assert!(matches!(
+        &saved.auth,
+        AuthMode::Mtls { cert_path, key_path, ca_path }
+            if cert_path == "/certs/client.pem"
+                && key_path == "/certs/client.key"
+                && ca_path == "/certs/ca.pem"
+    ));
+
+    let loaded = config::load(&path).unwrap();
+    assert!(matches!(loaded.profiles[0].auth, AuthMode::Mtls { .. }));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn create_profile_with_mtls_missing_cert_path_shows_error_and_keeps_wizard_open() {
+    let mut app = App::new(Config::default(), test_config_path());
+    app.update(Action::ProfileCreateFocusNext);
+    app.update(Action::ProfileCreateFocusNext); // -> Auth
+    app.update(Action::ProfileCreateCycleAuth);
+    app.update(Action::ProfileCreateCycleAuth);
+    app.update(Action::ProfileCreateCycleAuth); // Mtls, no paths filled
+    app.update(Action::ProfileCreateSubmit);
+    let state = app.profile_create.as_ref().expect("wizard stays open on error");
+    assert!(state.error.as_ref().is_some_and(|e| e.contains("cert")));
 }
 
 #[test]

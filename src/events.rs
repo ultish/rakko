@@ -207,7 +207,9 @@ pub enum Action {
     ProfileCreateCursorEnd,
     ProfileCreateFocusNext,
     ProfileCreateFocusPrev,
-    ProfileCreateToggleTls,
+    /// Cycles auth mode (plaintext / TLS-system-trust / TLS-private-CA / mTLS) while
+    /// the `Auth` field is focused.
+    ProfileCreateCycleAuth,
     ProfileCreateSubmit,
     ProfileCreateCancel,
     /// Advance braille banner animation frame (timer-driven).

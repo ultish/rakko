@@ -4,23 +4,75 @@ use super::App;
 use crate::config::{self, AuthMode, Profile};
 use crate::events::Command;
 
-/// Field focus for the first-run / "n" create-profile form.
+/// Field focus for the first-run / "n" create-profile form. `CaPath`/`CertPath`/`KeyPath`
+/// only appear in the focus cycle when `auth_choice` needs them — see
+/// [`ProfileCreateState::active_fields`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileCreateFocus {
     Name,
     Bootstrap,
-    Tls,
+    Auth,
+    CaPath,
+    CertPath,
+    KeyPath,
     SchemaRegistry,
 }
 
+/// The four `(AuthMode, tls_enabled)` combinations reachable from the wizard, cycled
+/// with Space/t while the `Auth` field is focused. Distinct from `AuthMode` itself
+/// because `AuthMode::None` covers two different UI states (plaintext vs. TLS against
+/// the system trust store).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProfileCreateAuthChoice {
+    #[default]
+    Plaintext,
+    /// TLS on, no client cert, verified against the system's default trust store.
+    TlsSystemTrust,
+    /// TLS on, verified against a private CA (`ca_path`), no client cert.
+    TlsCustomCa,
+    /// Mutual TLS: client cert + key, verified against `ca_path`.
+    Mtls,
+}
+
+impl ProfileCreateAuthChoice {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Plaintext => Self::TlsSystemTrust,
+            Self::TlsSystemTrust => Self::TlsCustomCa,
+            Self::TlsCustomCa => Self::Mtls,
+            Self::Mtls => Self::Plaintext,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plaintext => "plaintext",
+            Self::TlsSystemTrust => "tls (system trust store)",
+            Self::TlsCustomCa => "tls (private CA)",
+            Self::Mtls => "mtls (client cert)",
+        }
+    }
+
+    fn needs_ca(self) -> bool {
+        matches!(self, Self::TlsCustomCa | Self::Mtls)
+    }
+
+    fn needs_client_cert(self) -> bool {
+        matches!(self, Self::Mtls)
+    }
+}
+
 /// In-TUI wizard to create or edit a profile and save it to config.toml.
-/// mTLS cert paths / `message_max_bytes` / extra producer props stay TOML-only for
-/// advanced fields — edit mode **preserves** those when saving form fields.
+/// `message_max_bytes` / extra producer props stay TOML-only for advanced fields —
+/// edit mode **preserves** those when saving form fields.
 #[derive(Debug, Clone)]
 pub struct ProfileCreateState {
     pub name: String,
     pub bootstrap_servers: String,
-    pub tls_enabled: bool,
+    pub auth_choice: ProfileCreateAuthChoice,
+    pub ca_path: String,
+    pub cert_path: String,
+    pub key_path: String,
     pub schema_registry_url: String,
     pub focus: ProfileCreateFocus,
     /// Cursor as a **char** index within the focused text field (0..=len).
@@ -37,7 +89,10 @@ impl ProfileCreateState {
         Self {
             name,
             bootstrap_servers: "localhost:9092".into(),
-            tls_enabled: false,
+            auth_choice: ProfileCreateAuthChoice::default(),
+            ca_path: String::new(),
+            cert_path: String::new(),
+            key_path: String::new(),
             schema_registry_url: String::new(),
             focus: ProfileCreateFocus::Name,
             cursor,
@@ -46,14 +101,33 @@ impl ProfileCreateState {
         }
     }
 
-    /// Prefill the form from an existing profile for in-place edit.
+    /// Prefill the form from an existing profile for in-place edit, including its
+    /// auth mode and cert/key/CA paths (previously only reachable by hand-editing
+    /// the TOML).
     pub fn from_profile(profile: &Profile, index: usize) -> Self {
         let name = profile.name.clone();
         let cursor = name.chars().count();
+        let (auth_choice, ca_path, cert_path, key_path) = match &profile.auth {
+            AuthMode::None if profile.tls_enabled => {
+                (ProfileCreateAuthChoice::TlsSystemTrust, String::new(), String::new(), String::new())
+            }
+            AuthMode::None => {
+                (ProfileCreateAuthChoice::Plaintext, String::new(), String::new(), String::new())
+            }
+            AuthMode::Tls { ca_path } => {
+                (ProfileCreateAuthChoice::TlsCustomCa, ca_path.clone(), String::new(), String::new())
+            }
+            AuthMode::Mtls { cert_path, key_path, ca_path } => {
+                (ProfileCreateAuthChoice::Mtls, ca_path.clone(), cert_path.clone(), key_path.clone())
+            }
+        };
         Self {
             name,
             bootstrap_servers: profile.bootstrap_servers.clone(),
-            tls_enabled: profile.tls_enabled,
+            auth_choice,
+            ca_path,
+            cert_path,
+            key_path,
             schema_registry_url: profile
                 .schema_registry_url
                 .clone()
@@ -69,12 +143,34 @@ impl ProfileCreateState {
         self.edit_index.is_some()
     }
 
+    /// Fields in cycle order, filtered to those `auth_choice` actually needs — mirrors
+    /// `ProducerState::focus_cycle`'s mode-dependent field set.
+    fn active_fields(&self) -> Vec<ProfileCreateFocus> {
+        let mut fields = vec![
+            ProfileCreateFocus::Name,
+            ProfileCreateFocus::Bootstrap,
+            ProfileCreateFocus::Auth,
+        ];
+        if self.auth_choice.needs_ca() {
+            fields.push(ProfileCreateFocus::CaPath);
+        }
+        if self.auth_choice.needs_client_cert() {
+            fields.push(ProfileCreateFocus::CertPath);
+            fields.push(ProfileCreateFocus::KeyPath);
+        }
+        fields.push(ProfileCreateFocus::SchemaRegistry);
+        fields
+    }
+
     fn active_text(&self) -> &str {
         match self.focus {
             ProfileCreateFocus::Name => &self.name,
             ProfileCreateFocus::Bootstrap => &self.bootstrap_servers,
+            ProfileCreateFocus::CaPath => &self.ca_path,
+            ProfileCreateFocus::CertPath => &self.cert_path,
+            ProfileCreateFocus::KeyPath => &self.key_path,
             ProfileCreateFocus::SchemaRegistry => &self.schema_registry_url,
-            ProfileCreateFocus::Tls => "",
+            ProfileCreateFocus::Auth => "",
         }
     }
 
@@ -82,8 +178,11 @@ impl ProfileCreateState {
         match self.focus {
             ProfileCreateFocus::Name => Some(&mut self.name),
             ProfileCreateFocus::Bootstrap => Some(&mut self.bootstrap_servers),
+            ProfileCreateFocus::CaPath => Some(&mut self.ca_path),
+            ProfileCreateFocus::CertPath => Some(&mut self.cert_path),
+            ProfileCreateFocus::KeyPath => Some(&mut self.key_path),
             ProfileCreateFocus::SchemaRegistry => Some(&mut self.schema_registry_url),
-            ProfileCreateFocus::Tls => None,
+            ProfileCreateFocus::Auth => None,
         }
     }
 
@@ -92,23 +191,27 @@ impl ProfileCreateState {
     }
 
     pub fn focus_next(&mut self) {
-        self.focus = match self.focus {
-            ProfileCreateFocus::Name => ProfileCreateFocus::Bootstrap,
-            ProfileCreateFocus::Bootstrap => ProfileCreateFocus::Tls,
-            ProfileCreateFocus::Tls => ProfileCreateFocus::SchemaRegistry,
-            ProfileCreateFocus::SchemaRegistry => ProfileCreateFocus::Name,
-        };
+        let fields = self.active_fields();
+        let current = fields.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = fields[(current + 1) % fields.len()];
         self.snap_cursor_to_end();
     }
 
     pub fn focus_prev(&mut self) {
-        self.focus = match self.focus {
-            ProfileCreateFocus::Name => ProfileCreateFocus::SchemaRegistry,
-            ProfileCreateFocus::Bootstrap => ProfileCreateFocus::Name,
-            ProfileCreateFocus::Tls => ProfileCreateFocus::Bootstrap,
-            ProfileCreateFocus::SchemaRegistry => ProfileCreateFocus::Tls,
-        };
+        let fields = self.active_fields();
+        let current = fields.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = fields[(current + fields.len() - 1) % fields.len()];
         self.snap_cursor_to_end();
+    }
+
+    /// Cycles `auth_choice` (Space/t while the `Auth` field is focused). `Auth` is
+    /// unconditionally in `active_fields()`, so focus never goes stale here — unlike
+    /// `CaPath`/`CertPath`/`KeyPath`, which can drop out of the cycle if a later choice
+    /// no longer needs them; `submit`'s validation (not focus) is what guards those.
+    pub fn cycle_auth(&mut self) {
+        if self.focus == ProfileCreateFocus::Auth {
+            self.auth_choice = self.auth_choice.next();
+        }
     }
 
     pub fn insert_char(&mut self, c: char) {
@@ -168,13 +271,12 @@ impl ProfileCreateState {
         let text = match field {
             ProfileCreateFocus::Name => self.name.as_str(),
             ProfileCreateFocus::Bootstrap => self.bootstrap_servers.as_str(),
+            ProfileCreateFocus::CaPath => self.ca_path.as_str(),
+            ProfileCreateFocus::CertPath => self.cert_path.as_str(),
+            ProfileCreateFocus::KeyPath => self.key_path.as_str(),
             ProfileCreateFocus::SchemaRegistry => self.schema_registry_url.as_str(),
-            ProfileCreateFocus::Tls => {
-                return if self.tls_enabled {
-                    "yes  (Space/t to toggle)".into()
-                } else {
-                    "no   (Space/t to toggle)".into()
-                };
+            ProfileCreateFocus::Auth => {
+                return format!("{}  (Space/t to cycle)", self.auth_choice.label());
             }
         };
         if field != self.focus {
@@ -201,29 +303,50 @@ impl ProfileCreateState {
                 Some(s.to_string())
             }
         };
+        let (auth, tls_enabled) = match self.auth_choice {
+            ProfileCreateAuthChoice::Plaintext => (AuthMode::None, false),
+            ProfileCreateAuthChoice::TlsSystemTrust => (AuthMode::None, true),
+            ProfileCreateAuthChoice::TlsCustomCa => {
+                let ca_path = self.ca_path.trim();
+                if ca_path.is_empty() {
+                    return Err("CA path is required for TLS (private CA)".into());
+                }
+                (AuthMode::Tls { ca_path: ca_path.to_string() }, true)
+            }
+            ProfileCreateAuthChoice::Mtls => {
+                let ca_path = self.ca_path.trim();
+                let cert_path = self.cert_path.trim();
+                let key_path = self.key_path.trim();
+                if ca_path.is_empty() || cert_path.is_empty() || key_path.is_empty() {
+                    return Err("cert, key, and CA paths are all required for mTLS".into());
+                }
+                (
+                    AuthMode::Mtls {
+                        cert_path: cert_path.to_string(),
+                        key_path: key_path.to_string(),
+                        ca_path: ca_path.to_string(),
+                    },
+                    true,
+                )
+            }
+        };
         Ok(Profile {
             name: name.to_string(),
             bootstrap_servers: bootstrap.to_string(),
-            tls_enabled: self.tls_enabled,
-            auth: AuthMode::None,
+            tls_enabled,
+            auth,
             schema_registry_url,
             message_max_bytes: None,
             extra_producer_config: std::collections::HashMap::new(),
         })
     }
 
-    /// Apply form fields onto `base`, keeping auth / message_max_bytes / extra producer
-    /// config that the wizard does not edit.
+    /// Apply form fields (including auth) onto `base`, keeping `message_max_bytes` /
+    /// extra producer config — the only fields the wizard still doesn't edit.
     pub fn apply_to_profile(&self, base: &Profile) -> Result<Profile, String> {
         let mut profile = self.to_profile()?;
-        profile.auth = base.auth.clone();
         profile.message_max_bytes = base.message_max_bytes;
         profile.extra_producer_config = base.extra_producer_config.clone();
-        // If auth already requires TLS (tls/mtls), keep tls_enabled true even if the
-        // form toggle was flipped off — avoids saving a contradictory profile.
-        if !matches!(profile.auth, AuthMode::None) {
-            profile.tls_enabled = true;
-        }
         Ok(profile)
     }
 }

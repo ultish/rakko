@@ -3,7 +3,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, ProfileCreateFocus, ProfileCreateState};
+use crate::app::{App, ProfileCreateAuthChoice, ProfileCreateFocus, ProfileCreateState};
 use crate::ui::theme::{ERROR_STYLE, STATUS_STYLE, TITLE_STYLE};
 use crate::ui::widgets::confirm_dialog::centered_rect;
 use crate::ui::widgets::footer::{render_keybind_footer, split_with_footer};
@@ -84,7 +84,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateState, first_run: bool) {
-    let dialog = centered_rect(70, 70, area);
+    // mTLS adds 3 extra rows (CA/cert/key) over the base 4 fields — grow the dialog to
+    // fit rather than clipping.
+    let dialog = centered_rect(75, 85, area);
     frame.render_widget(Clear, dialog);
 
     let editing = state.is_edit();
@@ -96,17 +98,32 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
         "Create a profile"
     };
 
+    let show_ca = matches!(
+        state.auth_choice,
+        ProfileCreateAuthChoice::TlsCustomCa | ProfileCreateAuthChoice::Mtls
+    );
+    let show_client_cert = matches!(state.auth_choice, ProfileCreateAuthChoice::Mtls);
+
+    let mut constraints = vec![
+        Constraint::Length(2), // intro
+        Constraint::Length(3), // name
+        Constraint::Length(3), // bootstrap
+        Constraint::Length(3), // auth
+    ];
+    if show_ca {
+        constraints.push(Constraint::Length(3)); // CA path
+    }
+    if show_client_cert {
+        constraints.push(Constraint::Length(3)); // cert path
+        constraints.push(Constraint::Length(3)); // key path
+    }
+    constraints.push(Constraint::Length(3)); // schema registry
+    constraints.push(Constraint::Min(2)); // hint/error
+    constraints.push(Constraint::Length(2)); // footer
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(2),
-            Constraint::Length(2),
-        ])
+        .constraints(constraints)
         .margin(1)
         .split(dialog);
 
@@ -142,10 +159,40 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     render_field(
         frame,
         chunks[3],
-        "TLS enabled",
-        &state.display_with_cursor(ProfileCreateFocus::Tls),
-        state.focus == ProfileCreateFocus::Tls,
+        "Auth",
+        &state.display_with_cursor(ProfileCreateFocus::Auth),
+        state.focus == ProfileCreateFocus::Auth,
     );
+
+    let mut next_row = 4;
+    if show_ca {
+        render_field(
+            frame,
+            chunks[next_row],
+            "CA path",
+            &state.display_with_cursor(ProfileCreateFocus::CaPath),
+            state.focus == ProfileCreateFocus::CaPath,
+        );
+        next_row += 1;
+    }
+    if show_client_cert {
+        render_field(
+            frame,
+            chunks[next_row],
+            "Client cert path",
+            &state.display_with_cursor(ProfileCreateFocus::CertPath),
+            state.focus == ProfileCreateFocus::CertPath,
+        );
+        next_row += 1;
+        render_field(
+            frame,
+            chunks[next_row],
+            "Client key path",
+            &state.display_with_cursor(ProfileCreateFocus::KeyPath),
+            state.focus == ProfileCreateFocus::KeyPath,
+        );
+        next_row += 1;
+    }
 
     let sr_display = if state.schema_registry_url.is_empty()
         && state.focus != ProfileCreateFocus::SchemaRegistry
@@ -156,34 +203,36 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     };
     render_field(
         frame,
-        chunks[4],
+        chunks[next_row],
         "Schema Registry URL",
         &sr_display,
         state.focus == ProfileCreateFocus::SchemaRegistry,
     );
+    next_row += 1;
 
     if let Some(err) = &state.error {
         frame.render_widget(
             Paragraph::new(err.as_str())
                 .style(ERROR_STYLE)
                 .wrap(Wrap { trim: true }),
-            chunks[5],
+            chunks[next_row],
         );
     } else {
         let hint = if editing {
-            "Auth, message_max_bytes, and extra producer config are preserved. \
+            "message_max_bytes and extra producer config are preserved. \
              Edit those in ~/.config/rakko/config.toml if needed."
         } else {
-            "Auth defaults to none. For mTLS / message_max_bytes, edit \
+            "message_max_bytes / extra producer config: edit \
              ~/.config/rakko/config.toml after save."
         };
         frame.render_widget(
             Paragraph::new(hint)
                 .style(STATUS_STYLE)
                 .wrap(Wrap { trim: true }),
-            chunks[5],
+            chunks[next_row],
         );
     }
+    next_row += 1;
 
     let footer = if first_run {
         "Enter: save & continue   Esc/q: quit"
@@ -194,7 +243,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     };
     frame.render_widget(
         Paragraph::new(footer).style(Style::default().add_modifier(Modifier::BOLD)),
-        chunks[6],
+        chunks[next_row],
     );
 }
 
