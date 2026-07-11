@@ -1,8 +1,8 @@
-# kaf-tui — Kafka monitoring/management TUI
+# rakko — Kafka monitoring/management TUI
 
 ## Context
 
-The user wants a `ratatui`-based terminal UI for managing and inspecting Kafka clusters, including ones running in Kubernetes (reached via a manually-managed port-forward/tunnel — no k8s automation needed in the app itself). The target directory (`/Users/jxhui/Developer/kaf-tui`) is empty, so this is a from-scratch project. Requirements were gathered over an extended discovery conversation (client library, connectivity model, message browsing modes, auth, schema registry, secrets storage, producer UX, export/import, and single-message replay). The design below reflects all of those decisions and adds the concrete Rust architecture needed to build it: crate choices, module layout, and the trickiest integration points (async+ratatui, rdkafka's consumer-group admin gaps, byte-preserving replay/export).
+The user wants a `ratatui`-based terminal UI for managing and inspecting Kafka clusters, including ones running in Kubernetes (reached via a manually-managed port-forward/tunnel — no k8s automation needed in the app itself). The target directory (`/Users/jxhui/Developer/rakko`) is empty, so this is a from-scratch project. Requirements were gathered over an extended discovery conversation (client library, connectivity model, message browsing modes, auth, schema registry, secrets storage, producer UX, export/import, and single-message replay). The design below reflects all of those decisions and adds the concrete Rust architecture needed to build it: crate choices, module layout, and the trickiest integration points (async+ratatui, rdkafka's consumer-group admin gaps, byte-preserving replay/export).
 
 Full v1 scope is intentionally in view now (per the user's preference), but building proceeds in independently-testable milestones.
 
@@ -10,7 +10,7 @@ Full v1 scope is intentionally in view now (per the user's preference), but buil
 
 - Multi-cluster: named connection profiles (bootstrap address, TLS on/off, auth = mTLS or none today, designed to add SASL later without a redesign).
 - No k8s-specific connectivity code — plain external TLS/mTLS client, user handles tunneling.
-- Config: plain TOML at `~/.config/kaf-tui/` on macOS + Linux (constructed manually, not via a crate's platform-native path, since macOS's "native" convention differs).
+- Config: plain TOML at `~/.config/rakko/` on macOS + Linux (constructed manually, not via a crate's platform-native path, since macOS's "native" convention differs).
 - Topics view: partitions, replication factor, compression type, message counts, size.
 - Consumer groups: members, per-partition lag, and a confirmed, destructive offset-reset action (offset / timestamp / earliest / latest).
 - Schema Registry: Confluent-compatible.
@@ -52,8 +52,8 @@ Notable decisions from research (verify exact versions with `cargo add` at scaff
 - **No literal "vendored" feature exists.** Static librdkafka compilation from bundled source is the *default* since rdkafka 0.39 — no system librdkafka needed. What you must add explicitly is `ssl` + `ssl-vendored` (statically-linked OpenSSL, required for TLS/mTLS) and `cmake-build` (more reliable than the plain-make build on macOS). Build-time prerequisite to document: CMake + a C toolchain on the *build* machine only — the resulting binary is self-contained.
 - **Schema Registry**: use `schema_registry_converter` (actively maintained, async/reqwest-based, depends on the maintained `apache-avro` fork) rather than hand-rolling a REST client. Wrap it with a thin local `HashMap<u32, apache_avro::Schema>` cache so decode failures can fall through to JSON/raw instead of erroring the app.
 - **Use `rustls` for the Schema Registry's HTTP client**, not `native-tls`/OpenSSL — avoids a second, differently-versioned OpenSSL colliding with rdkafka's vendored one at link time.
-- **Config path**: don't use a crate's "native config dir" helper (recent `dirs`/`directories` versions return `~/Library/Application Support` on macOS). Construct `~/.config/kaf-tui/` manually via `dirs::home_dir()`.
-- **Logging**: `tracing` to a file under `~/.config/kaf-tui/` only — never stdout/stderr while the alternate screen is active. Install a panic hook that restores the terminal before the panic prints, or a mid-render panic leaves the terminal broken.
+- **Config path**: don't use a crate's "native config dir" helper (recent `dirs`/`directories` versions return `~/Library/Application Support` on macOS). Construct `~/.config/rakko/` manually via `dirs::home_dir()`.
+- **Logging**: `tracing` to a file under `~/.config/rakko/` only — never stdout/stderr while the alternate screen is active. Install a panic hook that restores the terminal before the panic prints, or a mid-render panic leaves the terminal broken.
 
 ## Module layout
 
@@ -124,7 +124,7 @@ src/
 5. **M5 — Single-message replay.** Composes M2 (raw bytes) + M4 (producer) — the "instant replay, same topic" keybind plus opt-in header-append step. Never decodes; sends raw bytes straight through.
 6. **M6 — Schema registry + Avro auto-detect.** Highest external-dependency milestone (needs a live registry + real Avro topics), sequenced after the self-contained milestones are stable. Can swap with M4 if Avro topics are readily available for earlier manual testing — no functional dependency forces this order (M5 doesn't need M6, since replay never decodes).
 7. **M7 — Export/import JSONL.** Streaming writer (paged via M2's primitives, never buffering a full topic), reader with target-topic override reusing M4's producer path. Composes every prior primitive, naturally last.
-8. **M8 — Airgap RHEL9 build.** A `Dockerfile.rhel9` + wrapper script, adapted from the sibling `harness` project's `tui/Dockerfile.rhel9` / `scripts/build-tui-rhel9.sh` (Rocky Linux 9 builder → glibc-compatible with RHEL9, avoids `GLIBC_2.xx not found` at runtime; `cargo build --release --target x86_64-unknown-linux-gnu`; extracted binary packaged as a versioned `.tar.gz` + `SHA256SUMS`; multi-runtime docker/podman/Apple-Container wrapper with `--platform linux/amd64` for Apple Silicon). **Delta from that reference**: kaf-tui's `rdkafka` (`cmake-build`, `ssl`, `ssl-vendored`) compiles librdkafka from C source and statically vendors OpenSSL, so the Rocky 9 builder image needs `cmake` and `perl` in addition to `gcc gcc-c++ make`. Verify with `ldd` on the built binary (same check the reference script runs) that only expected dynamic deps (glibc, libgcc_s) remain — no stray dynamic OpenSSL/librdkafka links defeating the point of vendoring. Sequenced last since it packages the finished v1 binary rather than gating any feature work.
+8. **M8 — Airgap RHEL9 build.** A `Dockerfile.rhel9` + wrapper script, adapted from the sibling `harness` project's `tui/Dockerfile.rhel9` / `scripts/build-tui-rhel9.sh` (Rocky Linux 9 builder → glibc-compatible with RHEL9, avoids `GLIBC_2.xx not found` at runtime; `cargo build --release --target x86_64-unknown-linux-gnu`; extracted binary packaged as a versioned `.tar.gz` + `SHA256SUMS`; multi-runtime docker/podman/Apple-Container wrapper with `--platform linux/amd64` for Apple Silicon). **Delta from that reference**: rakko's `rdkafka` (`cmake-build`, `ssl`, `ssl-vendored`) compiles librdkafka from C source and statically vendors OpenSSL, so the Rocky 9 builder image needs `cmake` and `perl` in addition to `gcc gcc-c++ make`. Verify with `ldd` on the built binary (same check the reference script runs) that only expected dynamic deps (glibc, libgcc_s) remain — no stray dynamic OpenSSL/librdkafka links defeating the point of vendoring. Sequenced last since it packages the finished v1 binary rather than gating any feature work.
 
 ## Verification
 

@@ -12,7 +12,7 @@ use crate::raw_message::RawMessage;
 
 /// Throwaway `group.id` for ad-hoc browsing consumers (tail/seek never join a real
 /// consumer group or commit offsets).
-const BROWSE_GROUP_ID: &str = "kaf-tui-browse";
+const BROWSE_GROUP_ID: &str = "rakko-browse";
 const METADATA_TIMEOUT: Duration = Duration::from_secs(10);
 const WATERMARK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Short so the tail loop wakes up regularly to check for a stop signal even when no
@@ -210,6 +210,8 @@ fn resolve_seek_plan(partition: i32, low: i64, high: i64, request: &SeekPageRequ
                     page_start_offset: from_offset,
                     at_beginning: from_offset <= low,
                     at_end: true,
+                    low_watermark: low,
+                    high_watermark: high,
                 });
             }
             SeekOutcome::Poll(SeekPlan {
@@ -228,6 +230,8 @@ fn resolve_seek_plan(partition: i32, low: i64, high: i64, request: &SeekPageRequ
                     page_start_offset: start_offset,
                     at_beginning: true,
                     at_end: false,
+                    low_watermark: low,
+                    high_watermark: high,
                 });
             }
             let limit = (before_offset - start_offset) as usize;
@@ -301,6 +305,8 @@ fn load_seek_page_blocking(
         page_start_offset: plan.start_offset,
         at_beginning: plan.at_beginning,
         at_end,
+        low_watermark: low,
+        high_watermark: high,
     };
 
     Ok((messages, meta))

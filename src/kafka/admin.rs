@@ -10,7 +10,7 @@ use crate::kafka::client_config::consumer_client_config;
 
 /// Throwaway `group.id` for admin-only consumers (metadata/watermark lookups never
 /// commit offsets or join a real consumer group).
-const ADMIN_GROUP_ID: &str = "kaf-tui-admin";
+const ADMIN_GROUP_ID: &str = "rakko-admin";
 const METADATA_TIMEOUT: Duration = Duration::from_secs(10);
 const WATERMARK_TIMEOUT: Duration = Duration::from_secs(10);
 const DESCRIBE_CONFIGS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -111,6 +111,54 @@ fn fetch_compression_type(admin_client: &AdminClient<DefaultClientContext>, topi
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Reads the broker's `message.max.bytes` via `describe_configs` on the first
+/// broker from metadata. Used to auto-fill profile `message_max_bytes` when unset.
+///
+/// Returns `Ok(None)` when the config is missing or unparseable (caller keeps the
+/// client default). Errors are connection/admin failures.
+pub async fn fetch_broker_message_max_bytes(profile: &Profile) -> AppResult<Option<u32>> {
+    let profile = profile.clone();
+    tokio::task::spawn_blocking(move || fetch_broker_message_max_bytes_blocking(&profile))
+        .await
+        .map_err(|err| AppError::Other(format!("message.max.bytes detect task panicked: {err}")))?
+}
+
+fn fetch_broker_message_max_bytes_blocking(profile: &Profile) -> AppResult<Option<u32>> {
+    let consumer: BaseConsumer = consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+    let admin_client: AdminClient<DefaultClientContext> =
+        consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+
+    let metadata = consumer.fetch_metadata(None, METADATA_TIMEOUT)?;
+    let broker_id = metadata
+        .brokers()
+        .first()
+        .map(|b| b.id())
+        .ok_or_else(|| AppError::Other("cluster metadata lists no brokers".into()))?;
+
+    let specifier = ResourceSpecifier::Broker(broker_id);
+    let opts = AdminOptions::new().request_timeout(Some(DESCRIBE_CONFIGS_TIMEOUT));
+    let result = futures::executor::block_on(admin_client.describe_configs([&specifier], &opts));
+
+    let value = result
+        .ok()
+        .into_iter()
+        .flatten()
+        .next()
+        .and_then(|resource| resource.ok())
+        .and_then(|resource| resource.get("message.max.bytes")?.value.clone());
+
+    Ok(value.as_deref().and_then(parse_message_max_bytes))
+}
+
+/// Parse a broker config string for `message.max.bytes` into a positive `u32`.
+fn parse_message_max_bytes(raw: &str) -> Option<u32> {
+    let n: u64 = raw.trim().parse().ok()?;
+    if n == 0 || n > u64::from(u32::MAX) {
+        return None;
+    }
+    Some(n as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +169,15 @@ mod tests {
         assert!(is_internal_topic("__transaction_state"));
         assert!(!is_internal_topic("orders"));
         assert!(!is_internal_topic("_single_underscore_not_internal"));
+    }
+
+    #[test]
+    fn parse_message_max_bytes_accepts_positive_u32() {
+        assert_eq!(parse_message_max_bytes("1048576"), Some(1_048_576));
+        assert_eq!(parse_message_max_bytes("20971520"), Some(20_971_520));
+        assert_eq!(parse_message_max_bytes("  1000  "), Some(1000));
+        assert_eq!(parse_message_max_bytes("0"), None);
+        assert_eq!(parse_message_max_bytes("-1"), None);
+        assert_eq!(parse_message_max_bytes("not-a-number"), None);
     }
 }

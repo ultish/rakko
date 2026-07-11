@@ -7,22 +7,24 @@ use crate::config::{AuthMode, Profile};
 /// | Profile fields | librdkafka `security.protocol` | extra properties |
 /// |---|---|---|
 /// | `tls_enabled = false`, `auth = None` | `PLAINTEXT` | - |
-/// | `tls_enabled = true`, `auth = None` | `SSL` | - |
+/// | `tls_enabled = true`, `auth = None` | `SSL` | - (verifies against the system default trust store) |
+/// | `auth = Tls { ca }` | `SSL` | `ssl.ca.location` (no client cert - server TLS against a private CA) |
 /// | `auth = Mtls { cert, key, ca }` | `SSL` | `ssl.ca.location`, `ssl.certificate.location`, `ssl.key.location` |
 pub fn base_client_config(profile: &Profile) -> ClientConfig {
     let mut config = ClientConfig::new();
     config.set("bootstrap.servers", &profile.bootstrap_servers);
     config.set("security.protocol", profile.security_protocol());
 
-    if let AuthMode::Mtls {
-        cert_path,
-        key_path,
-        ca_path,
-    } = &profile.auth
-    {
-        config.set("ssl.certificate.location", cert_path);
-        config.set("ssl.key.location", key_path);
-        config.set("ssl.ca.location", ca_path);
+    match &profile.auth {
+        AuthMode::None => {}
+        AuthMode::Tls { ca_path } => {
+            config.set("ssl.ca.location", ca_path);
+        }
+        AuthMode::Mtls { cert_path, key_path, ca_path } => {
+            config.set("ssl.certificate.location", cert_path);
+            config.set("ssl.key.location", key_path);
+            config.set("ssl.ca.location", ca_path);
+        }
     }
 
     if let Some(max_bytes) = profile.message_max_bytes {
@@ -88,6 +90,23 @@ mod tests {
         let config = base_client_config(&profile);
         assert_eq!(get(&config, "security.protocol").as_deref(), Some("SSL"));
         assert!(get(&config, "ssl.certificate.location").is_none());
+    }
+
+    #[test]
+    fn ssl_with_custom_ca_and_no_client_cert_for_tls_only() {
+        let profile = profile_with(true, AuthMode::Tls { ca_path: "/certs/private-ca.pem".into() });
+        let config = base_client_config(&profile);
+        assert_eq!(get(&config, "security.protocol").as_deref(), Some("SSL"));
+        assert_eq!(get(&config, "ssl.ca.location").as_deref(), Some("/certs/private-ca.pem"));
+        assert!(get(&config, "ssl.certificate.location").is_none());
+        assert!(get(&config, "ssl.key.location").is_none());
+    }
+
+    #[test]
+    fn tls_forces_ssl_even_if_tls_enabled_flag_is_false() {
+        let profile = profile_with(false, AuthMode::Tls { ca_path: "/certs/private-ca.pem".into() });
+        let config = base_client_config(&profile);
+        assert_eq!(get(&config, "security.protocol").as_deref(), Some("SSL"));
     }
 
     #[test]

@@ -23,17 +23,13 @@ impl Config {
     }
 }
 
-/// `~/.config/kaf-tui/`, constructed manually on both macOS and Linux rather than via a
+/// `~/.config/rakko/`, constructed manually on both macOS and Linux rather than via a
 /// crate's "native" platform config dir (which returns `~/Library/Application Support`
 /// on macOS as of recent `dirs`/`directories` releases).
 pub fn config_dir() -> AppResult<PathBuf> {
     let home = dirs::home_dir()
         .ok_or_else(|| AppError::Config("could not determine home directory".into()))?;
-    Ok(home.join(".config").join("kaf-tui"))
-}
-
-pub fn config_file_path() -> AppResult<PathBuf> {
-    Ok(config_dir()?.join("config.toml"))
+    Ok(home.join(".config").join("rakko"))
 }
 
 pub fn load(path: &PathBuf) -> AppResult<Config> {
@@ -87,6 +83,17 @@ mod tests {
                         "zstd".to_string(),
                     )]),
                 },
+                Profile {
+                    name: "staging".into(),
+                    bootstrap_servers: "kafka-staging.example.com:9093".into(),
+                    tls_enabled: true,
+                    auth: AuthMode::Tls {
+                        ca_path: "/certs/private-ca.pem".into(),
+                    },
+                    schema_registry_url: None,
+                    message_max_bytes: None,
+                    extra_producer_config: HashMap::new(),
+                },
             ],
         }
     }
@@ -104,12 +111,13 @@ mod tests {
         let config = sample_config();
         let serialized = toml::to_string_pretty(&config).expect("serialize");
         assert!(serialized.contains("type = \"mtls\""));
+        assert!(serialized.contains("type = \"tls\""));
         assert!(serialized.contains("type = \"none\""));
     }
 
     #[test]
     fn load_missing_file_returns_default() {
-        let path = std::env::temp_dir().join("kaf-tui-test-nonexistent-config.toml");
+        let path = std::env::temp_dir().join("rakko-test-nonexistent-config.toml");
         let _ = fs::remove_file(&path);
         let config = load(&path).expect("load should not fail on missing file");
         assert_eq!(config, Config::default());
@@ -118,7 +126,7 @@ mod tests {
     #[test]
     fn save_then_load_round_trips() {
         let path = std::env::temp_dir().join(format!(
-            "kaf-tui-test-config-{}.toml",
+            "rakko-test-config-{}.toml",
             std::process::id()
         ));
         let config = sample_config();
@@ -131,6 +139,6 @@ mod tests {
     #[test]
     fn config_dir_uses_dot_config_on_this_platform() {
         let dir = config_dir().expect("home dir resolvable in test env");
-        assert!(dir.ends_with(".config/kaf-tui"));
+        assert!(dir.ends_with(".config/rakko"));
     }
 }

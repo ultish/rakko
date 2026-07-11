@@ -10,42 +10,48 @@ use crate::ui::widgets::table_nav::render_selectable_list;
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let (main, footer) = split_with_footer(area);
 
-    if app.topics.is_empty() {
+    if app.groups.is_empty() {
         let text = app
             .status_message
             .clone()
-            .unwrap_or_else(|| "No topics loaded.".to_string());
+            .unwrap_or_else(|| "No consumer groups found.".to_string());
         let message = Paragraph::new(text)
             .style(STATUS_STYLE)
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Topics")
+                    .title("Consumer groups")
                     .title_style(TITLE_STYLE),
             );
         frame.render_widget(message, main);
-        render_keybind_footer(frame, footer, "r: refresh   g: groups   Esc: back   q: quit");
+        render_keybind_footer(frame, footer, "r: refresh   Esc: back   q: quit");
         return;
     }
 
     let items: Vec<Vec<String>> = app
-        .topics
+        .groups
         .iter()
-        .map(|topic| {
+        .map(|group| {
+            let protocol = if group.protocol.is_empty() {
+                group.protocol_type.clone()
+            } else if group.protocol_type.is_empty() {
+                group.protocol.clone()
+            } else {
+                format!("{} ({})", group.protocol, group.protocol_type)
+            };
             vec![
-                topic.name.clone(),
-                topic.partition_count.to_string(),
-                topic.replication_factor.to_string(),
-                topic.compression_type.clone(),
-                topic.total_message_count.to_string(),
+                group.name.clone(),
+                group.state.clone(),
+                group.member_count.to_string(),
+                protocol,
             ]
         })
         .collect();
 
     let title = match &app.status_message {
-        Some(status) => format!("Topics — {status}"),
-        None => "Topics".to_string(),
+        Some(status) => format!("Consumer groups — {status}"),
+        None => "Consumer groups".to_string(),
     };
 
     render_selectable_list(
@@ -53,12 +59,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         main,
         &title,
         &items,
-        Some(&["Name", "Partitions", "Replication", "Compression", "Messages"]),
-        app.topic_list_selected_index,
+        Some(&["Name", "State", "Members", "Protocol"]),
+        app.group_list_selected_index,
     );
     render_keybind_footer(
         frame,
         footer,
-        "Enter: open   g: groups   r: refresh   Esc: back   q: quit",
+        "Enter: open   r: refresh   Esc: back   q: quit",
     );
 }

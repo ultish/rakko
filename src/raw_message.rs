@@ -14,12 +14,4 @@ pub struct RawMessage {
     pub headers: Vec<(String, Vec<u8>)>,
 }
 
-impl RawMessage {
-    pub fn key_len(&self) -> usize {
-        self.key.as_ref().map_or(0, Vec::len)
-    }
 
-    pub fn value_len(&self) -> usize {
-        self.value.as_ref().map_or(0, Vec::len)
-    }
-}

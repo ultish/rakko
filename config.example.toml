@@ -1,0 +1,44 @@
+# Example rakko config. Copy to ~/.config/rakko/config.toml (or pass
+# --config-dir) and edit profiles for your clusters.
+#
+# Matches the docker-compose.yml local stack (PLAINTEXT Kafka + Schema Registry).
+
+[[profiles]]
+name = "local"
+bootstrap_servers = "localhost:9092"
+tls_enabled = false
+schema_registry_url = "http://localhost:8081"
+
+[profiles.auth]
+type = "none"
+
+# External cluster over TLS with mutual-TLS client auth (e.g. Kafka in Kubernetes,
+# reached via a kubectl port-forward or a LoadBalancer that requires a client cert).
+# cert_path/key_path/ca_path are read straight off disk by librdkafka at connect time
+# (ssl.certificate.location / ssl.key.location / ssl.ca.location) - PEM files, not
+# inlined here. tls_enabled is implied by auth = mtls but keep it true for clarity.
+[[profiles]]
+name = "prod"
+bootstrap_servers = "kafka.example.com:9093"
+tls_enabled = true
+schema_registry_url = "https://schema.example.com"
+message_max_bytes = 20000000
+
+[profiles.auth]
+type = "mtls"
+cert_path = "/path/to/client-cert.pem"
+key_path = "/path/to/client-key.pem"
+ca_path = "/path/to/ca-cert.pem"
+
+# TLS with no client cert, verified against a private CA (e.g. an internal cluster
+# whose broker cert isn't signed by a public CA, but that doesn't require mutual TLS).
+# For a broker cert signed by a well-known public CA instead, `type = "none"` with
+# tls_enabled = true is enough - the system default trust store handles it.
+[[profiles]]
+name = "staging-tls-only"
+bootstrap_servers = "kafka-staging.example.com:9093"
+tls_enabled = true
+
+[profiles.auth]
+type = "tls"
+ca_path = "/path/to/private-ca.pem"

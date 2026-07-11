@@ -17,8 +17,9 @@ pub struct Profile {
     /// Schema Registry base URL, if this cluster has one (e.g. "http://localhost:8081").
     #[serde(default)]
     pub schema_registry_url: Option<String>,
-    /// Consumer-side `message.max.bytes` override, for brokers configured with
-    /// `max.message.bytes` above Kafka's 1MB default.
+    /// Client `message.max.bytes` (produce + consume). When `None`, the first
+    /// successful topic load auto-detects the broker's `message.max.bytes` and
+    /// persists it here. Set explicitly to pin a value and skip auto-detect.
     #[serde(default)]
     pub message_max_bytes: Option<u32>,
     /// Extra raw librdkafka producer config properties (e.g. "compression.type" = "zstd"),
@@ -33,6 +34,7 @@ impl Profile {
         match (&self.auth, self.tls_enabled) {
             (AuthMode::None, false) => "PLAINTEXT",
             (AuthMode::None, true) => "SSL",
+            (AuthMode::Tls { .. }, _) => "SSL",
             (AuthMode::Mtls { .. }, _) => "SSL",
         }
     }

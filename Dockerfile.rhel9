@@ -1,0 +1,95 @@
+# Build rakko for RHEL 9–class glibc (x86_64 only).
+#
+# Rocky Linux 9 ≈ RHEL 9 glibc. Building here avoids "GLIBC_2.xx not found"
+# when the binary is later run on air-gapped RHEL 9.
+#
+# Target triple (when built with --platform=linux/amd64):
+#   x86_64-unknown-linux-gnu
+#
+# Delta from harness/tui/Dockerfile.rhel9: rdkafka with cmake-build + ssl-vendored
+# compiles librdkafka and OpenSSL from C source, so the builder needs cmake and
+# perl (OpenSSL's Configure) in addition to gcc/gcc-c++/make.
+#
+# IMPORTANT — build context is the repo root (Cargo.toml + src/ at context root):
+#
+#   # from repo root (recommended):
+#   ./scripts/build-tui-rhel9.sh
+#
+#   # manual:
+#   docker build --platform linux/amd64 -f Dockerfile.rhel9 -t rakko:rhel9 .
+#
+# On Apple Silicon you MUST pass --platform linux/amd64 (x86_64). Without working
+# amd64 emulation you get: exec /bin/sh: exec format error
+# Prefer Apple Container (DOCKER=container) if Docker's qemu/Rosetta is broken.
+#
+# Artifact inside the image:
+#   /out/rakko-linux-amd64          (clear platform name)
+#   /out/rakko                      (short name)
+#   /out/SHA256SUMS
+#   /out/ldd.txt                      (dynamic-link audit)
+
+# Platform comes from `docker/container build --platform=…` (do not hardcode
+# FROM --platform=linux/amd64 — BuildKit warns and some runtimes mishandle it).
+FROM rockylinux:9
+
+# Rocky 9 images ship curl-minimal, which conflicts with package "curl".
+# rustup works with curl-minimal (provides /usr/bin/curl).
+#
+# cmake       — rdkafka "cmake-build" feature
+# perl        — openssl-sys/ssl-vendored Configure script
+# clang + llvm-libs — bindgen (rdkafka-sys) needs libclang.so
+# binutils + file — diagnostics / strip-friendly toolchain
+RUN dnf install -y \
+        gcc gcc-c++ make cmake perl \
+        clang clang-libs \
+        binutils file diffutils \
+    && dnf clean all \
+    && command -v curl >/dev/null \
+    && command -v cmake >/dev/null \
+    && command -v perl >/dev/null \
+    && command -v clang >/dev/null \
+    && (ldconfig -p 2>/dev/null | grep -q libclang || ls /usr/lib64/libclang.so* >/dev/null) \
+    && curl --version | head -1 \
+    && cmake --version | head -1 \
+    && perl -v | head -2 \
+    && clang --version | head -1
+
+# Rust stable (network required at image-build time only)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --profile minimal \
+    && . /root/.cargo/env \
+    && rustc --version \
+    && rustc -vV | grep host
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
+# librdkafka / openssl-vendored can be memory-hungry under qemu; keep jobs modest.
+ENV CARGO_BUILD_JOBS=2
+
+WORKDIR /src
+
+# Context is repo root (Cargo.toml + src/ at the root of the context)
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+# Explicit target for clarity when platform is linux/amd64.
+# rdkafka builds librdkafka + vendored OpenSSL from source — expect a long first build.
+RUN rustup target add x86_64-unknown-linux-gnu \
+    && cargo build --release --target x86_64-unknown-linux-gnu \
+    && mkdir -p /out \
+    && cp target/x86_64-unknown-linux-gnu/release/rakko /out/rakko \
+    && cp /out/rakko /out/rakko-linux-amd64 \
+    && chmod +x /out/rakko /out/rakko-linux-amd64 \
+    && (cd /out && sha256sum rakko rakko-linux-amd64 > SHA256SUMS) \
+    && ls -la /out \
+    && (command -v file >/dev/null && file /out/rakko-linux-amd64 || true) \
+    && (command -v ldd >/dev/null && ldd /out/rakko-linux-amd64 | tee /out/ldd.txt || true) \
+    && echo "==> auditing dynamic deps (expect glibc + libgcc_s only; no OpenSSL/librdkafka)" \
+    && if ldd /out/rakko-linux-amd64 2>/dev/null | grep -Eiq 'libssl|libcrypto|librdkafka|libz\.so'; then \
+         echo "error: binary has unexpected dynamic deps (vendoring failed):" >&2; \
+         ldd /out/rakko-linux-amd64 >&2; \
+         exit 1; \
+       fi \
+    && echo "dynamic-link audit passed"
+
+CMD ["cat", "/out/SHA256SUMS"]

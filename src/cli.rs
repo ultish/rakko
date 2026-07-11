@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use clap::Parser;
 
 #[derive(Debug, Parser)]
-#[command(name = "kaf-tui", about = "Terminal UI for Kafka cluster monitoring")]
+#[command(name = "rakko", about = "Terminal UI for Kafka cluster monitoring (ラッコ)")]
 pub struct Cli {
-    /// Override the config directory (defaults to ~/.config/kaf-tui).
+    /// Override the config directory (defaults to ~/.config/rakko).
     #[arg(long, value_name = "PATH")]
     pub config_dir: Option<PathBuf>,
 

@@ -3,9 +3,13 @@ mod cli;
 mod config;
 mod error;
 mod events;
+mod export;
+mod external_editor;
 mod kafka;
 mod raw_message;
 mod ring_buffer;
+mod serde_detect;
+mod text_field;
 mod ui;
 
 use std::io::Stdout;
@@ -20,7 +24,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 
-use app::{App, Screen};
+use app::{App, OffsetResetPhase, ProducerFocus, ProducerInputMode, ReplayPhase, Screen};
 use cli::Cli;
 use error::AppResult;
 use events::{Action, AppEvent, Command};
@@ -46,7 +50,7 @@ fn init_terminal() -> AppResult<Term> {
 /// corrupt the alternate screen.
 fn init_tracing(log_dir: &Path) -> AppResult<tracing_appender::non_blocking::WorkerGuard> {
     std::fs::create_dir_all(log_dir)?;
-    let file_appender = tracing_appender::rolling::never(log_dir, "kaf-tui.log");
+    let file_appender = tracing_appender::rolling::never(log_dir, "rakko.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
@@ -56,19 +60,253 @@ fn init_tracing(log_dir: &Path) -> AppResult<tracing_appender::non_blocking::Wor
     Ok(guard)
 }
 
+/// Producer screen hijacks the keyboard for text entry — meta actions use F-keys / Ctrl
+/// combos so ordinary characters (including `j`/`k`/`m`) type into the focused field.
+fn producer_key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Action::ForceQuit)
+        }
+        // `q` is a normal char in the producer (types into fields); use Ctrl-c to force-quit.
+        // From any other screen `q` still opens the quit dialog via key_to_action.
+        KeyCode::Esc => Some(Action::Back),
+        KeyCode::Tab => Some(Action::ProducerFocusNext),
+        KeyCode::F(2) => Some(Action::ProducerSubmit),
+        KeyCode::F(3) => Some(Action::ProducerToggleMode),
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Action::ProducerSubmit)
+        }
+        KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Action::ProducerToggleMode)
+        }
+        KeyCode::Enter => {
+            let state = app.producer.as_ref()?;
+            match state.mode {
+                ProducerInputMode::Inline => {
+                    if state.focus == ProducerFocus::Value {
+                        Some(Action::ProducerNewline)
+                    } else {
+                        Some(Action::ProducerFocusNext)
+                    }
+                }
+                ProducerInputMode::FilePath => {
+                    if state.focus == ProducerFocus::FilePath {
+                        Some(Action::ProducerLoadFile)
+                    } else {
+                        Some(Action::ProducerFocusNext)
+                    }
+                }
+                ProducerInputMode::ExternalEditor => Some(Action::ProducerOpenExternalEditor),
+            }
+        }
+        KeyCode::Backspace => Some(Action::ProducerBackspace),
+        KeyCode::Delete => Some(Action::ProducerDelete),
+        KeyCode::Left => Some(Action::ProducerCursorLeft),
+        KeyCode::Right => Some(Action::ProducerCursorRight),
+        KeyCode::Home => Some(Action::ProducerCursorHome),
+        KeyCode::End => Some(Action::ProducerCursorEnd),
+        KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            Some(Action::ProducerChar(c))
+        }
+        _ => None,
+    }
+}
+
 /// Translates a raw key press into an `Action`. Needs `app` (rather than just the key)
-/// because the topic-detail screen's filter-input mode hijacks nearly the whole keyboard
-/// (typed text, not navigation) — the mapping is context-dependent, not a fixed table.
+/// because several screens hijack the keyboard (filter input, offset-reset wizard).
 fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
     if key.kind != KeyEventKind::Press {
         return None;
     }
 
+    // Quit confirmation owns the keyboard while open (above splash and other hijacks).
+    if app.quit_confirm {
+        return match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            KeyCode::Char('y') | KeyCode::Enter => Some(Action::ConfirmQuit),
+            KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelQuit),
+            _ => None,
+        };
+    }
+
+    // Startup splash: any key dismisses (so the detailed otter doesn't trap the user).
+    if app.show_splash {
+        return match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            KeyCode::Char('q') => Some(Action::Quit),
+            _ => Some(Action::DismissSplash),
+        };
+    }
+
+    if app.screen == Screen::Producer {
+        return producer_key_to_action(key, app);
+    }
+
+    // Create-profile wizard owns the keyboard while open (profile picker overlay).
+    if app.profile_create.is_some() {
+        return match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            // `q` types into text fields; Esc still cancels (and quits if no profiles).
+            KeyCode::Esc => Some(Action::ProfileCreateCancel),
+            KeyCode::Enter => Some(Action::ProfileCreateSubmit),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some(Action::ProfileCreateFocusPrev)
+            }
+            KeyCode::BackTab => Some(Action::ProfileCreateFocusPrev),
+            KeyCode::Tab => Some(Action::ProfileCreateFocusNext),
+            KeyCode::Char('t') | KeyCode::Char(' ')
+                if app
+                    .profile_create
+                    .as_ref()
+                    .is_some_and(|s| s.focus == app::ProfileCreateFocus::Tls) =>
+            {
+                Some(Action::ProfileCreateToggleTls)
+            }
+            KeyCode::Backspace => Some(Action::ProfileCreateBackspace),
+            KeyCode::Delete => Some(Action::ProfileCreateDelete),
+            KeyCode::Left => Some(Action::ProfileCreateCursorLeft),
+            KeyCode::Right => Some(Action::ProfileCreateCursorRight),
+            KeyCode::Home => Some(Action::ProfileCreateCursorHome),
+            KeyCode::End => Some(Action::ProfileCreateCursorEnd),
+            KeyCode::Char(c)
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(Action::ProfileCreateChar(c))
+            }
+            _ => None,
+        };
+    }
+
+    if app.screen == Screen::ExportImport {
+        return match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            KeyCode::Char('q') => Some(Action::Quit),
+            KeyCode::Esc => Some(Action::Back),
+            KeyCode::Enter => Some(Action::ExportImportSubmit),
+            KeyCode::Tab => Some(Action::ExportImportFocusNext),
+            KeyCode::Backspace => Some(Action::ExportImportBackspace),
+            KeyCode::Delete => Some(Action::ExportImportDelete),
+            KeyCode::Left => Some(Action::ExportImportCursorLeft),
+            KeyCode::Right => Some(Action::ExportImportCursorRight),
+            KeyCode::Home => Some(Action::ExportImportCursorHome),
+            KeyCode::End => Some(Action::ExportImportCursorEnd),
+            KeyCode::Char(c)
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(Action::ExportImportChar(c))
+            }
+            _ => None,
+        };
+    }
+
+    // Offset-reset wizard takes over the keyboard while open.
+    if let Some(detail) = app.group_detail.as_ref() {
+        if let Some(phase) = &detail.reset_phase {
+            return match phase {
+                OffsetResetPhase::ChooseMode => match key.code {
+                    KeyCode::Char('q') => Some(Action::Quit),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        Some(Action::ForceQuit)
+                    }
+                    KeyCode::Char('e') => Some(Action::OffsetResetChooseEarliest),
+                    KeyCode::Char('l') => Some(Action::OffsetResetChooseLatest),
+                    KeyCode::Char('o') => Some(Action::OffsetResetChooseAbsolute),
+                    KeyCode::Char('t') => Some(Action::OffsetResetChooseTimestamp),
+                    KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelOffsetReset),
+                    _ => None,
+                },
+                OffsetResetPhase::Input { .. } => match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        Some(Action::ForceQuit)
+                    }
+                    KeyCode::Char(c) => Some(Action::FilterChar(c)),
+                    KeyCode::Backspace => Some(Action::FilterBackspace),
+                    KeyCode::Delete => Some(Action::FilterDelete),
+                    KeyCode::Left => Some(Action::FilterCursorLeft),
+                    KeyCode::Right => Some(Action::FilterCursorRight),
+                    KeyCode::Home => Some(Action::FilterCursorHome),
+                    KeyCode::End => Some(Action::FilterCursorEnd),
+                    KeyCode::Enter => Some(Action::Confirm),
+                    KeyCode::Esc => Some(Action::CancelOffsetReset),
+                    _ => None,
+                },
+                OffsetResetPhase::Confirm { .. } => match key.code {
+                    KeyCode::Char('q') => Some(Action::Quit),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        Some(Action::ForceQuit)
+                    }
+                    KeyCode::Char('y') | KeyCode::Enter => Some(Action::ConfirmOffsetReset),
+                    KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelOffsetReset),
+                    _ => None,
+                },
+            };
+        }
+    }
+
+    // Single-message replay wizard (topic detail).
+    if let Some(detail) = app.topic_detail.as_ref() {
+        if let Some(phase) = &detail.replay_phase {
+            return match phase {
+                ReplayPhase::Confirm { .. } => match key.code {
+                    KeyCode::Char('q') => Some(Action::Quit),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        Some(Action::ForceQuit)
+                    }
+                    KeyCode::Char('y') | KeyCode::Enter => Some(Action::ConfirmReplay),
+                    // `h` = add header (keep `a` as alias for older muscle memory).
+                    KeyCode::Char('h') | KeyCode::Char('a') => {
+                        Some(Action::ReplayWithHeaderAppend)
+                    }
+                    KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelReplay),
+                    _ => None,
+                },
+                ReplayPhase::HeaderInput { .. } => match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        Some(Action::ForceQuit)
+                    }
+                    KeyCode::Tab => Some(Action::ReplayHeaderFocusNext),
+                    KeyCode::Char(c)
+                        if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        Some(Action::FilterChar(c))
+                    }
+                    KeyCode::Backspace => Some(Action::FilterBackspace),
+                    KeyCode::Delete => Some(Action::FilterDelete),
+                    KeyCode::Left => Some(Action::FilterCursorLeft),
+                    KeyCode::Right => Some(Action::FilterCursorRight),
+                    KeyCode::Home => Some(Action::FilterCursorHome),
+                    KeyCode::End => Some(Action::FilterCursorEnd),
+                    KeyCode::Enter => Some(Action::Confirm),
+                    // Esc returns to the confirm dialog (where n/Esc can cancel fully).
+                    KeyCode::Esc => Some(Action::ReplayHeaderBack),
+                    _ => None,
+                },
+            };
+        }
+    }
+
     let filter_active = app.topic_detail.as_ref().is_some_and(|detail| detail.filter_active);
     if filter_active {
         return match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            // `q` in filter input types 'q'; use Ctrl-c to force-quit.
             KeyCode::Char(c) => Some(Action::FilterChar(c)),
             KeyCode::Backspace => Some(Action::FilterBackspace),
+            KeyCode::Delete => Some(Action::FilterDelete),
+            KeyCode::Left => Some(Action::FilterCursorLeft),
+            KeyCode::Right => Some(Action::FilterCursorRight),
+            KeyCode::Home => Some(Action::FilterCursorHome),
+            KeyCode::End => Some(Action::FilterCursorEnd),
             KeyCode::Enter => Some(Action::ApplyFilter),
             KeyCode::Esc => Some(Action::CancelFilterInput),
             _ => None,
@@ -78,27 +316,167 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
     let filter_applied = app.topic_detail.as_ref().is_some_and(|detail| detail.applied_filter.is_some());
 
     match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Action::ForceQuit)
+        }
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveSelectionUp),
         KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveSelectionDown),
         KeyCode::Enter => Some(Action::Confirm),
         KeyCode::Esc => Some(Action::Back),
         KeyCode::Tab | KeyCode::Char('s') => Some(Action::ToggleBrowseMode),
-        KeyCode::PageDown | KeyCode::Char('n') => Some(Action::PageForward),
+        // `n` is seek page-forward on topic detail only — profile picker uses `n` for new profile.
+        KeyCode::PageDown => Some(Action::PageForward),
+        KeyCode::Char('n') if app.screen == Screen::TopicDetail => Some(Action::PageForward),
+        KeyCode::Char('n') if app.screen == Screen::ProfilePicker => {
+            Some(Action::StartCreateProfile)
+        }
+        KeyCode::Char('e') if app.screen == Screen::ProfilePicker => {
+            Some(Action::StartEditProfile)
+        }
         KeyCode::PageUp | KeyCode::Char('p') => Some(Action::PageBackward),
         KeyCode::Char('/') => Some(Action::StartFilterInput),
         KeyCode::Char('c') if filter_applied => Some(Action::ClearFilter),
+        KeyCode::Char('g') if app.screen == Screen::TopicList => Some(Action::OpenGroups),
+        // Group detail: `x` starts offset-reset; `r`/`R` refresh lag (same as other screens).
+        KeyCode::Char('x') if app.screen == Screen::GroupDetail => Some(Action::StartOffsetReset),
+        KeyCode::Char('R') | KeyCode::Char('r')
+            if matches!(
+                app.screen,
+                Screen::TopicList
+                    | Screen::GroupList
+                    | Screen::GroupDetail
+                    | Screen::TopicDetail
+            ) =>
+        {
+            Some(Action::Refresh)
+        }
+        KeyCode::Char('w') if app.screen == Screen::TopicDetail => Some(Action::OpenProducer),
+        KeyCode::Char('y') if app.screen == Screen::TopicDetail => Some(Action::RequestReplay),
+        // `e` = selected/open message; `E` = all visible on the list.
+        KeyCode::Char('e') if app.screen == Screen::TopicDetail => Some(Action::OpenExport),
+        KeyCode::Char('E') if app.screen == Screen::TopicDetail => Some(Action::OpenExportAll),
+        KeyCode::Char('i') if app.screen == Screen::TopicDetail => Some(Action::OpenImport),
+        // `o` = order: toggle newest↑ / oldest↑ (offset-reset wizard hijacks keys when open).
+        KeyCode::Char('o') if app.screen == Screen::TopicDetail => Some(Action::ToggleMessageSort),
+        // Banner animation toggle — capital A avoids clashing with typed text on other screens
+        // (producer / filter already capture keys before this match).
+        KeyCode::Char('A') => Some(Action::ToggleBannerAnimation),
         _ => None,
     }
 }
 
 fn spawn_topic_load(profile: config::Profile, tx: mpsc::UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
+        // If the profile omits message_max_bytes, ask the broker once and pass the
+        // value back so the app can persist it. Profiles that already set a limit
+        // are left untouched.
+        let auto_message_max_bytes = if profile.message_max_bytes.is_none() {
+            match kafka::admin::fetch_broker_message_max_bytes(&profile).await {
+                Ok(Some(bytes)) => {
+                    tracing::info!(
+                        profile = %profile.name,
+                        bytes,
+                        "detected broker message.max.bytes"
+                    );
+                    Some((profile.name.clone(), bytes))
+                }
+                Ok(None) => {
+                    tracing::debug!(
+                        profile = %profile.name,
+                        "broker message.max.bytes missing or unparseable; leaving profile unset"
+                    );
+                    None
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        profile = %profile.name,
+                        error = %err,
+                        "failed to detect broker message.max.bytes; leaving profile unset"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let client = kafka::KafkaClient::new(profile);
         let event = match client.list_topics().await {
-            Ok(topics) => AppEvent::TopicsLoaded(topics),
+            Ok(topics) => AppEvent::TopicsLoaded {
+                topics,
+                auto_message_max_bytes,
+            },
             Err(err) => AppEvent::TopicsLoadFailed(err.to_string()),
+        };
+        let _ = tx.send(event);
+    });
+}
+
+fn spawn_group_load(profile: config::Profile, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let client = kafka::KafkaClient::new(profile);
+        let event = match client.list_groups().await {
+            Ok(groups) => AppEvent::GroupsLoaded(groups),
+            Err(err) => AppEvent::GroupsLoadFailed(err.to_string()),
+        };
+        let _ = tx.send(event);
+    });
+}
+
+fn spawn_group_detail_load(profile: config::Profile, group: String, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let client = kafka::KafkaClient::new(profile);
+        let event = match client.describe_group(&group).await {
+            Ok(detail) => AppEvent::GroupDetailLoaded(detail),
+            Err(err) => AppEvent::GroupDetailLoadFailed(err.to_string()),
+        };
+        let _ = tx.send(event);
+    });
+}
+
+fn spawn_offset_reset(
+    profile: config::Profile,
+    group: String,
+    target: kafka::group_offsets::OffsetResetTarget,
+    partitions: Vec<(String, i32)>,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        let client = kafka::KafkaClient::new(profile);
+        let event = match client.reset_group_offsets(&group, target, &partitions).await {
+            Ok(()) => AppEvent::OffsetResetSucceeded { group },
+            Err(err) => AppEvent::OffsetResetFailed(err.to_string()),
+        };
+        let _ = tx.send(event);
+    });
+}
+
+fn spawn_produce(
+    profile: config::Profile,
+    topic: String,
+    key: Option<Vec<u8>>,
+    value: Option<Vec<u8>>,
+    headers: Vec<(String, Vec<u8>)>,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        let client = kafka::KafkaClient::new(profile);
+        let event = match client.produce(&topic, key, value, headers).await {
+            Ok(()) => AppEvent::ProduceSucceeded,
+            Err(err) => AppEvent::ProduceFailed(err.to_string()),
+        };
+        let _ = tx.send(event);
+    });
+}
+
+fn spawn_load_file(path: String, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || std::fs::read_to_string(path)).await;
+        let event = match result {
+            Ok(Ok(content)) => AppEvent::FileLoaded { content },
+            Ok(Err(err)) => AppEvent::FileLoadFailed(err.to_string()),
+            Err(err) => AppEvent::FileLoadFailed(format!("task panicked: {err}")),
         };
         let _ = tx.send(event);
     });
@@ -117,6 +495,9 @@ fn stop_tail(tail_stop: &mut Option<watch::Sender<bool>>) {
 /// Executes a single `Command` returned from `App::update`, spawning whatever
 /// background task it implies. `tail_stop` is the event loop's local handle on the
 /// currently-running tail task's stop signal (there is never more than one at a time).
+///
+/// `RunExternalEditor` is **not** handled here — it needs the live terminal and is
+/// processed synchronously in the event loop (leave alt screen → editor → re-enter).
 fn handle_command(
     command: Command,
     tx: &mpsc::UnboundedSender<AppEvent>,
@@ -133,12 +514,145 @@ fn handle_command(
             tokio::spawn(kafka::consumer::run_tail(profile, topic, tx.clone(), stop_rx));
         }
         Command::StopTail => stop_tail(tail_stop),
-        Command::LoadSeekPage { profile, topic, partition, request } => {
+        Command::LoadSeekPage {
+            profile,
+            topic,
+            partition,
+            request,
+        } => {
             // One-shot; no cancellation tracking needed. Superseded results are ignored
             // by the reducer's topic-tag staleness check on `SeekPageLoaded`.
-            tokio::spawn(kafka::consumer::load_seek_page(profile, topic, partition, request, tx.clone()));
+            tokio::spawn(kafka::consumer::load_seek_page(
+                profile,
+                topic,
+                partition,
+                request,
+                tx.clone(),
+            ));
+        }
+        Command::LoadGroups(profile) => spawn_group_load(profile, tx.clone()),
+        Command::LoadGroupDetail { profile, group } => {
+            spawn_group_detail_load(profile, group, tx.clone())
+        }
+        Command::ResetGroupOffsets {
+            profile,
+            group,
+            target,
+            partitions,
+        } => spawn_offset_reset(profile, group, target, partitions, tx.clone()),
+        Command::ProduceMessage {
+            profile,
+            topic,
+            key,
+            value,
+            headers,
+        } => spawn_produce(profile, topic, key, value, headers, tx.clone()),
+        Command::LoadFileIntoProducer { path } => spawn_load_file(path, tx.clone()),
+        Command::RunExternalEditor { .. } => {
+            // Handled synchronously in the event loop — see `run_external_editor`.
+            tracing::warn!("RunExternalEditor reached handle_command; should be handled in run_loop");
+        }
+        Command::ExportMessages { path, messages } => {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let count = messages.len();
+                let event = match export::write_jsonl_messages(&path, &messages) {
+                    Ok(()) => AppEvent::ExportSucceeded { path, count },
+                    Err(err) => AppEvent::ExportFailed(err.to_string()),
+                };
+                let _ = tx.send(event);
+            });
+        }
+        Command::ImportMessages {
+            profile,
+            path,
+            target_topic,
+        } => {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let event = match import_jsonl_to_topic(profile, &path, &target_topic).await {
+                    Ok(count) => AppEvent::ImportSucceeded {
+                        count,
+                        topic: target_topic,
+                    },
+                    Err(err) => AppEvent::ImportFailed(err.to_string()),
+                };
+                let _ = tx.send(event);
+            });
+        }
+        Command::FetchSchema {
+            registry_url,
+            schema_id,
+        } => {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let client = match reqwest::Client::builder().build() {
+                    Ok(c) => c,
+                    Err(err) => {
+                        let _ = tx.send(AppEvent::SchemaLoadFailed {
+                            schema_id,
+                            message: format!("http client: {err}"),
+                        });
+                        return;
+                    }
+                };
+                let event =
+                    match kafka::schema_registry::fetch_schema_by_id(&client, &registry_url, schema_id)
+                        .await
+                    {
+                        Ok(schema) => AppEvent::SchemaLoaded { schema_id, schema },
+                        Err(err) => AppEvent::SchemaLoadFailed {
+                            schema_id,
+                            message: err.to_string(),
+                        },
+                    };
+                let _ = tx.send(event);
+            });
         }
     }
+}
+
+/// Stream a JSONL file and produce each message's raw bytes onto `target_topic`.
+async fn import_jsonl_to_topic(
+    profile: config::Profile,
+    path: &str,
+    target_topic: &str,
+) -> error::AppResult<usize> {
+    let mut reader = export::JsonlReader::open(path)?;
+    let mut count = 0usize;
+    while let Some(message) = reader.next_message()? {
+        kafka::producer::produce(
+            &profile,
+            target_topic,
+            message.key,
+            message.value,
+            message.headers,
+        )
+        .await?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Leave the TUI, run `$EDITOR` on a tempfile seeded with `initial`, restore the TUI,
+/// and apply the resulting `AppEvent` immediately.
+fn run_external_editor(terminal: &mut Term, app: &mut App, initial: String) -> AppResult<()> {
+    // Release the terminal so the editor can use the real tty. Do not clear the main
+    // screen buffer — only leave the alternate screen / raw mode.
+    disable_raw_mode()?;
+    execute!(std::io::stdout(), LeaveAlternateScreen)?;
+
+    let event = match external_editor::edit_in_external_editor(&initial) {
+        Ok(content) => AppEvent::ExternalEditorDone { content },
+        Err(err) => AppEvent::ExternalEditorFailed(err.to_string()),
+    };
+
+    enable_raw_mode()?;
+    execute!(std::io::stdout(), EnterAlternateScreen)?;
+    // Force a full redraw after re-entering the alternate screen.
+    terminal.clear()?;
+    let _ = app.apply_event(event);
+    Ok(())
 }
 
 #[tokio::main]
@@ -153,10 +667,10 @@ async fn main() -> AppResult<()> {
 
     // Held for the process lifetime: dropping it stops the non-blocking writer thread.
     let _tracing_guard = init_tracing(&config_dir)?;
-    tracing::info!("kaf-tui starting up, config path: {}", config_path.display());
+    tracing::info!("rakko starting up, config path: {}", config_path.display());
 
     let cfg = config::load(&config_path)?;
-    let mut app = App::new_with_profile(cfg, cli.profile.as_deref());
+    let mut app = App::new_with_profile(cfg, config_path.clone(), cli.profile.as_deref());
 
     let panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -194,6 +708,17 @@ async fn run_loop(
     // `App`) since it's a background-task handle, not UI state.
     let mut tail_stop: Option<watch::Sender<bool>> = None;
 
+    // Soft-refresh consumer-group lag while the group-detail screen is open.
+    let mut lag_refresh = tokio::time::interval(std::time::Duration::from_secs(3));
+    lag_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Skip the immediate first tick so we don't double-fetch right after opening a group.
+    lag_refresh.tick().await;
+
+    // Braille banner animation (~5 fps when enabled).
+    let mut banner_tick = tokio::time::interval(std::time::Duration::from_millis(200));
+    banner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    banner_tick.tick().await;
+
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
 
@@ -207,7 +732,11 @@ async fn run_loop(
                     Some(Ok(Event::Key(key))) => {
                         if let Some(action) = key_to_action(key, app) {
                             for command in app.update(action) {
-                                handle_command(command, tx, &mut tail_stop);
+                                if let Command::RunExternalEditor { initial } = command {
+                                    run_external_editor(terminal, app, initial)?;
+                                } else {
+                                    handle_command(command, tx, &mut tail_stop);
+                                }
                             }
                         }
                     }
@@ -218,7 +747,23 @@ async fn run_loop(
                 }
             }
             Some(event) = rx.recv() => {
-                app.apply_event(event);
+                let reload_group = matches!(&event, AppEvent::OffsetResetSucceeded { .. });
+                for command in app.apply_event(event) {
+                    handle_command(command, tx, &mut tail_stop);
+                }
+                if reload_group {
+                    if let Some(command) = app.reload_group_detail_command() {
+                        handle_command(command, tx, &mut tail_stop);
+                    }
+                }
+            }
+            _ = lag_refresh.tick() => {
+                for command in app.update(Action::AutoRefreshGroupDetail) {
+                    handle_command(command, tx, &mut tail_stop);
+                }
+            }
+            _ = banner_tick.tick(), if app.banner_animation => {
+                let _ = app.update(Action::BannerTick);
             }
         }
     }
