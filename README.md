@@ -194,6 +194,61 @@ Offset reset only works reliably when the group has **no active members** — th
 - Single-message replay: original raw bytes → same topic
 - Export/import: JSONL with base64 raw bytes as source of truth
 
+## Architecture
+
+Elm-style: input and background I/O both flow into a single `App::update` reducer;
+rendering is a pure function of `App` state. Background Kafka/HTTP calls never run on
+the render loop — see [PLAN.md](./PLAN.md) for the full design rationale.
+
+```mermaid
+flowchart LR
+    subgraph Terminal
+        KB[Keyboard / crossterm EventStream]
+    end
+
+    KB -->|Event::Key| K2A[key_to_action]
+    K2A -->|Action| UPD[App::update]
+
+    subgraph "Elm-style core (app.rs)"
+        UPD -->|mutates| STATE[(App state\nScreen, ProfileConfig,\nBrowseMode, Producer, ...)]
+        EVT[App::apply_event] -->|mutates| STATE
+        STATE --> UPD
+        STATE --> EVT
+    end
+
+    UPD -->|Command| DISP[handle_command]
+    EVT -->|Command| DISP
+
+    DISP -->|tokio::spawn / spawn_blocking| BG[Background tasks]
+
+    subgraph "kafka/ (spawn_blocking, sync rdkafka calls)"
+        ADMIN[admin.rs\ntopics]
+        CONS[consumer.rs\ntail + seek]
+        PROD[producer.rs]
+        GRP[group_offsets.rs\nlist / lag / reset]
+        SR[schema_registry.rs\nAvro schema fetch]
+    end
+
+    BG --> ADMIN & CONS & PROD & GRP & SR
+    ADMIN & CONS & PROD & GRP & SR -->|AppEvent via mpsc channel| EVT
+
+    STATE --> DRAW[ui::draw]
+    DRAW --> SCREEN[Terminal frame]
+
+    CFG[(config.toml\n~/.config/rakko)] -.load/save.-> STATE
+    RAW[[RawMessage\nbyte-preserving]] -.-> CONS
+    RAW -.-> PROD
+    RAW -.-> EXPORT[export.rs\nJSONL]
+```
+
+Everything that talks to Kafka or the network runs inside `kafka/` on a
+`tokio::task::spawn_blocking` (rdkafka's client is sync), reporting results back as an
+`AppEvent` over an `mpsc` channel; the render loop's `tokio::select!` merges that
+channel with terminal input and a couple of timer ticks (group-lag auto-refresh,
+banner animation). `RawMessage` (`src/raw_message.rs`) is the one byte-preserving type
+threaded through browsing, replay, and export/import, so replayed/exported messages
+are never a decode-then-re-encode round trip.
+
 ## Airgap / RHEL 9 binary
 
 Build a glibc-compatible **linux/amd64** binary (Rocky 9 builder) with statically vendored librdkafka + OpenSSL:
