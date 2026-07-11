@@ -209,11 +209,13 @@ flowchart LR
     KB -->|Event::Key| K2A[key_to_action]
     K2A -->|Action| UPD[App::update]
 
-    subgraph "Elm-style core (app.rs)"
+    subgraph "Elm-style core (app/)"
         UPD -->|mutates| STATE[(App state\nScreen, ProfileConfig,\nBrowseMode, Producer, ...)]
         EVT[App::apply_event] -->|mutates| STATE
         STATE --> UPD
         STATE --> EVT
+        UPD -->|dispatches into| SCREENS["per-screen handlers\napp/{producer,topic_detail,\ngroup_detail,export_import,\nprofile_create}.rs"]
+        SCREENS -->|mutates| STATE
     end
 
     UPD -->|Command| DISP[handle_command]

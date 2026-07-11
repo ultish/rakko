@@ -28,9 +28,14 @@ architecture decisions change, don't let it silently drift from the code.
   bytes, never a decoded-then-re-encoded value — see PLAN.md.
 - `src/serde_detect.rs` — Avro (magic byte + schema registry) / JSON / raw
   auto-detect. Decode-only, never mutates `RawMessage`.
-- `src/app.rs` / `src/events.rs` — the Elm-style `App`/`Action`/`AppEvent`/`Command`
-  reducer. Background Kafka/HTTP I/O is never called inline on the render loop — it's
-  spawned and reports back via `AppEvent` (see `src/main.rs`'s event loop).
+- `src/app/` / `src/events.rs` — the Elm-style `App`/`Action`/`AppEvent`/`Command`
+  reducer. `mod.rs` holds the `App` struct and the cross-cutting dispatchers
+  (`update`, `confirm`, `back`, `apply_event`); per-screen state and handlers live in
+  `app/{producer,topic_detail,group_detail,export_import,profile_create}.rs`
+  (mirroring `ui/screens/`), re-exported from `mod.rs` so external call sites use
+  `crate::app::X` unchanged. Tests live in `app/tests.rs`. Background Kafka/HTTP I/O
+  is never called inline on the render loop — it's spawned and reports back via
+  `AppEvent` (see `src/main.rs`'s event loop).
 - `src/ui/` — ratatui screens/widgets.
 - `Dockerfile.rhel9` + `scripts/build-tui-rhel9.sh` — airgap Linux/amd64 release
   build (Rocky 9 builder, vendored librdkafka + OpenSSL; needs `cmake`+`perl` beyond

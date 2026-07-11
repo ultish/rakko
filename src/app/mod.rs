@@ -1,0 +1,1305 @@
+//! Elm-style `App` struct + `Screen` enum + `Action`/`AppEvent` reducer.
+//!
+//! Per-screen state and its handler methods live in submodules (mirroring
+//! `ui/screens/`); this file keeps the cross-cutting dispatchers (`update`,
+//! `confirm`, `back`, `apply_event`) that route into them, plus construction and
+//! the handful of genuinely shared helpers (schema-fetch dedup, the filter /
+//! offset-reset-input text editing shared between two screens).
+
+mod export_import;
+mod group_detail;
+mod producer;
+mod profile_create;
+mod topic_detail;
+
+#[cfg(test)]
+mod tests;
+
+pub use export_import::{ExportImportFocus, ExportImportMode, ExportImportState};
+pub use group_detail::{GroupDetailState, OffsetResetPhase, ResetInputKind};
+pub use producer::{ProducerFocus, ProducerInputMode, ProducerState};
+pub use profile_create::{ProfileCreateFocus, ProfileCreateState};
+pub use topic_detail::{BrowseMode, MessageSort, MessageViewState, ReplayPhase, TopicDetailState};
+
+use export_import::ExportScope;
+use group_detail::parse_reset_input;
+use topic_detail::PageDirection;
+
+use std::collections::HashSet;
+
+use std::path::PathBuf;
+
+use crate::config::{self, Config, Profile};
+use crate::events::{Action, AppEvent, Command};
+use crate::kafka::admin::TopicSummary;
+use crate::kafka::group_offsets::{GroupSummary, OffsetResetTarget};
+use crate::kafka::schema_registry::SchemaRegistry;
+use crate::ring_buffer::RingBuffer;
+use crate::serde_detect::{detect_format, DetectedFormat};
+
+const TAIL_BUFFER_CAPACITY: usize = 500;
+const SEEK_PAGE_SIZE: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    ProfilePicker,
+    TopicList,
+    TopicDetail,
+    GroupList,
+    GroupDetail,
+    Producer,
+    ExportImport,
+}
+
+pub struct App {
+    pub screen: Screen,
+    pub config: Config,
+    /// Selection cursor for the profile picker.
+    pub selected_profile_index: usize,
+    pub topics: Vec<TopicSummary>,
+    /// Selection cursor for the topic list.
+    pub topic_list_selected_index: usize,
+    pub topic_detail: Option<TopicDetailState>,
+    pub groups: Vec<GroupSummary>,
+    pub group_list_selected_index: usize,
+    pub group_detail: Option<GroupDetailState>,
+    pub producer: Option<ProducerState>,
+    pub export_import: Option<ExportImportState>,
+    /// Schema Registry client for the active profile (if `schema_registry_url` is set).
+    /// Cache is filled by background `FetchSchema` commands as Avro messages are seen.
+    pub schema_registry: Option<SchemaRegistry>,
+    /// Schema ids with an in-flight HTTP fetch (dedupe concurrent MessageArrived).
+    schema_fetch_inflight: HashSet<u32>,
+    /// Schema ids that failed to fetch; not retried until the profile reconnects.
+    schema_fetch_failed: HashSet<u32>,
+    /// Path to `config.toml` (used when creating/saving profiles from the TUI).
+    pub config_path: PathBuf,
+    /// First-run / "n" create-profile form (overlays the profile picker).
+    pub profile_create: Option<ProfileCreateState>,
+    /// Transient status text: connect errors, load errors, "loading..." etc.
+    pub status_message: Option<String>,
+    pub should_quit: bool,
+    /// When true, a centered "quit?" dialog is open (`q`); y/Enter exits, n/Esc cancels.
+    pub quit_confirm: bool,
+    pub active_profile: Option<Profile>,
+    /// Braille stream banner animation frame index.
+    pub banner_frame: usize,
+    /// When false, stream glyph is static (`A` toggles).
+    pub banner_animation: bool,
+    /// Full-screen detailed otter splash — shown once at startup until dismissed.
+    pub show_splash: bool,
+}
+
+impl App {
+    pub fn new(config: Config, config_path: PathBuf) -> Self {
+        let empty = config.profiles.is_empty();
+        Self {
+            screen: Screen::ProfilePicker,
+            config,
+            selected_profile_index: 0,
+            topics: Vec::new(),
+            topic_list_selected_index: 0,
+            topic_detail: None,
+            groups: Vec::new(),
+            group_list_selected_index: 0,
+            group_detail: None,
+            producer: None,
+            export_import: None,
+            schema_registry: None,
+            schema_fetch_inflight: HashSet::new(),
+            schema_fetch_failed: HashSet::new(),
+            config_path,
+            // Auto-open create form when there are no profiles yet (after splash).
+            profile_create: if empty {
+                Some(ProfileCreateState::new())
+            } else {
+                None
+            },
+            status_message: None,
+            should_quit: false,
+            quit_confirm: false,
+            active_profile: None,
+            banner_frame: 0,
+            banner_animation: true,
+            show_splash: true,
+        }
+    }
+
+    /// Wires up `--profile <name>`: if the name matches a configured profile, starts
+    /// directly on `TopicList` with it active. Construction stays synchronous (no I/O
+    /// here) — the caller in main.rs is responsible for spawning the actual topic-load
+    /// task when it sees `screen == TopicList` right after this returns.
+    pub fn new_with_profile(
+        config: Config,
+        config_path: PathBuf,
+        profile_name: Option<&str>,
+    ) -> Self {
+        let mut app = Self::new(config, config_path);
+        if let Some(name) = profile_name {
+            if let Some(profile) = app.config.find_profile(name).cloned() {
+                app.attach_profile(profile);
+                app.screen = Screen::TopicList;
+                app.profile_create = None;
+            }
+        }
+        app
+    }
+
+    /// Activates a profile and (re)builds the Schema Registry client from its URL.
+    fn attach_profile(&mut self, profile: Profile) {
+        self.schema_fetch_inflight.clear();
+        self.schema_fetch_failed.clear();
+        self.status_message = None;
+        self.schema_registry = match profile.schema_registry_url.as_deref() {
+            Some(url) => match SchemaRegistry::new(url) {
+                Ok(sr) => {
+                    tracing::info!("schema registry attached: {url}");
+                    Some(sr)
+                }
+                Err(err) => {
+                    tracing::warn!("schema registry init failed for {url}: {err}");
+                    self.status_message =
+                        Some(format!("schema registry unavailable: {err}"));
+                    None
+                }
+            },
+            None => None,
+        };
+        self.active_profile = Some(profile);
+    }
+
+    /// Persist broker-detected `message.max.bytes` onto a profile that still has
+    /// `message_max_bytes = None`. Returns a short status string for the UI.
+    ///
+    /// Profiles that already set a limit are left alone (explicit config wins).
+    fn apply_auto_message_max_bytes(
+        &mut self,
+        profile_name: &str,
+        bytes: u32,
+    ) -> Option<String> {
+        let profile = self
+            .config
+            .profiles
+            .iter_mut()
+            .find(|p| p.name == profile_name)?;
+        if profile.message_max_bytes.is_some() {
+            return None;
+        }
+        profile.message_max_bytes = Some(bytes);
+        if let Err(err) = config::save(&self.config_path, &self.config) {
+            // Roll back so we never claim a save that failed.
+            if let Some(p) = self
+                .config
+                .profiles
+                .iter_mut()
+                .find(|p| p.name == profile_name)
+            {
+                p.message_max_bytes = None;
+            }
+            return Some(format!(
+                "detected message.max.bytes={bytes} but failed to save config: {err}"
+            ));
+        }
+        if let Some(active) = self.active_profile.as_mut() {
+            if active.name == profile_name {
+                active.message_max_bytes = Some(bytes);
+            }
+        }
+        Some(format!(
+            "detected message.max.bytes={bytes} from broker; saved to profile '{profile_name}'"
+        ))
+    }
+
+    /// If key/value bytes look like Confluent Avro and the schema is not cached, queue a fetch.
+    fn queue_schema_fetch_for_bytes(&mut self, bytes: Option<&[u8]>) -> Option<Command> {
+        let bytes = bytes?;
+        let DetectedFormat::Avro { schema_id } = detect_format(bytes) else {
+            return None;
+        };
+        self.queue_schema_fetch(schema_id)
+    }
+
+    fn queue_schema_fetch(&mut self, schema_id: u32) -> Option<Command> {
+        self.schema_registry.as_ref()?;
+        if self
+            .schema_registry
+            .as_ref()
+            .is_some_and(|sr| sr.cached_schema(schema_id).is_some())
+        {
+            return None;
+        }
+        if self.schema_fetch_inflight.contains(&schema_id)
+            || self.schema_fetch_failed.contains(&schema_id)
+        {
+            return None;
+        }
+        let registry_url = self
+            .active_profile
+            .as_ref()?
+            .schema_registry_url
+            .clone()?;
+        self.schema_fetch_inflight.insert(schema_id);
+        Some(Command::FetchSchema {
+            registry_url,
+            schema_id,
+        })
+    }
+
+    /// Elm-style reducer. Stays synchronous and non-blocking; any background I/O the
+    /// action implies is communicated back via the returned `Command`s rather than
+    /// performed here.
+    pub fn update(&mut self, action: Action) -> Vec<Command> {
+        match action {
+            Action::Quit => {
+                // `q` always goes through the confirm dialog (even over other overlays).
+                self.quit_confirm = true;
+                vec![]
+            }
+            Action::ForceQuit => {
+                self.should_quit = true;
+                vec![]
+            }
+            Action::ConfirmQuit => {
+                self.quit_confirm = false;
+                self.should_quit = true;
+                vec![]
+            }
+            Action::CancelQuit => {
+                self.quit_confirm = false;
+                vec![]
+            }
+            Action::MoveSelectionUp => {
+                self.move_selection(-1);
+                vec![]
+            }
+            Action::MoveSelectionDown => {
+                self.move_selection(1);
+                vec![]
+            }
+            Action::Confirm => self.confirm(),
+            Action::Back => self.back(),
+            Action::ToggleBrowseMode => {
+                if self.topic_detail.as_ref().is_some_and(|d| d.message_view.is_some()) {
+                    return vec![];
+                }
+                self.toggle_browse_mode()
+            }
+            Action::ToggleMessageSort => {
+                self.toggle_message_sort();
+                vec![]
+            }
+            Action::PageForward => {
+                if self.scroll_message_view(10) {
+                    return vec![];
+                }
+                self.request_seek_page(PageDirection::Forward)
+            }
+            Action::PageBackward => {
+                if self.scroll_message_view(-10) {
+                    return vec![];
+                }
+                self.request_seek_page(PageDirection::Backward)
+            }
+            Action::StartFilterInput => {
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    if detail.message_view.is_some() {
+                        return vec![];
+                    }
+                    detail.filter_input = detail.applied_filter.clone().unwrap_or_default();
+                    detail.filter_cursor = detail.filter_input.chars().count();
+                    detail.filter_active = true;
+                }
+                vec![]
+            }
+            Action::FilterChar(c) => {
+                self.text_insert(c);
+                vec![]
+            }
+            Action::FilterBackspace => {
+                self.text_backspace();
+                vec![]
+            }
+            Action::FilterDelete => {
+                self.text_delete();
+                vec![]
+            }
+            Action::FilterCursorLeft => {
+                self.text_cursor_left();
+                vec![]
+            }
+            Action::FilterCursorRight => {
+                self.text_cursor_right();
+                vec![]
+            }
+            Action::FilterCursorHome => {
+                self.text_cursor_home();
+                vec![]
+            }
+            Action::FilterCursorEnd => {
+                self.text_cursor_end();
+                vec![]
+            }
+            Action::ApplyFilter => {
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    if detail.filter_active {
+                        detail.applied_filter = if detail.filter_input.is_empty() {
+                            None
+                        } else {
+                            Some(detail.filter_input.clone())
+                        };
+                        detail.filter_active = false;
+                        detail.selected_index = 0;
+                    }
+                }
+                vec![]
+            }
+            Action::CancelFilterInput => {
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    detail.filter_active = false;
+                    detail.filter_input.clear();
+                }
+                vec![]
+            }
+            Action::ClearFilter => {
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    detail.applied_filter = None;
+                    detail.filter_input.clear();
+                    detail.selected_index = 0;
+                }
+                vec![]
+            }
+            Action::OpenGroups => self.open_groups(),
+            Action::StartOffsetReset => self.start_offset_reset(),
+            Action::OffsetResetChooseEarliest => {
+                self.choose_offset_reset_target(OffsetResetTarget::Earliest)
+            }
+            Action::OffsetResetChooseLatest => {
+                self.choose_offset_reset_target(OffsetResetTarget::Latest)
+            }
+            Action::OffsetResetChooseAbsolute => self.begin_offset_reset_input(ResetInputKind::AbsoluteOffset),
+            Action::OffsetResetChooseTimestamp => {
+                self.begin_offset_reset_input(ResetInputKind::TimestampMillis)
+            }
+            Action::ConfirmOffsetReset => self.confirm_offset_reset(),
+            Action::CancelOffsetReset => {
+                if let Some(detail) = self.group_detail.as_mut() {
+                    detail.reset_phase = None;
+                }
+                vec![]
+            }
+            Action::OpenProducer => self.open_producer(),
+            Action::ProducerToggleMode => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.mode = state.mode.next();
+                    state.normalize_focus();
+                }
+                vec![]
+            }
+            Action::ProducerFocusNext => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.focus_next();
+                }
+                vec![]
+            }
+            Action::ProducerChar(c) => {
+                self.producer_insert_char(c);
+                vec![]
+            }
+            Action::ProducerBackspace => {
+                self.producer_backspace();
+                vec![]
+            }
+            Action::ProducerNewline => {
+                if let Some(state) = self.producer.as_mut() {
+                    // Multi-line key/value editing (inline); key also accepts newlines in
+                    // file-path / external-editor modes when the key field is focused.
+                    let allow = matches!(
+                        (state.mode, state.focus),
+                        (ProducerInputMode::Inline, ProducerFocus::Key | ProducerFocus::Value)
+                            | (_, ProducerFocus::Key)
+                    );
+                    if allow {
+                        state.insert_char('\n');
+                    }
+                }
+                vec![]
+            }
+            Action::ProducerDelete => {
+                if let Some(state) = self.producer.as_mut() {
+                    if state.focus == ProducerFocus::Value
+                        && state.mode != ProducerInputMode::Inline
+                    {
+                        return vec![];
+                    }
+                    state.delete_forward();
+                }
+                vec![]
+            }
+            Action::ProducerCursorLeft => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.cursor_left();
+                }
+                vec![]
+            }
+            Action::ProducerCursorRight => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.cursor_right();
+                }
+                vec![]
+            }
+            Action::ProducerCursorHome => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.cursor_home();
+                }
+                vec![]
+            }
+            Action::ProducerCursorEnd => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.cursor_end();
+                }
+                vec![]
+            }
+            Action::ProducerSubmit => self.producer_submit(),
+            Action::ProducerLoadFile => self.producer_load_file(),
+            Action::ProducerOpenExternalEditor => self.producer_open_external_editor(),
+            Action::RequestReplay => self.request_replay(),
+            Action::ConfirmReplay => self.confirm_replay(),
+            Action::ReplayEdit => self.open_replay_edit(),
+            Action::CancelReplay => {
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    detail.replay_phase = None;
+                }
+                vec![]
+            }
+            Action::OpenExport => self.open_export(ExportScope::Selected),
+            Action::OpenExportAll => self.open_export(ExportScope::AllVisible),
+            Action::OpenImport => self.open_import(),
+            Action::ExportImportChar(c) => {
+                if let Some(state) = self.export_import.as_mut() {
+                    state.insert_char(c);
+                }
+                vec![]
+            }
+            Action::ExportImportBackspace => {
+                if let Some(state) = self.export_import.as_mut() {
+                    state.backspace();
+                }
+                vec![]
+            }
+            Action::ExportImportDelete => {
+                if let Some(state) = self.export_import.as_mut() {
+                    state.delete_forward();
+                }
+                vec![]
+            }
+            Action::ExportImportCursorLeft => {
+                if let Some(state) = self.export_import.as_mut() {
+                    state.cursor_left();
+                }
+                vec![]
+            }
+            Action::ExportImportCursorRight => {
+                if let Some(state) = self.export_import.as_mut() {
+                    state.cursor_right();
+                }
+                vec![]
+            }
+            Action::ExportImportCursorHome => {
+                if let Some(state) = self.export_import.as_mut() {
+                    state.cursor_home();
+                }
+                vec![]
+            }
+            Action::ExportImportCursorEnd => {
+                if let Some(state) = self.export_import.as_mut() {
+                    state.cursor_end();
+                }
+                vec![]
+            }
+            Action::ExportImportSubmit => self.export_import_submit(),
+            Action::ExportImportFocusNext => {
+                if let Some(state) = self.export_import.as_mut() {
+                    if state.mode == ExportImportMode::Import {
+                        let next = match state.focus {
+                            ExportImportFocus::Path => ExportImportFocus::TargetTopic,
+                            ExportImportFocus::TargetTopic => ExportImportFocus::Path,
+                        };
+                        state.set_focus(next);
+                    }
+                }
+                vec![]
+            }
+            Action::Refresh => self.refresh(true),
+            Action::AutoRefreshGroupDetail => self.refresh_group_detail_if_idle(false),
+            Action::StartCreateProfile => {
+                if self.screen == Screen::ProfilePicker {
+                    self.profile_create = Some(ProfileCreateState::new());
+                }
+                vec![]
+            }
+            Action::StartEditProfile => {
+                if self.screen == Screen::ProfilePicker && self.profile_create.is_none() {
+                    if let Some(profile) = self.config.profiles.get(self.selected_profile_index) {
+                        self.profile_create = Some(ProfileCreateState::from_profile(
+                            profile,
+                            self.selected_profile_index,
+                        ));
+                    } else {
+                        self.status_message = Some("no profile selected to edit".into());
+                    }
+                }
+                vec![]
+            }
+            Action::ProfileCreateChar(c) => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.error = None;
+                    state.insert_char(c);
+                }
+                vec![]
+            }
+            Action::ProfileCreateBackspace => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.error = None;
+                    state.backspace();
+                }
+                vec![]
+            }
+            Action::ProfileCreateDelete => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.error = None;
+                    state.delete_forward();
+                }
+                vec![]
+            }
+            Action::ProfileCreateCursorLeft => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.cursor_left();
+                }
+                vec![]
+            }
+            Action::ProfileCreateCursorRight => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.cursor_right();
+                }
+                vec![]
+            }
+            Action::ProfileCreateCursorHome => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.cursor_home();
+                }
+                vec![]
+            }
+            Action::ProfileCreateCursorEnd => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.cursor_end();
+                }
+                vec![]
+            }
+            Action::ProfileCreateFocusNext => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.focus_next();
+                }
+                vec![]
+            }
+            Action::ProfileCreateFocusPrev => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    state.focus_prev();
+                }
+                vec![]
+            }
+            Action::ProfileCreateToggleTls => {
+                if let Some(state) = self.profile_create.as_mut() {
+                    if state.focus == ProfileCreateFocus::Tls {
+                        state.tls_enabled = !state.tls_enabled;
+                    }
+                }
+                vec![]
+            }
+            Action::ProfileCreateSubmit => self.submit_profile_create(),
+            Action::ProfileCreateCancel => {
+                // If there are still no profiles, cancel quits rather than leaving an
+                // empty unusable picker (user can re-run to create again).
+                if self.config.profiles.is_empty() {
+                    self.should_quit = true;
+                }
+                self.profile_create = None;
+                vec![]
+            }
+            Action::BannerTick => {
+                if self.banner_animation {
+                    self.banner_frame = self.banner_frame.wrapping_add(1);
+                }
+                vec![]
+            }
+            Action::ToggleBannerAnimation => {
+                self.banner_animation = !self.banner_animation;
+                if !self.banner_animation {
+                    self.banner_frame = 0;
+                }
+                self.status_message = Some(if self.banner_animation {
+                    "banner animation on".into()
+                } else {
+                    "banner animation off".into()
+                });
+                vec![]
+            }
+            Action::DismissSplash => {
+                self.show_splash = false;
+                vec![]
+            }
+        }
+    }
+
+    fn move_selection(&mut self, delta: i64) {
+        // Freeze selection while wizards own the keyboard.
+        if self.profile_create.is_some() {
+            return;
+        }
+        if self
+            .group_detail
+            .as_ref()
+            .is_some_and(|d| d.reset_phase.is_some())
+        {
+            return;
+        }
+        if self
+            .topic_detail
+            .as_ref()
+            .is_some_and(|d| d.replay_phase.is_some())
+        {
+            return;
+        }
+        // Message inspector owns j/k for scrolling while open.
+        if self.scroll_message_view(delta) {
+            return;
+        }
+        match self.screen {
+            Screen::ProfilePicker => {
+                Self::clamp_index(
+                    &mut self.selected_profile_index,
+                    self.config.profiles.len(),
+                    delta,
+                );
+            }
+            Screen::TopicList => {
+                Self::clamp_index(&mut self.topic_list_selected_index, self.topics.len(), delta);
+            }
+            Screen::TopicDetail => {
+                let len = self
+                    .topic_detail
+                    .as_ref()
+                    .map(|detail| {
+                        detail
+                            .visible_messages_with_registry(self.schema_registry.as_ref())
+                            .len()
+                    })
+                    .unwrap_or(0);
+                if let Some(detail) = &mut self.topic_detail {
+                    Self::clamp_index(&mut detail.selected_index, len, delta);
+                }
+            }
+            Screen::GroupList => {
+                Self::clamp_index(&mut self.group_list_selected_index, self.groups.len(), delta);
+            }
+            Screen::GroupDetail => {
+                if let Some(detail) = &mut self.group_detail {
+                    Self::clamp_index(&mut detail.selected_index, detail.lags.len(), delta);
+                }
+            }
+            Screen::Producer | Screen::ExportImport => {
+                // Text-entry screens; j/k are characters there.
+            }
+        }
+    }
+
+    /// Bounds-checked cursor move: clamps to `[0, len-1]`, never wraps, never panics on
+    /// an empty list (clamps at 0).
+    fn clamp_index(index: &mut usize, len: usize, delta: i64) {
+        if len == 0 {
+            *index = 0;
+            return;
+        }
+        let max = (len - 1) as i64;
+        let moved = (*index as i64 + delta).clamp(0, max);
+        *index = moved as usize;
+    }
+
+    fn confirm(&mut self) -> Vec<Command> {
+        // Create-profile form: Enter saves.
+        if self.profile_create.is_some() {
+            return self.submit_profile_create();
+        }
+        // Replay wizard: Enter confirms raw same-topic resend.
+        if let Some(detail) = self.topic_detail.as_ref() {
+            if matches!(detail.replay_phase, Some(ReplayPhase::Confirm { .. })) {
+                return self.confirm_replay();
+            }
+        }
+
+        // Offset-reset wizard intercepts Enter at Confirm or Input phases.
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(phase) = detail.reset_phase.clone() {
+                return match phase {
+                    OffsetResetPhase::Input {
+                        target_kind,
+                        input,
+                        ..
+                    } => {
+                        match parse_reset_input(target_kind, &input) {
+                            Ok(target) => {
+                                detail.reset_phase = Some(OffsetResetPhase::Confirm { target });
+                                vec![]
+                            }
+                            Err(message) => {
+                                self.status_message = Some(message);
+                                vec![]
+                            }
+                        }
+                    }
+                    OffsetResetPhase::Confirm { .. } => self.confirm_offset_reset(),
+                    OffsetResetPhase::ChooseMode => vec![],
+                };
+            }
+        }
+
+        match self.screen {
+            Screen::ProfilePicker => {
+                let Some(profile) = self.config.profiles.get(self.selected_profile_index).cloned()
+                else {
+                    // Nothing to select on an empty profile list: safe no-op.
+                    return vec![];
+                };
+                self.attach_profile(profile.clone());
+                self.screen = Screen::TopicList;
+                self.topics.clear();
+                self.topic_list_selected_index = 0;
+                // attach_profile may already set a schema-registry error status.
+                if self.status_message.is_none() {
+                    self.status_message = Some("loading topics...".to_string());
+                }
+                vec![Command::LoadTopics(profile)]
+            }
+            Screen::TopicList => {
+                let Some(topic) = self.topics.get(self.topic_list_selected_index).cloned() else {
+                    return vec![];
+                };
+                let Some(profile) = self.active_profile.clone() else {
+                    return vec![];
+                };
+                self.topic_detail = Some(TopicDetailState {
+                    topic: topic.name.clone(),
+                    partition_count: topic.partition_count,
+                    mode: BrowseMode::Tail(RingBuffer::new(TAIL_BUFFER_CAPACITY)),
+                    selected_index: 0,
+                    filter_input: String::new(),
+                    filter_cursor: 0,
+                    filter_active: false,
+                    applied_filter: None,
+                    replay_phase: None,
+                    message_view: None,
+                    sort: MessageSort::default(),
+                });
+                self.screen = Screen::TopicDetail;
+                vec![Command::StartTail { profile, topic: topic.name }]
+            }
+            Screen::TopicDetail => self.open_or_close_message_view(),
+            Screen::GroupList => {
+                let Some(group) = self.groups.get(self.group_list_selected_index).cloned() else {
+                    return vec![];
+                };
+                let Some(profile) = self.active_profile.clone() else {
+                    return vec![];
+                };
+                self.group_detail = None;
+                self.screen = Screen::GroupDetail;
+                self.status_message = Some(format!("loading group {}...", group.name));
+                vec![Command::LoadGroupDetail {
+                    profile,
+                    group: group.name,
+                }]
+            }
+            Screen::GroupDetail => vec![],
+            Screen::Producer => vec![],
+            Screen::ExportImport => self.export_import_submit(),
+        }
+    }
+
+    fn back(&mut self) -> Vec<Command> {
+        // Create-profile overlay only lives on the profile picker.
+        if self.profile_create.is_some() && self.screen == Screen::ProfilePicker {
+            return self.update(Action::ProfileCreateCancel);
+        }
+        // Cancel replay wizard before leaving topic detail.
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.replay_phase.is_some() {
+                detail.replay_phase = None;
+                return vec![];
+            }
+        }
+        // Cancel an open offset-reset wizard before leaving the screen.
+        if let Some(detail) = self.group_detail.as_mut() {
+            if detail.reset_phase.is_some() {
+                detail.reset_phase = None;
+                return vec![];
+            }
+        }
+
+        match self.screen {
+            Screen::ProfilePicker => vec![],
+            Screen::TopicList => {
+                self.screen = Screen::ProfilePicker;
+                self.status_message = None;
+                vec![]
+            }
+            Screen::TopicDetail => {
+                // Esc closes the message inspector first; a second Esc leaves the topic.
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    if detail.message_view.is_some() {
+                        detail.message_view = None;
+                        return vec![];
+                    }
+                }
+                self.screen = Screen::TopicList;
+                self.topic_detail = None;
+                // Always safe to emit: main.rs's tail-task abort is a no-op if seek mode
+                // (no continuous task) was active when Back was pressed.
+                vec![Command::StopTail]
+            }
+            Screen::GroupList => {
+                self.screen = Screen::TopicList;
+                self.status_message = None;
+                vec![]
+            }
+            Screen::GroupDetail => {
+                self.screen = Screen::GroupList;
+                self.group_detail = None;
+                self.status_message = None;
+                vec![]
+            }
+            Screen::Producer => {
+                self.screen = Screen::TopicDetail;
+                self.producer = None;
+                self.status_message = None;
+                // Resume tail if topic detail is still in Tail mode (we stopped it on open).
+                if let (Some(profile), Some(detail)) =
+                    (self.active_profile.clone(), self.topic_detail.as_ref())
+                {
+                    if matches!(detail.mode, BrowseMode::Tail(_)) {
+                        return vec![Command::StartTail {
+                            profile,
+                            topic: detail.topic.clone(),
+                        }];
+                    }
+                }
+                vec![]
+            }
+            Screen::ExportImport => {
+                self.screen = Screen::TopicDetail;
+                self.export_import = None;
+                self.status_message = None;
+                if let (Some(profile), Some(detail)) =
+                    (self.active_profile.clone(), self.topic_detail.as_ref())
+                {
+                    if matches!(detail.mode, BrowseMode::Tail(_)) {
+                        return vec![Command::StartTail {
+                            profile,
+                            topic: detail.topic.clone(),
+                        }];
+                    }
+                }
+                vec![]
+            }
+        }
+    }
+
+    /// Active text entry surface for shared cursor editing (filter / offset-reset).
+    fn text_insert(&mut self, c: char) {
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(OffsetResetPhase::Input { input, cursor, .. }) = detail.reset_phase.as_mut()
+            {
+                if c.is_ascii_digit() || c == '-' {
+                    crate::text_field::insert_char(input, cursor, c);
+                }
+                return;
+            }
+        }
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.filter_active {
+                crate::text_field::insert_char(
+                    &mut detail.filter_input,
+                    &mut detail.filter_cursor,
+                    c,
+                );
+            }
+        }
+    }
+
+    fn text_backspace(&mut self) {
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(OffsetResetPhase::Input { input, cursor, .. }) = detail.reset_phase.as_mut()
+            {
+                crate::text_field::backspace(input, cursor);
+                return;
+            }
+        }
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.filter_active {
+                crate::text_field::backspace(&mut detail.filter_input, &mut detail.filter_cursor);
+            }
+        }
+    }
+
+    fn text_delete(&mut self) {
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(OffsetResetPhase::Input { input, cursor, .. }) = detail.reset_phase.as_mut()
+            {
+                crate::text_field::delete_forward(input, cursor);
+                return;
+            }
+        }
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.filter_active {
+                crate::text_field::delete_forward(
+                    &mut detail.filter_input,
+                    &mut detail.filter_cursor,
+                );
+            }
+        }
+    }
+
+    fn text_cursor_left(&mut self) {
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(OffsetResetPhase::Input { cursor, .. }) = detail.reset_phase.as_mut() {
+                crate::text_field::cursor_left(cursor);
+                return;
+            }
+        }
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.filter_active {
+                crate::text_field::cursor_left(&mut detail.filter_cursor);
+            }
+        }
+    }
+
+    fn text_cursor_right(&mut self) {
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(OffsetResetPhase::Input { input, cursor, .. }) = detail.reset_phase.as_mut()
+            {
+                crate::text_field::cursor_right(input, cursor);
+                return;
+            }
+        }
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.filter_active {
+                crate::text_field::cursor_right(&detail.filter_input, &mut detail.filter_cursor);
+            }
+        }
+    }
+
+    fn text_cursor_home(&mut self) {
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(OffsetResetPhase::Input { cursor, .. }) = detail.reset_phase.as_mut() {
+                crate::text_field::cursor_home(cursor);
+                return;
+            }
+        }
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.filter_active {
+                crate::text_field::cursor_home(&mut detail.filter_cursor);
+            }
+        }
+    }
+
+    fn text_cursor_end(&mut self) {
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(OffsetResetPhase::Input { input, cursor, .. }) = detail.reset_phase.as_mut()
+            {
+                crate::text_field::cursor_end(input, cursor);
+                return;
+            }
+        }
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.filter_active {
+                crate::text_field::cursor_end(&detail.filter_input, &mut detail.filter_cursor);
+            }
+        }
+    }
+
+    /// Manual (`R`) or contextual refresh for the active screen.
+    /// `announce` controls whether a brief "refreshing..." status is shown.
+    fn refresh(&mut self, announce: bool) -> Vec<Command> {
+        match self.screen {
+            Screen::TopicList => {
+                let Some(profile) = self.active_profile.clone() else {
+                    return vec![];
+                };
+                if announce {
+                    self.status_message = Some("refreshing topics...".into());
+                }
+                vec![Command::LoadTopics(profile)]
+            }
+            Screen::GroupList => {
+                let Some(profile) = self.active_profile.clone() else {
+                    return vec![];
+                };
+                if announce {
+                    self.status_message = Some("refreshing groups...".into());
+                }
+                vec![Command::LoadGroups(profile)]
+            }
+            Screen::GroupDetail => self.refresh_group_detail_if_idle(announce),
+            Screen::TopicDetail => self.refresh_topic_detail(announce),
+            _ => vec![],
+        }
+    }
+
+    /// Applies a background event. May return `FetchSchema` commands when Avro messages
+    /// are seen and the schema is not yet cached.
+    pub fn apply_event(&mut self, event: AppEvent) -> Vec<Command> {
+        match event {
+            AppEvent::TopicsLoaded {
+                topics,
+                auto_message_max_bytes,
+            } => {
+                self.topics = topics;
+                // Preserve selection across refresh; clamp if the list shrank.
+                if self.topics.is_empty() {
+                    self.topic_list_selected_index = 0;
+                } else {
+                    self.topic_list_selected_index = self
+                        .topic_list_selected_index
+                        .min(self.topics.len() - 1);
+                }
+
+                let mut detect_status = None;
+                if let Some((profile_name, bytes)) = auto_message_max_bytes {
+                    detect_status = self.apply_auto_message_max_bytes(&profile_name, bytes);
+                }
+
+                // Don't clobber a schema-registry init warning.
+                if self
+                    .status_message
+                    .as_deref()
+                    .is_some_and(|s| s.contains("schema registry"))
+                {
+                    // keep warning
+                } else if let Some(msg) = detect_status {
+                    self.status_message = Some(msg);
+                } else {
+                    self.status_message = None;
+                }
+                vec![]
+            }
+            AppEvent::TopicsLoadFailed(message) => {
+                self.status_message = Some(format!("failed to load topics: {message}"));
+                vec![]
+            }
+            AppEvent::MessageArrived {
+                topic,
+                partition,
+                message,
+            } => {
+                let mut commands = Vec::new();
+                if let Some(cmd) = self.queue_schema_fetch_for_bytes(message.key.as_deref()) {
+                    commands.push(cmd);
+                }
+                if let Some(cmd) = self.queue_schema_fetch_for_bytes(message.value.as_deref()) {
+                    commands.push(cmd);
+                }
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    if detail.topic == topic {
+                        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+                            // Prefer the event tag if it ever diverges from the payload.
+                            let mut message = message;
+                            message.partition = partition;
+                            buffer.push(message);
+                        }
+                        // else: stale arrival from a just-aborted tail task racing the
+                        // switch to seek mode - silently dropped.
+                    }
+                }
+                commands
+            }
+            AppEvent::SeekPageLoaded { topic, messages, meta } => {
+                let mut commands = Vec::new();
+                for message in &messages {
+                    if let Some(cmd) = self.queue_schema_fetch_for_bytes(message.key.as_deref()) {
+                        commands.push(cmd);
+                    }
+                    if let Some(cmd) = self.queue_schema_fetch_for_bytes(message.value.as_deref()) {
+                        commands.push(cmd);
+                    }
+                }
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    if detail.topic == topic {
+                        if let BrowseMode::Seek(state) = &mut detail.mode {
+                            if state.partition == meta.partition {
+                                state.messages = messages;
+                                state.page_start_offset = meta.page_start_offset;
+                                state.at_beginning = meta.at_beginning;
+                                state.at_end = meta.at_end;
+                                state.low_watermark = meta.low_watermark;
+                                state.high_watermark = meta.high_watermark;
+                                detail.selected_index = 0;
+                                // Clear stale "refreshing page..." once data lands.
+                                if self
+                                    .status_message
+                                    .as_deref()
+                                    .is_some_and(|s| s.starts_with("refreshing"))
+                                {
+                                    self.status_message = None;
+                                }
+                            }
+                        }
+                    }
+                }
+                commands
+            }
+            AppEvent::BrowseFailed(message) => {
+                self.status_message = Some(format!("browse error: {message}"));
+                vec![]
+            }
+            AppEvent::GroupsLoaded(groups) => {
+                self.groups = groups;
+                if self.groups.is_empty() {
+                    self.group_list_selected_index = 0;
+                } else {
+                    self.group_list_selected_index = self
+                        .group_list_selected_index
+                        .min(self.groups.len() - 1);
+                }
+                self.status_message = None;
+                vec![]
+            }
+            AppEvent::GroupsLoadFailed(message) => {
+                self.status_message = Some(format!("failed to load groups: {message}"));
+                vec![]
+            }
+            AppEvent::GroupDetailLoaded(detail) => {
+                if self.screen == Screen::GroupDetail {
+                    let has_active_members = detail.has_active_members();
+                    let total_lag = detail.total_lag();
+                    // Keep cursor + any in-progress offset-reset wizard across soft refresh.
+                    let (prev_selected, prev_reset) = self
+                        .group_detail
+                        .as_ref()
+                        .map(|d| (d.selected_index, d.reset_phase.clone()))
+                        .unwrap_or((0, None));
+                    let lag_len = detail.lags.len();
+                    let selected_index = if lag_len == 0 {
+                        0
+                    } else {
+                        prev_selected.min(lag_len - 1)
+                    };
+                    self.group_detail = Some(GroupDetailState {
+                        name: detail.name,
+                        state: detail.state,
+                        has_active_members,
+                        total_lag,
+                        members: detail.members,
+                        lags: detail.lags,
+                        selected_index,
+                        reset_phase: prev_reset,
+                    });
+                    if !self
+                        .status_message
+                        .as_deref()
+                        .is_some_and(|s| s.contains("schema"))
+                    {
+                        self.status_message = None;
+                    }
+                }
+                vec![]
+            }
+            AppEvent::GroupDetailLoadFailed(message) => {
+                self.status_message = Some(format!("failed to load group: {message}"));
+                vec![]
+            }
+            AppEvent::OffsetResetSucceeded { group } => {
+                self.status_message = Some(format!("offsets reset for {group}"));
+                vec![]
+            }
+            AppEvent::OffsetResetFailed(message) => {
+                self.status_message = Some(format!("offset reset failed: {message}"));
+                vec![]
+            }
+            AppEvent::ProduceSucceeded => {
+                self.status_message = Some("message produced".into());
+                vec![]
+            }
+            AppEvent::ProduceFailed(message) => {
+                self.status_message = Some(format!("produce failed: {message}"));
+                vec![]
+            }
+            AppEvent::FileLoaded { content } => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.value_input = content;
+                    self.status_message = Some("file loaded into value".into());
+                }
+                vec![]
+            }
+            AppEvent::FileLoadFailed(message) => {
+                self.status_message = Some(format!("file load failed: {message}"));
+                vec![]
+            }
+            AppEvent::ExternalEditorDone { content } => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.value_input = content;
+                    self.status_message = Some("editor closed — value updated".into());
+                }
+                vec![]
+            }
+            AppEvent::ExternalEditorFailed(message) => {
+                self.status_message = Some(format!("external editor failed: {message}"));
+                vec![]
+            }
+            AppEvent::ExportSucceeded { path, count } => {
+                self.status_message = Some(format!("exported {count} message(s) to {path}"));
+                vec![]
+            }
+            AppEvent::ExportFailed(message) => {
+                self.status_message = Some(format!("export failed: {message}"));
+                vec![]
+            }
+            AppEvent::ImportSucceeded { count, topic } => {
+                self.status_message = Some(format!("imported {count} message(s) into {topic}"));
+                vec![]
+            }
+            AppEvent::ImportFailed(message) => {
+                self.status_message = Some(format!("import failed: {message}"));
+                vec![]
+            }
+            AppEvent::SchemaLoaded { schema_id, schema } => {
+                self.schema_fetch_inflight.remove(&schema_id);
+                if let Some(sr) = self.schema_registry.as_mut() {
+                    sr.insert_schema(schema_id, schema);
+                    tracing::info!("schema id {schema_id} cached ({} total)", sr.cache_len());
+                }
+                // Quiet status once decode works; clear fetch-related noise.
+                if self
+                    .status_message
+                    .as_deref()
+                    .is_some_and(|s| s.contains("schema"))
+                {
+                    self.status_message = None;
+                }
+                vec![]
+            }
+            AppEvent::SchemaLoadFailed { schema_id, message } => {
+                self.schema_fetch_inflight.remove(&schema_id);
+                self.schema_fetch_failed.insert(schema_id);
+                self.status_message =
+                    Some(format!("schema id {schema_id} fetch failed: {message}"));
+                tracing::warn!("schema id {schema_id} fetch failed: {message}");
+                vec![]
+            }
+        }
+    }
+
+    /// After a successful offset reset, re-fetch group detail so the lag table updates.
+    pub fn reload_group_detail_command(&self) -> Option<Command> {
+        let profile = self.active_profile.clone()?;
+        let group = self.group_detail.as_ref()?.name.clone();
+        Some(Command::LoadGroupDetail { profile, group })
+    }
+}

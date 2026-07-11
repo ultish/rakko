@@ -78,7 +78,11 @@ src/
   export.rs                            # streaming JSONL writer/reader
   ring_buffer.rs                        # bounded VecDeque<RawMessage>, tail-mode only
   events.rs                              # AppEvent (background -> UI), Action (UI -> app)
-  app.rs                                  # App struct, Screen enum, update(Action) reducer
+  app/
+    mod.rs                                 # App struct, Screen enum, cross-cutting update/confirm/back/apply_event dispatch
+    producer.rs, topic_detail.rs, group_detail.rs, export_import.rs, profile_create.rs
+                                             # per-screen state + handler methods (mirrors ui/screens/), re-exported from mod.rs
+    tests.rs                                # all App reducer tests
   ui/
     mod.rs                                 # draw(frame, &App) dispatch
     theme.rs
