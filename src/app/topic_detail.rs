@@ -1,6 +1,10 @@
 //! Message browser: tail/seek browsing modes, filter, sort, the message inspector, and
 //! the single-message replay wizard.
 
+use std::collections::BTreeSet;
+
+use serde_json::Value;
+
 use super::producer::{ProducerFocus, ProducerState};
 use super::{App, Screen, SEEK_PAGE_SIZE, TAIL_BUFFER_CAPACITY};
 use crate::events::{Command, SeekPageRequest};
@@ -76,6 +80,19 @@ pub struct MessageViewState {
     pub scroll: usize,
 }
 
+/// Tab-completion state for the query-filter dialog: a cycle through candidate root
+/// words or path segments (e.g. `events`/`house`/`tags` after typing `value.`),
+/// sourced from whatever's actually present on the currently-visible page. Persists
+/// across repeated Tab presses so each one advances to the next candidate; any other
+/// edit to the query text invalidates it (see the `text_*` helpers in `app/mod.rs`).
+pub struct QueryFilterCompletion {
+    /// Input text before the token being completed.
+    pub prefix: String,
+    /// Sorted, deduped candidate values for the token (root words or path segments).
+    pub candidates: Vec<String>,
+    pub index: usize,
+}
+
 pub struct TopicDetailState {
     pub topic: String,
     pub partition_count: usize,
@@ -94,6 +111,9 @@ pub struct TopicDetailState {
     pub query_filter_active: bool,
     /// Toggled by Ctrl-h while the query-filter dialog is open — shows syntax/examples.
     pub query_filter_help_visible: bool,
+    /// Set by `Action::QueryFilterAutocomplete` (Tab) when there's more than one
+    /// candidate at the cursor; `None` otherwise (including "no dialog open").
+    pub query_filter_completion: Option<QueryFilterCompletion>,
     pub applied_query_filter: Option<crate::query_filter::QueryFilter>,
     pub replay_phase: Option<ReplayPhase>,
     pub message_view: Option<MessageViewState>,
@@ -195,6 +215,166 @@ fn query_filter_matches(
         .as_deref()
         .and_then(|v| crate::serde_detect::decode_json_value(v, registry));
     query.matches(key.as_ref(), value.as_ref())
+}
+
+/// Child field names reachable from `value` at `path`, transparently fanning out over
+/// arrays exactly like `query_filter::path_matches` does when *evaluating* a path —
+/// so what's offered here always matches what would actually work if typed. `path`
+/// empty at an object yields that object's own keys (the completion candidates);
+/// arrays never consume a path segment; leaves have no children.
+fn candidate_children(value: &Value, path: &[String]) -> BTreeSet<String> {
+    match value {
+        Value::Array(items) => {
+            let mut out = BTreeSet::new();
+            for item in items {
+                out.extend(candidate_children(item, path));
+            }
+            out
+        }
+        Value::Object(map) => match path.split_first() {
+            Some((head, rest)) => map
+                .get(head)
+                .map(|next| candidate_children(next, rest))
+                .unwrap_or_default(),
+            None => map.keys().cloned().collect(),
+        },
+        _leaf => BTreeSet::new(),
+    }
+}
+
+/// What a trailing path-like token (see `trailing_path_token`) is asking to complete.
+enum CompletionTarget {
+    /// Still typing the root word itself (`val` → `key`/`value`).
+    Root,
+    /// Completing one path segment under `root`, `path_so_far` deep, with `partial`
+    /// typed so far for the segment being completed (may be empty, e.g. right after
+    /// a trailing `.`).
+    Path {
+        root: &'static str,
+        path_so_far: Vec<String>,
+        partial: String,
+    },
+}
+
+/// The path-like token at the very end of `input` (letters/digits/underscore/dot) —
+/// e.g. `"value.hou"` out of `"key.x = 1 AND value.hou"`. Completion only ever looks
+/// at the end of the input (see `Action::QueryFilterAutocomplete`'s cursor-at-end
+/// check), so this doesn't need to know about the cursor at all.
+fn trailing_path_token(input: &str) -> &str {
+    let is_path_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+    match input.char_indices().rev().find(|(_, c)| !is_path_char(*c)) {
+        Some((i, c)) => &input[i + c.len_utf8()..],
+        None => input,
+    }
+}
+
+/// Splits a trailing token into what it's completing. `None` means "not a key/value
+/// path at all" (an empty token, or a root word that isn't a prefix of `key`/`value`)
+/// — Tab is a no-op in that case.
+fn classify_token(token: &str) -> Option<CompletionTarget> {
+    if token.is_empty() {
+        return None;
+    }
+    match token.split_once('.') {
+        None => Some(CompletionTarget::Root),
+        Some((root, rest)) => {
+            let root = match root {
+                "key" => "key",
+                "value" => "value",
+                _ => return None,
+            };
+            let mut segments: Vec<String> = rest.split('.').map(str::to_string).collect();
+            let partial = segments.pop().unwrap_or_default();
+            Some(CompletionTarget::Path { root, path_so_far: segments, partial })
+        }
+    }
+}
+
+impl App {
+    /// Tab in the query-filter dialog. Continues an in-flight cycle (see
+    /// `QueryFilterCompletion`) if the input still matches what was last inserted, or
+    /// starts a fresh one from the trailing path token. A single unambiguous candidate
+    /// is applied immediately with no cycle armed; zero candidates is a no-op.
+    pub(super) fn query_filter_autocomplete(&mut self) {
+        let registry = self.schema_registry.as_ref();
+        let Some(detail) = self.topic_detail.as_mut() else { return };
+        if !detail.query_filter_active {
+            return;
+        }
+        // Only complete while typing at the end — mid-string completion would need to
+        // reason about the token around the cursor, not just the tail of the input.
+        if detail.query_filter_cursor != detail.query_filter_input.chars().count() {
+            return;
+        }
+
+        if let Some(completion) = &detail.query_filter_completion {
+            let expected = format!("{}{}", completion.prefix, completion.candidates[completion.index]);
+            if detail.query_filter_input == expected {
+                let next = (completion.index + 1) % completion.candidates.len();
+                detail.query_filter_input =
+                    format!("{}{}", completion.prefix, completion.candidates[next]);
+                detail.query_filter_cursor = detail.query_filter_input.chars().count();
+                detail.query_filter_completion.as_mut().unwrap().index = next;
+                return;
+            }
+        }
+
+        let token = trailing_path_token(&detail.query_filter_input);
+        let Some(target) = classify_token(token) else {
+            detail.query_filter_completion = None;
+            return;
+        };
+        // Text before the whole trailing token — NOT necessarily what gets kept: for a
+        // path target, only the last (partial) segment is replaced, so "value.house."
+        // stays and only "o" in "value.house.o" is swapped out.
+        let token_start = detail.query_filter_input.len() - token.len();
+        let outer_prefix = &detail.query_filter_input[..token_start];
+
+        let (prefix, candidates): (String, Vec<String>) = match &target {
+            CompletionTarget::Root => {
+                let candidates = ["key", "value"]
+                    .into_iter()
+                    .filter(|r| r.starts_with(token))
+                    .map(str::to_string)
+                    .collect();
+                (outer_prefix.to_string(), candidates)
+            }
+            CompletionTarget::Path { root, path_so_far, partial } => {
+                let mut set = BTreeSet::new();
+                for message in detail.visible_messages_with_registry(registry) {
+                    let bytes = if *root == "key" { message.key.as_deref() } else { message.value.as_deref() };
+                    let Some(decoded) =
+                        bytes.and_then(|b| crate::serde_detect::decode_json_value(b, registry))
+                    else {
+                        continue;
+                    };
+                    set.extend(candidate_children(&decoded, path_so_far));
+                }
+                let candidates =
+                    set.into_iter().filter(|c| c.starts_with(partial.as_str())).collect();
+                let mut prefix = format!("{outer_prefix}{root}.");
+                for segment in path_so_far {
+                    prefix.push_str(segment);
+                    prefix.push('.');
+                }
+                (prefix, candidates)
+            }
+        };
+
+        match candidates.len() {
+            0 => detail.query_filter_completion = None,
+            1 => {
+                detail.query_filter_input = format!("{prefix}{}", candidates[0]);
+                detail.query_filter_cursor = detail.query_filter_input.chars().count();
+                detail.query_filter_completion = None;
+            }
+            _ => {
+                detail.query_filter_input = format!("{prefix}{}", candidates[0]);
+                detail.query_filter_cursor = detail.query_filter_input.chars().count();
+                detail.query_filter_completion = Some(QueryFilterCompletion { prefix, candidates, index: 0 });
+            }
+        }
+    }
 }
 
 pub(super) enum PageDirection {

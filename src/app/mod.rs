@@ -469,6 +469,7 @@ impl App {
                             detail.query_filter_cursor = detail.query_filter_input.chars().count();
                             detail.query_filter_active = true;
                             detail.query_filter_help_visible = false;
+                            detail.query_filter_completion = None;
                         }
                     }
                 }
@@ -480,6 +481,10 @@ impl App {
                         detail.query_filter_help_visible = !detail.query_filter_help_visible;
                     }
                 }
+                vec![]
+            }
+            Action::QueryFilterAutocomplete => {
+                self.query_filter_autocomplete();
                 vec![]
             }
             Action::FilterChar(c) => {
@@ -1086,6 +1091,7 @@ impl App {
                     query_filter_cursor: 0,
                     query_filter_active: false,
                     query_filter_help_visible: false,
+                    query_filter_completion: None,
                     applied_query_filter: None,
                     replay_phase: None,
                     message_view: None,
@@ -1242,6 +1248,7 @@ impl App {
                 return;
             }
             if detail.query_filter_active {
+                detail.query_filter_completion = None;
                 crate::text_field::insert_char(
                     &mut detail.query_filter_input,
                     &mut detail.query_filter_cursor,
@@ -1281,6 +1288,7 @@ impl App {
                 return;
             }
             if detail.query_filter_active {
+                detail.query_filter_completion = None;
                 crate::text_field::backspace(
                     &mut detail.query_filter_input,
                     &mut detail.query_filter_cursor,
@@ -1320,6 +1328,7 @@ impl App {
                 return;
             }
             if detail.query_filter_active {
+                detail.query_filter_completion = None;
                 crate::text_field::delete_forward(
                     &mut detail.query_filter_input,
                     &mut detail.query_filter_cursor,
@@ -1355,6 +1364,7 @@ impl App {
                 return;
             }
             if detail.query_filter_active {
+                detail.query_filter_completion = None;
                 crate::text_field::cursor_left(&mut detail.query_filter_cursor);
                 return;
             }
@@ -1382,6 +1392,7 @@ impl App {
                 return;
             }
             if detail.query_filter_active {
+                detail.query_filter_completion = None;
                 crate::text_field::cursor_right(
                     &detail.query_filter_input,
                     &mut detail.query_filter_cursor,
@@ -1417,6 +1428,7 @@ impl App {
                 return;
             }
             if detail.query_filter_active {
+                detail.query_filter_completion = None;
                 crate::text_field::cursor_home(&mut detail.query_filter_cursor);
                 return;
             }
@@ -1444,6 +1456,7 @@ impl App {
                 return;
             }
             if detail.query_filter_active {
+                detail.query_filter_completion = None;
                 crate::text_field::cursor_end(
                     &detail.query_filter_input,
                     &mut detail.query_filter_cursor,

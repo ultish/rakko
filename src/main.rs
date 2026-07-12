@@ -294,6 +294,7 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
             KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::ToggleQueryFilterHelp)
             }
+            KeyCode::Tab => Some(Action::QueryFilterAutocomplete),
             KeyCode::Char(c) => Some(Action::FilterChar(c)),
             KeyCode::Backspace => Some(Action::FilterBackspace),
             KeyCode::Delete => Some(Action::FilterDelete),

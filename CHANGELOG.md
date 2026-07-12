@@ -11,6 +11,13 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- Tab-completion in the advanced query filter dialog: completes `key`/`value`, then
+  cycles through field names actually present on the current page (`value.` shows
+  every top-level field; keep tabbing to go deeper, e.g. `value.house.` → `owner` /
+  `price` / `rooms`). Shows the full candidate list with the current pick highlighted.
+
 ## [0.5.0] - 2026-07-12
 
 ### Added

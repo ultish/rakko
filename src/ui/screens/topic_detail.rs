@@ -118,6 +118,8 @@ fn render_filter_input(frame: &mut Frame, area: Rect, detail: &TopicDetailState)
 // plain ASCII either way, this is purely a readability hedge against that rendering.
 const QUERY_FILTER_HELP: &str = "\
 Fields:   key.<path>   value.<path>   (dot-separated, any nesting depth)
+Complete: Tab — completes key/value, then cycles field names found on the current
+          page (value. shows every top-level field; keep tabbing to go deeper)
 Ops:      =  equals        != not equals
           >  greater than  <  less than
           >= greater/equal <= less/equal      (>,<,>=,<= need a numeric value)
@@ -140,11 +142,11 @@ fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetai
     let dialog = if detail.query_filter_help_visible {
         centered_rect(80, 70, area)
     } else {
-        centered_rect(80, 20, area)
+        centered_rect(80, 25, area)
     };
     frame.render_widget(Clear, dialog);
 
-    let mut constraints = vec![Constraint::Length(3), Constraint::Length(1)];
+    let mut constraints = vec![Constraint::Length(3), Constraint::Length(1), Constraint::Length(1)];
     if detail.query_filter_help_visible {
         constraints.push(Constraint::Min(1));
     }
@@ -169,20 +171,36 @@ fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetai
         .block(Block::default().borders(Borders::ALL));
     frame.render_widget(input, inner[0]);
 
+    if let Some(completion) = &detail.query_filter_completion {
+        let options: Vec<String> = completion
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| if i == completion.index { format!("[{c}]") } else { c.clone() })
+            .collect();
+        frame.render_widget(
+            Paragraph::new(format!("Tab to cycle: {}", options.join(" | ")))
+                .style(STATUS_STYLE)
+                .wrap(Wrap { trim: true }),
+            inner[1],
+        );
+    }
+
     let help_hint = if detail.query_filter_help_visible {
         "Ctrl-h: hide help"
     } else {
         "Ctrl-h: show syntax & examples"
     };
     frame.render_widget(
-        Paragraph::new(format!("Enter: apply   Esc: cancel   {help_hint}")).style(STATUS_STYLE),
-        inner[1],
+        Paragraph::new(format!("Enter: apply   Esc: cancel   Tab: complete   {help_hint}"))
+            .style(STATUS_STYLE),
+        inner[2],
     );
 
     if detail.query_filter_help_visible {
         frame.render_widget(
             Paragraph::new(QUERY_FILTER_HELP).wrap(Wrap { trim: false }),
-            inner[2],
+            inner[3],
         );
     }
 }

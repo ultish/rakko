@@ -155,6 +155,11 @@ pub enum Action {
     ApplyQueryFilter,
     /// Toggles the syntax/examples help panel within the query-filter dialog (`Ctrl-h`).
     ToggleQueryFilterHelp,
+    /// Tab in the query-filter dialog: completes the root word (`val` → `value`) or,
+    /// with multiple candidates (`value.` → `events`/`house`/`tags`), inserts the first
+    /// one and arms cycling — repeated Tab advances through the rest. No-op unless the
+    /// cursor is at the end of the input.
+    QueryFilterAutocomplete,
     /// Jump directly to Topics/Groups/Brokers from any list-level screen (the sole
     /// navigation mechanism between top-level views — see the persistent switcher bar).
     SwitchToTopics,

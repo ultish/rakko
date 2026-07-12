@@ -621,6 +621,7 @@ fn app_in_topic_detail(topic_name: &str, partition_count: usize) -> App {
         query_filter_cursor: 0,
         query_filter_active: false,
         query_filter_help_visible: false,
+        query_filter_completion: None,
         applied_query_filter: None,
         replay_phase: None,
         message_view: None,
@@ -1004,6 +1005,113 @@ fn substring_and_query_filters_and_combine() {
     let visible = detail.visible_messages();
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].value.as_deref(), Some("shipped".as_bytes()));
+}
+
+/// Types `text` into the query filter one char at a time (as `key_to_action` would),
+/// leaving the wizard open and the cursor at the end.
+fn type_query_filter(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.update(Action::FilterChar(c));
+    }
+}
+
+#[test]
+fn query_filter_autocomplete_completes_root_word() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::StartQueryFilterInput);
+    type_query_filter(&mut app, "val");
+    app.update(Action::QueryFilterAutocomplete);
+    let detail = app.topic_detail.as_ref().unwrap();
+    assert_eq!(detail.query_filter_input, "value");
+    assert_eq!(detail.query_filter_cursor, 5);
+    assert!(detail.query_filter_completion.is_none(), "single candidate shouldn't arm cycling");
+}
+
+#[test]
+fn query_filter_autocomplete_cycles_multiple_path_candidates() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message(
+                "{}",
+                r#"{"house":{"owner":"jxhui"},"tags":["urgent"],"events":[]}"#,
+            ));
+        }
+    }
+    app.update(Action::StartQueryFilterInput);
+    type_query_filter(&mut app, "value.");
+    app.update(Action::QueryFilterAutocomplete);
+    // Candidates are sorted: events, house, tags.
+    assert_eq!(app.topic_detail.as_ref().unwrap().query_filter_input, "value.events");
+    app.update(Action::QueryFilterAutocomplete);
+    assert_eq!(app.topic_detail.as_ref().unwrap().query_filter_input, "value.house");
+    app.update(Action::QueryFilterAutocomplete);
+    assert_eq!(app.topic_detail.as_ref().unwrap().query_filter_input, "value.tags");
+    // Wraps back around.
+    app.update(Action::QueryFilterAutocomplete);
+    assert_eq!(app.topic_detail.as_ref().unwrap().query_filter_input, "value.events");
+}
+
+#[test]
+fn query_filter_autocomplete_descends_into_nested_objects() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("{}", r#"{"house":{"owner":"jxhui","rooms":4}}"#));
+        }
+    }
+    app.update(Action::StartQueryFilterInput);
+    type_query_filter(&mut app, "value.house.o");
+    app.update(Action::QueryFilterAutocomplete);
+    let detail = app.topic_detail.as_ref().unwrap();
+    assert_eq!(detail.query_filter_input, "value.house.owner");
+    assert!(detail.query_filter_completion.is_none(), "unique match under a partial segment");
+}
+
+#[test]
+fn query_filter_autocomplete_typing_after_a_cycle_step_invalidates_it() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("{}", r#"{"house":{},"tags":[]}"#));
+        }
+    }
+    app.update(Action::StartQueryFilterInput);
+    type_query_filter(&mut app, "value.");
+    app.update(Action::QueryFilterAutocomplete); // -> "value.house"
+    app.update(Action::FilterBackspace); // user edits -> "value.hous"; cycle must not resume blindly
+    app.update(Action::QueryFilterAutocomplete);
+    assert_eq!(app.topic_detail.as_ref().unwrap().query_filter_input, "value.house");
+}
+
+#[test]
+fn query_filter_autocomplete_arrays_fan_out_without_an_index_segment() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message(
+                "{}",
+                r#"{"events":[{"type":"purchase","amount":1},{"type":"refund","amount":2}]}"#,
+            ));
+        }
+    }
+    app.update(Action::StartQueryFilterInput);
+    type_query_filter(&mut app, "value.events.");
+    app.update(Action::QueryFilterAutocomplete);
+    // "amount" sorts before "type" — first candidate in the cycle.
+    assert_eq!(app.topic_detail.as_ref().unwrap().query_filter_input, "value.events.amount");
+}
+
+#[test]
+fn query_filter_autocomplete_is_noop_mid_string() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::StartQueryFilterInput);
+    type_query_filter(&mut app, "value.house");
+    if let Some(detail) = app.topic_detail.as_mut() {
+        detail.query_filter_cursor = 3; // move cursor away from the end
+    }
+    app.update(Action::QueryFilterAutocomplete);
+    assert_eq!(app.topic_detail.as_ref().unwrap().query_filter_input, "value.house");
 }
 
 #[test]
