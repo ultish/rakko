@@ -202,7 +202,8 @@ fn column_cap(index: usize, header: Option<&[&str]>) -> usize {
         if let Some(name) = headers.get(index) {
             let lower = name.to_ascii_lowercase();
             return match lower.as_str() {
-                "p" | "partition" => 4,
+                "p" => 4,
+                "partition" => 12,
                 "offset" | "committed" | "low" | "high" | "lag" => 14,
                 "fmt" | "format" | "kfmt" | "vfmt" => 12,
                 "key" => 28,
@@ -295,6 +296,29 @@ mod tests {
         let fixed_sum: u16 = resolved[..5].iter().sum();
         let spacing = COLUMN_SPACING * 5;
         assert_eq!(fixed_sum + spacing + value_w, 100);
+    }
+
+    #[test]
+    fn group_detail_partition_header_is_not_truncated_when_room_is_available() {
+        // Distinct from the message list's single-letter "P" column (capped at 4) —
+        // the group-detail lag table spells out "Partition" and needs room for it.
+        let header = ["Topic", "Partition", "Committed", "Low", "High", "Lag"];
+        let items = vec![vec![
+            "orders.events".into(),
+            "3".into(),
+            "1000".into(),
+            "0".into(),
+            "1050".into(),
+            "50".into(),
+        ]];
+        let constraints = auto_column_widths(6, Some(&header), &items);
+        let resolved = resolve_column_widths(&constraints, 120, COLUMN_SPACING);
+        // "Partition" is 9 chars; the resolved width must fit it without truncation.
+        assert!(
+            resolved[1] as usize > "Partition".chars().count(),
+            "partition column width {} too narrow for header text",
+            resolved[1]
+        );
     }
 
     #[test]

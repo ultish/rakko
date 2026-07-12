@@ -1843,6 +1843,78 @@ fn topics_loaded_preserves_selection() {
 }
 
 #[test]
+fn topic_list_filter_lifecycle_apply() {
+    let mut app = app_on_topic_list();
+    app.topics = vec![topic("orders"), topic("payments"), topic("orders-dlq")];
+    app.update(Action::StartFilterInput);
+    assert!(app.topic_list_filter_active);
+    for c in "order".chars() {
+        app.update(Action::FilterChar(c));
+    }
+    assert_eq!(app.topic_list_filter_input, "order");
+    app.update(Action::ApplyFilter);
+    assert_eq!(app.topic_list_applied_filter.as_deref(), Some("order"));
+    assert!(!app.topic_list_filter_active);
+    let visible: Vec<&str> = app.visible_topics().iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(visible, vec!["orders", "orders-dlq"]);
+}
+
+#[test]
+fn topic_list_filter_cancel_discards_typed_text_without_touching_applied_filter() {
+    let mut app = app_on_topic_list();
+    app.topic_list_applied_filter = Some("existing".to_string());
+    app.update(Action::StartFilterInput);
+    app.update(Action::FilterChar('x'));
+    app.update(Action::CancelFilterInput);
+    assert_eq!(app.topic_list_applied_filter.as_deref(), Some("existing"));
+    assert!(!app.topic_list_filter_active);
+    assert!(app.topic_list_filter_input.is_empty());
+}
+
+#[test]
+fn topic_list_clear_filter_removes_applied_filter() {
+    let mut app = app_on_topic_list();
+    app.topic_list_applied_filter = Some("existing".to_string());
+    app.update(Action::ClearFilter);
+    assert!(app.topic_list_applied_filter.is_none());
+}
+
+#[test]
+fn visible_topics_filters_by_name_case_insensitively() {
+    let mut app = app_on_topic_list();
+    app.topics = vec![topic("Orders"), topic("payments")];
+    app.topic_list_applied_filter = Some("ORD".to_string());
+    let visible: Vec<&str> = app.visible_topics().iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(visible, vec!["Orders"]);
+}
+
+#[test]
+fn topic_list_selection_clamps_against_filtered_not_raw_count() {
+    let mut app = app_on_topic_list();
+    app.topics = vec![topic("apple"), topic("banana"), topic("apricot")];
+    app.topic_list_applied_filter = Some("ap".to_string());
+    let visible_len = app.visible_topics().len();
+    assert_eq!(visible_len, 2); // apple, apricot
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::MoveSelectionDown);
+    assert_eq!(app.topic_list_selected_index, visible_len - 1);
+}
+
+#[test]
+fn confirm_on_filtered_topic_list_opens_the_filtered_selection_not_raw_index() {
+    let mut app = app_on_topic_list();
+    app.topics = vec![topic("apple"), topic("banana"), topic("apricot")];
+    app.topic_list_applied_filter = Some("ap".to_string());
+    // Filtered view is [apple, apricot]; select index 1 -> apricot, NOT
+    // app.topics[1] (banana), which is what indexing the raw Vec would give.
+    app.topic_list_selected_index = 1;
+    app.update(Action::Confirm);
+    assert_eq!(app.screen, Screen::TopicDetail);
+    assert_eq!(app.topic_detail.as_ref().unwrap().topic, "apricot");
+}
+
+#[test]
 fn group_detail_loaded_preserves_selection_and_reset_wizard() {
     let mut app = app_on_topic_list();
     app.screen = Screen::GroupDetail;

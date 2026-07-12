@@ -274,7 +274,8 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         }
     }
 
-    let filter_active = app.topic_detail.as_ref().is_some_and(|detail| detail.filter_active);
+    let filter_active = app.topic_detail.as_ref().is_some_and(|detail| detail.filter_active)
+        || app.topic_list_filter_active;
     if filter_active {
         return match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -294,7 +295,8 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         };
     }
 
-    let filter_applied = app.topic_detail.as_ref().is_some_and(|detail| detail.applied_filter.is_some());
+    let filter_applied = app.topic_detail.as_ref().is_some_and(|detail| detail.applied_filter.is_some())
+        || app.topic_list_applied_filter.is_some();
 
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {

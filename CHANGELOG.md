@@ -11,6 +11,18 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- Topic list: **/** filters topics by name (case-insensitive substring), **c**
+  clears it — same pattern as the message browser's existing filter.
+
+### Fixed
+
+- Group detail's lag table no longer truncates the **Partition** column header to
+  "Par…" regardless of available width — it shared a width cap with the message
+  browser's single-letter **P** column, which was far too tight for the spelled-out
+  header used here.
+
 ## [0.2.0] - 2026-07-12
 
 ### Added

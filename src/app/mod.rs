@@ -57,8 +57,14 @@ pub struct App {
     /// Selection cursor for the profile picker.
     pub selected_profile_index: usize,
     pub topics: Vec<TopicSummary>,
-    /// Selection cursor for the topic list.
+    /// Selection cursor for the topic list. Indexes into `visible_topics()`, not
+    /// `topics` directly, so it stays valid while a filter is applied.
     pub topic_list_selected_index: usize,
+    pub topic_list_filter_input: String,
+    /// Cursor into `topic_list_filter_input` while `topic_list_filter_active`.
+    pub topic_list_filter_cursor: usize,
+    pub topic_list_filter_active: bool,
+    pub topic_list_applied_filter: Option<String>,
     pub topic_detail: Option<TopicDetailState>,
     pub groups: Vec<GroupSummary>,
     pub group_list_selected_index: usize,
@@ -99,6 +105,10 @@ impl App {
             selected_profile_index: 0,
             topics: Vec::new(),
             topic_list_selected_index: 0,
+            topic_list_filter_input: String::new(),
+            topic_list_filter_cursor: 0,
+            topic_list_filter_active: false,
+            topic_list_applied_filter: None,
             topic_detail: None,
             groups: Vec::new(),
             group_list_selected_index: 0,
@@ -143,6 +153,21 @@ impl App {
             }
         }
         app
+    }
+
+    /// Topics for the list / selection, filtered by name when a filter is applied.
+    /// `topic_list_selected_index` indexes into this, not `topics` directly.
+    pub fn visible_topics(&self) -> Vec<&TopicSummary> {
+        match &self.topic_list_applied_filter {
+            None => self.topics.iter().collect(),
+            Some(filter) => {
+                let needle = filter.to_lowercase();
+                self.topics
+                    .iter()
+                    .filter(|t| t.name.to_lowercase().contains(&needle))
+                    .collect()
+            }
+        }
     }
 
     /// Activates a profile and (re)builds the Schema Registry client from its URL.
@@ -301,13 +326,24 @@ impl App {
                 self.request_seek_page(PageDirection::Backward)
             }
             Action::StartFilterInput => {
-                if let Some(detail) = self.topic_detail.as_mut() {
-                    if detail.message_view.is_some() {
-                        return vec![];
+                match self.screen {
+                    Screen::TopicDetail => {
+                        if let Some(detail) = self.topic_detail.as_mut() {
+                            if detail.message_view.is_some() {
+                                return vec![];
+                            }
+                            detail.filter_input = detail.applied_filter.clone().unwrap_or_default();
+                            detail.filter_cursor = detail.filter_input.chars().count();
+                            detail.filter_active = true;
+                        }
                     }
-                    detail.filter_input = detail.applied_filter.clone().unwrap_or_default();
-                    detail.filter_cursor = detail.filter_input.chars().count();
-                    detail.filter_active = true;
+                    Screen::TopicList => {
+                        self.topic_list_filter_input =
+                            self.topic_list_applied_filter.clone().unwrap_or_default();
+                        self.topic_list_filter_cursor = self.topic_list_filter_input.chars().count();
+                        self.topic_list_filter_active = true;
+                    }
+                    _ => {}
                 }
                 vec![]
             }
@@ -351,6 +387,15 @@ impl App {
                         detail.selected_index = 0;
                     }
                 }
+                if self.topic_list_filter_active {
+                    self.topic_list_applied_filter = if self.topic_list_filter_input.is_empty() {
+                        None
+                    } else {
+                        Some(self.topic_list_filter_input.clone())
+                    };
+                    self.topic_list_filter_active = false;
+                    self.topic_list_selected_index = 0;
+                }
                 vec![]
             }
             Action::CancelFilterInput => {
@@ -358,9 +403,14 @@ impl App {
                     detail.filter_active = false;
                     detail.filter_input.clear();
                 }
+                self.topic_list_filter_active = false;
+                self.topic_list_filter_input.clear();
                 vec![]
             }
             Action::ClearFilter => {
+                self.topic_list_applied_filter = None;
+                self.topic_list_filter_input.clear();
+                self.topic_list_selected_index = 0;
                 if let Some(detail) = self.topic_detail.as_mut() {
                     detail.applied_filter = None;
                     detail.filter_input.clear();
@@ -680,7 +730,8 @@ impl App {
                 );
             }
             Screen::TopicList => {
-                Self::clamp_index(&mut self.topic_list_selected_index, self.topics.len(), delta);
+                let len = self.visible_topics().len();
+                Self::clamp_index(&mut self.topic_list_selected_index, len, delta);
             }
             Screen::TopicDetail => {
                 let len = self
@@ -778,7 +829,11 @@ impl App {
                 vec![Command::LoadTopics(profile)]
             }
             Screen::TopicList => {
-                let Some(topic) = self.topics.get(self.topic_list_selected_index).cloned() else {
+                let Some(topic) = self
+                    .visible_topics()
+                    .get(self.topic_list_selected_index)
+                    .map(|t| (*t).clone())
+                else {
                     return vec![];
                 };
                 let Some(profile) = self.active_profile.clone() else {
@@ -928,7 +983,15 @@ impl App {
                     &mut detail.filter_cursor,
                     c,
                 );
+                return;
             }
+        }
+        if self.topic_list_filter_active {
+            crate::text_field::insert_char(
+                &mut self.topic_list_filter_input,
+                &mut self.topic_list_filter_cursor,
+                c,
+            );
         }
     }
 
@@ -943,7 +1006,14 @@ impl App {
         if let Some(detail) = self.topic_detail.as_mut() {
             if detail.filter_active {
                 crate::text_field::backspace(&mut detail.filter_input, &mut detail.filter_cursor);
+                return;
             }
+        }
+        if self.topic_list_filter_active {
+            crate::text_field::backspace(
+                &mut self.topic_list_filter_input,
+                &mut self.topic_list_filter_cursor,
+            );
         }
     }
 
@@ -961,7 +1031,14 @@ impl App {
                     &mut detail.filter_input,
                     &mut detail.filter_cursor,
                 );
+                return;
             }
+        }
+        if self.topic_list_filter_active {
+            crate::text_field::delete_forward(
+                &mut self.topic_list_filter_input,
+                &mut self.topic_list_filter_cursor,
+            );
         }
     }
 
@@ -975,7 +1052,11 @@ impl App {
         if let Some(detail) = self.topic_detail.as_mut() {
             if detail.filter_active {
                 crate::text_field::cursor_left(&mut detail.filter_cursor);
+                return;
             }
+        }
+        if self.topic_list_filter_active {
+            crate::text_field::cursor_left(&mut self.topic_list_filter_cursor);
         }
     }
 
@@ -990,7 +1071,14 @@ impl App {
         if let Some(detail) = self.topic_detail.as_mut() {
             if detail.filter_active {
                 crate::text_field::cursor_right(&detail.filter_input, &mut detail.filter_cursor);
+                return;
             }
+        }
+        if self.topic_list_filter_active {
+            crate::text_field::cursor_right(
+                &self.topic_list_filter_input,
+                &mut self.topic_list_filter_cursor,
+            );
         }
     }
 
@@ -1004,7 +1092,11 @@ impl App {
         if let Some(detail) = self.topic_detail.as_mut() {
             if detail.filter_active {
                 crate::text_field::cursor_home(&mut detail.filter_cursor);
+                return;
             }
+        }
+        if self.topic_list_filter_active {
+            crate::text_field::cursor_home(&mut self.topic_list_filter_cursor);
         }
     }
 
@@ -1019,7 +1111,14 @@ impl App {
         if let Some(detail) = self.topic_detail.as_mut() {
             if detail.filter_active {
                 crate::text_field::cursor_end(&detail.filter_input, &mut detail.filter_cursor);
+                return;
             }
+        }
+        if self.topic_list_filter_active {
+            crate::text_field::cursor_end(
+                &self.topic_list_filter_input,
+                &mut self.topic_list_filter_cursor,
+            );
         }
     }
 
@@ -1060,13 +1159,14 @@ impl App {
                 auto_message_max_bytes,
             } => {
                 self.topics = topics;
-                // Preserve selection across refresh; clamp if the list shrank.
-                if self.topics.is_empty() {
+                // Preserve selection (and any applied filter) across refresh; clamp
+                // against the filtered count if the visible list shrank.
+                let visible_len = self.visible_topics().len();
+                if visible_len == 0 {
                     self.topic_list_selected_index = 0;
                 } else {
-                    self.topic_list_selected_index = self
-                        .topic_list_selected_index
-                        .min(self.topics.len() - 1);
+                    self.topic_list_selected_index =
+                        self.topic_list_selected_index.min(visible_len - 1);
                 }
 
                 let mut detect_status = None;
