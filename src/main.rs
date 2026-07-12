@@ -6,6 +6,7 @@ mod events;
 mod export;
 mod external_editor;
 mod kafka;
+mod query_filter;
 mod raw_message;
 mod ring_buffer;
 mod serde_detect;
@@ -274,6 +275,28 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         }
     }
 
+    // Advanced query-filter wizard (topic detail only) — checked before the plain
+    // substring filter below since both hijack the keyboard the same way but need
+    // different Enter handling (parse-and-apply vs trivial store).
+    let query_filter_active = app.topic_detail.as_ref().is_some_and(|detail| detail.query_filter_active);
+    if query_filter_active {
+        return match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            KeyCode::Char(c) => Some(Action::FilterChar(c)),
+            KeyCode::Backspace => Some(Action::FilterBackspace),
+            KeyCode::Delete => Some(Action::FilterDelete),
+            KeyCode::Left => Some(Action::FilterCursorLeft),
+            KeyCode::Right => Some(Action::FilterCursorRight),
+            KeyCode::Home => Some(Action::FilterCursorHome),
+            KeyCode::End => Some(Action::FilterCursorEnd),
+            KeyCode::Enter => Some(Action::ApplyQueryFilter),
+            KeyCode::Esc => Some(Action::CancelFilterInput),
+            _ => None,
+        };
+    }
+
     let filter_active = app.topic_detail.as_ref().is_some_and(|detail| detail.filter_active)
         || app.topic_list_filter_active
         || app.group_list_filter_active;
@@ -297,6 +320,7 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
     }
 
     let filter_applied = app.topic_detail.as_ref().is_some_and(|detail| detail.applied_filter.is_some())
+        || app.topic_detail.as_ref().is_some_and(|detail| detail.applied_query_filter.is_some())
         || app.topic_list_applied_filter.is_some()
         || app.group_list_applied_filter.is_some();
 
@@ -321,6 +345,9 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         }
         KeyCode::PageUp | KeyCode::Char('p') => Some(Action::PageBackward),
         KeyCode::Char('/') => Some(Action::StartFilterInput),
+        // `?` (shift-/) pairs visually with `/`: the advanced structured filter next to
+        // the plain substring one. Topic detail only — the reducer no-ops elsewhere.
+        KeyCode::Char('?') if app.screen == Screen::TopicDetail => Some(Action::StartQueryFilterInput),
         KeyCode::Char('c') if filter_applied => Some(Action::ClearFilter),
         // Group detail: `z` starts offset-reset (deliberately not a common/mnemonic key —
         // reduces accidental presses of a destructive action; `x` is reserved app-wide

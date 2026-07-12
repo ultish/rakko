@@ -31,8 +31,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    let show_filter_row = detail.filter_active || detail.query_filter_active;
     let mut constraints = vec![Constraint::Length(1)]; // header
-    if detail.filter_active {
+    if show_filter_row {
         constraints.push(Constraint::Length(1)); // filter input line
     }
     constraints.push(Constraint::Min(3)); // message list
@@ -42,8 +43,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut next = chunks.iter();
     render_header(frame, app, *next.next().unwrap(), detail);
-    if detail.filter_active {
-        render_filter_input(frame, *next.next().unwrap(), detail);
+    if show_filter_row {
+        let filter_area = *next.next().unwrap();
+        if detail.query_filter_active {
+            render_query_filter_input(frame, filter_area, detail);
+        } else {
+            render_filter_input(frame, filter_area, detail);
+        }
     }
     render_message_list(frame, *next.next().unwrap(), app, detail);
     render_footer(frame, *next.next().unwrap());
@@ -75,6 +81,9 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect, detail: &TopicDetailS
     if let Some(filter) = &detail.applied_filter {
         segments.push(format!("filter: \"{filter}\""));
     }
+    if let Some(query) = &detail.applied_query_filter {
+        segments.push(format!("query: {}", query.raw));
+    }
     match &app.schema_registry {
         Some(sr) => segments.push(format!("SR:{} ({} schemas)", sr.base_url(), sr.cache_len())),
         None => {
@@ -98,6 +107,18 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect, detail: &TopicDetailS
 fn render_filter_input(frame: &mut Frame, area: Rect, detail: &TopicDetailState) {
     let field = crate::text_field::display_with_cursor(&detail.filter_input, detail.filter_cursor);
     let text = format!("filter> {field}");
+    let style = Style::default().add_modifier(Modifier::REVERSED);
+    frame.render_widget(Paragraph::new(text).style(style), area);
+}
+
+/// Same reversed-video treatment as `render_filter_input`, distinct prompt so it's
+/// clear which of the two filter modes is capturing keystrokes.
+fn render_query_filter_input(frame: &mut Frame, area: Rect, detail: &TopicDetailState) {
+    let field = crate::text_field::display_with_cursor(
+        &detail.query_filter_input,
+        detail.query_filter_cursor,
+    );
+    let text = format!("query> {field}");
     let style = Style::default().add_modifier(Modifier::REVERSED);
     frame.render_widget(Paragraph::new(text).style(style), area);
 }
@@ -236,7 +257,7 @@ fn render_footer(frame: &mut Frame, area: Rect) {
     render_keybind_footer(
         frame,
         area,
-        "Enter: view   Tab/s: mode   o: sort   n/p: page   r: refresh   /: filter   w: produce   y: replay   x: export one   X: export all   i: import   Esc: back",
+        "Enter: view   Tab/s: mode   o: sort   n/p: page   r: refresh   /: filter   ?: query filter   w: produce   y: replay   x: export one   X: export all   i: import   Esc: back",
     );
 }
 

@@ -91,11 +91,32 @@ fn try_decode_avro(value: &[u8], registry: Option<&SchemaRegistry>) -> Option<De
     Some(DecodedValue::Avro(text))
 }
 
-fn avro_payload_to_json(payload: &[u8], schema: &Schema) -> Option<String> {
+fn avro_payload_to_json_value(payload: &[u8], schema: &Schema) -> Option<serde_json::Value> {
     let mut cursor = payload;
     let avro_value = apache_avro::from_avro_datum(schema, &mut cursor, None).ok()?;
-    let json: serde_json::Value = avro_value.try_into().ok()?;
-    Some(json.to_string())
+    avro_value.try_into().ok()
+}
+
+fn avro_payload_to_json(payload: &[u8], schema: &Schema) -> Option<String> {
+    avro_payload_to_json_value(payload, schema).map(|v| v.to_string())
+}
+
+/// Structured JSON view of `value`, for the advanced query filter
+/// (`query_filter::QueryFilter`) to walk field paths directly rather than re-parsing
+/// display text. Same decode boundary as [`decode_value`] — Avro needs a schema already
+/// in `registry`'s cache, anything else needs to already be a JSON object/array — just
+/// returns the parsed `serde_json::Value` instead of a display string.
+pub fn decode_json_value(value: &[u8], registry: Option<&SchemaRegistry>) -> Option<serde_json::Value> {
+    if let Some(schema_id) = confluent_schema_id(value) {
+        let registry = registry?;
+        let schema = registry.cached_schema(schema_id)?;
+        return avro_payload_to_json_value(&value[5..], schema);
+    }
+    if is_json_object_or_array(value) {
+        let s = std::str::from_utf8(value).ok()?;
+        return serde_json::from_str(s).ok();
+    }
+    None
 }
 
 fn is_json_object_or_array(value: &[u8]) -> bool {
@@ -316,5 +337,37 @@ mod tests {
         // Needs 5 bytes for magic + schema id.
         let bytes = [0x00, 0x00, 0x01];
         assert_eq!(detect_format(&bytes), DetectedFormat::Raw);
+    }
+
+    #[test]
+    fn decode_json_value_parses_plain_json_object() {
+        let bytes = br#"{"name":"ada","age":36}"#;
+        let value = decode_json_value(bytes, None).expect("should decode");
+        assert_eq!(value["name"], "ada");
+        assert_eq!(value["age"], 36);
+    }
+
+    #[test]
+    fn decode_json_value_decodes_avro_with_cached_schema() {
+        let (schema, payload) = sample_avro_payload();
+        let schema_id = 11u32;
+        let bytes = confluent_frame(schema_id, &payload);
+
+        let mut sr = SchemaRegistry::new("http://localhost:8081").unwrap();
+        sr.insert_schema(schema_id, schema);
+
+        let value = decode_json_value(&bytes, Some(&sr)).expect("should decode");
+        assert_eq!(value["name"], "ada");
+        assert_eq!(value["age"], 36);
+    }
+
+    #[test]
+    fn decode_json_value_none_for_raw_text_and_unresolvable_avro() {
+        assert_eq!(decode_json_value(b"plain text", None), None);
+
+        let (_, payload) = sample_avro_payload();
+        let bytes = confluent_frame(9999, &payload);
+        let sr = SchemaRegistry::new("http://localhost:8081").unwrap();
+        assert_eq!(decode_json_value(&bytes, Some(&sr)), None);
     }
 }

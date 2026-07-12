@@ -137,6 +137,30 @@ Set `schema_registry_url` on the profile (see example above). When browsing mess
 
 No `schema_registry_url` → Avro is still detected, but not decoded (hex/raw fallback).
 
+### Advanced query filter
+
+The plain `/` filter is a substring search. **`?`** opens a second, independent filter
+that queries structured fields inside JSON/Avro keys and values:
+
+```
+key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
+```
+
+- Paths start with `key.` or `value.`, then dot-separated field names — any depth.
+- `=` / `!=`, string/number/`true`/`false` literals (quote strings with spaces:
+  `value.title = "hello world"`); string comparison is case-insensitive.
+- Chain conditions with `AND` (only `AND` — no `OR`/parens yet).
+- **Arrays**: a path through an array matches if *any* element satisfies the rest of
+  the path — same implicit behavior as MongoDB's dot-notation array queries, e.g.
+  `value.items.sku = "ABC123"` matches if any element of `items` has that sku, no
+  index needed, at any depth (arrays of arrays included).
+- Needs the same Avro schema-cache as the substring filter — a message whose schema
+  hasn't loaded yet won't match a `key.`/`value.` condition until it does.
+- Independent from `/`: apply both and a message must satisfy each. **c** clears
+  whichever filter(s) are applied.
+- A parse error is shown in the status line and keeps the query editor open so you
+  can fix it.
+
 Logs are written to **`~/.config/rakko/rakko.log`** (never to the TTY while the UI is running). Control verbosity with `RUST_LOG` (e.g. `RUST_LOG=info`).
 
 ## Running
@@ -178,7 +202,7 @@ replay's "edit in producer"), never anything else. Export uses **x**/**X** inste
 | **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **q** quit |
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
 | **Topics** | **Enter** open topic · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
-| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
+| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page (seek) · **/** filter · **?** query filter · **c** clear filter(s) · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
 | **Message view** | **j**/**k** or arrows scroll · **PgUp**/**PgDn** page · **Enter**/**Esc** close · **y** replay · **x** export this message |
 | **Groups** | **Enter** detail · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
 | **Group detail** | **z** reset offsets · **r** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch view |
@@ -219,6 +243,10 @@ Offset reset only works reliably when the group has **no active members** — th
   config values (`describe_configs`, sensitive entries redacted)
 - Persistent view-switcher bar: **1**/**2**/**3** jump directly between Topics/Groups/
   Brokers from any list-level screen
+- Topic/group list filtering (**/**, **c**), topics sorted by name
+- Advanced structured query filter (**?**) on the message browser — field-path queries
+  into JSON/Avro keys/values (`key.a.b = "x" AND value.c != 5`), array fields matched
+  by any-element, independent of and composable with the plain substring filter
 
 ## Architecture
 

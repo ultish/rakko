@@ -86,6 +86,13 @@ pub struct TopicDetailState {
     pub filter_cursor: usize,
     pub filter_active: bool,
     pub applied_filter: Option<String>,
+    /// Advanced structured filter (`key.a.b = "x" AND value.c != 5`) — separate from
+    /// the plain substring filter above; when both are applied they AND-combine.
+    pub query_filter_input: String,
+    /// Cursor into `query_filter_input` while `query_filter_active`.
+    pub query_filter_cursor: usize,
+    pub query_filter_active: bool,
+    pub applied_query_filter: Option<crate::query_filter::QueryFilter>,
     pub replay_phase: Option<ReplayPhase>,
     pub message_view: Option<MessageViewState>,
     /// Newest-first by default so the latest messages appear at the top of the list.
@@ -101,6 +108,8 @@ impl TopicDetailState {
 
     /// Visible messages for the list / export / replay selection, decoding Avro via the
     /// schema-registry cache when filtering so field-level search works after schemas load.
+    /// The substring filter and the advanced query filter are independent — when both are
+    /// applied, a message must satisfy both.
     pub fn visible_messages_with_registry(
         &self,
         registry: Option<&SchemaRegistry>,
@@ -109,14 +118,18 @@ impl TopicDetailState {
             BrowseMode::Tail(buffer) => Box::new(buffer.iter()),
             BrowseMode::Seek(state) => Box::new(state.messages.iter()),
         };
-        let mut msgs: Vec<&RawMessage> = match &self.applied_filter {
-            None => all.collect(),
-            Some(filter) => {
-                let needle = filter.to_lowercase();
-                all.filter(|message| message_matches_filter(message, &needle, registry))
-                    .collect()
-            }
-        };
+        let needle = self.applied_filter.as_ref().map(|f| f.to_lowercase());
+        let mut msgs: Vec<&RawMessage> = all
+            .filter(|message| {
+                needle
+                    .as_deref()
+                    .is_none_or(|n| message_matches_filter(message, n, registry))
+                    && self
+                        .applied_query_filter
+                        .as_ref()
+                        .is_none_or(|q| query_filter_matches(message, q, registry))
+            })
+            .collect();
         // Storage order is oldest→newest (ring buffer / seek poll). Reverse for newest↑.
         if self.sort == MessageSort::NewestFirst {
             msgs.reverse();
@@ -162,6 +175,24 @@ fn message_matches_filter(
         .as_str()
         .to_lowercase()
         .contains(needle_lowercase)
+}
+
+/// Structured-query match: decodes key/value to `serde_json::Value` (same Avro-cache
+/// boundary as the substring filter) and evaluates the parsed query against them.
+fn query_filter_matches(
+    message: &RawMessage,
+    query: &crate::query_filter::QueryFilter,
+    registry: Option<&SchemaRegistry>,
+) -> bool {
+    let key = message
+        .key
+        .as_deref()
+        .and_then(|k| crate::serde_detect::decode_json_value(k, registry));
+    let value = message
+        .value
+        .as_deref()
+        .and_then(|v| crate::serde_detect::decode_json_value(v, registry));
+    query.matches(key.as_ref(), value.as_ref())
 }
 
 pub(super) enum PageDirection {

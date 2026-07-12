@@ -140,6 +140,14 @@ pub enum Action {
     CancelFilterInput,
     /// Clears an already-applied filter (topic-detail screen only).
     ClearFilter,
+    /// Enters advanced query-filter input mode (`key.a.b = "x" AND ...`; topic-detail
+    /// screen only) — separate from the plain substring filter above.
+    StartQueryFilterInput,
+    /// Parses the currently-typed query text. On success, applies it and exits input
+    /// mode; on a parse error, shows the error in the status line and stays open so the
+    /// user can fix it (shares text-editing actions and `CancelFilterInput`/`ClearFilter`
+    /// with the substring filter above).
+    ApplyQueryFilter,
     /// Jump directly to Topics/Groups/Brokers from any list-level screen (the sole
     /// navigation mechanism between top-level views — see the persistent switcher bar).
     SwitchToTopics,

@@ -391,6 +391,22 @@ impl App {
                 }
                 vec![]
             }
+            Action::StartQueryFilterInput => {
+                if self.screen == Screen::TopicDetail {
+                    if let Some(detail) = self.topic_detail.as_mut() {
+                        if detail.message_view.is_none() {
+                            detail.query_filter_input = detail
+                                .applied_query_filter
+                                .as_ref()
+                                .map(|q| q.raw.clone())
+                                .unwrap_or_default();
+                            detail.query_filter_cursor = detail.query_filter_input.chars().count();
+                            detail.query_filter_active = true;
+                        }
+                    }
+                }
+                vec![]
+            }
             Action::FilterChar(c) => {
                 self.text_insert(c);
                 vec![]
@@ -451,10 +467,37 @@ impl App {
                 }
                 vec![]
             }
+            Action::ApplyQueryFilter => {
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    if detail.query_filter_active {
+                        if detail.query_filter_input.trim().is_empty() {
+                            detail.applied_query_filter = None;
+                            detail.query_filter_active = false;
+                            detail.selected_index = 0;
+                        } else {
+                            match crate::query_filter::parse(&detail.query_filter_input) {
+                                Ok(query) => {
+                                    detail.applied_query_filter = Some(query);
+                                    detail.query_filter_active = false;
+                                    detail.selected_index = 0;
+                                }
+                                Err(err) => {
+                                    // Stay open so the user can fix it, same pattern as
+                                    // the offset-reset wizard's Input-phase parse errors.
+                                    self.status_message = Some(format!("query filter error: {err}"));
+                                }
+                            }
+                        }
+                    }
+                }
+                vec![]
+            }
             Action::CancelFilterInput => {
                 if let Some(detail) = self.topic_detail.as_mut() {
                     detail.filter_active = false;
                     detail.filter_input.clear();
+                    detail.query_filter_active = false;
+                    detail.query_filter_input.clear();
                 }
                 self.topic_list_filter_active = false;
                 self.topic_list_filter_input.clear();
@@ -472,6 +515,8 @@ impl App {
                 if let Some(detail) = self.topic_detail.as_mut() {
                     detail.applied_filter = None;
                     detail.filter_input.clear();
+                    detail.applied_query_filter = None;
+                    detail.query_filter_input.clear();
                     detail.selected_index = 0;
                 }
                 vec![]
@@ -917,6 +962,10 @@ impl App {
                     filter_cursor: 0,
                     filter_active: false,
                     applied_filter: None,
+                    query_filter_input: String::new(),
+                    query_filter_cursor: 0,
+                    query_filter_active: false,
+                    applied_query_filter: None,
                     replay_phase: None,
                     message_view: None,
                     sort: MessageSort::default(),
@@ -1071,6 +1120,14 @@ impl App {
                 );
                 return;
             }
+            if detail.query_filter_active {
+                crate::text_field::insert_char(
+                    &mut detail.query_filter_input,
+                    &mut detail.query_filter_cursor,
+                    c,
+                );
+                return;
+            }
         }
         if self.topic_list_filter_active {
             crate::text_field::insert_char(
@@ -1100,6 +1157,13 @@ impl App {
         if let Some(detail) = self.topic_detail.as_mut() {
             if detail.filter_active {
                 crate::text_field::backspace(&mut detail.filter_input, &mut detail.filter_cursor);
+                return;
+            }
+            if detail.query_filter_active {
+                crate::text_field::backspace(
+                    &mut detail.query_filter_input,
+                    &mut detail.query_filter_cursor,
+                );
                 return;
             }
         }
@@ -1134,6 +1198,13 @@ impl App {
                 );
                 return;
             }
+            if detail.query_filter_active {
+                crate::text_field::delete_forward(
+                    &mut detail.query_filter_input,
+                    &mut detail.query_filter_cursor,
+                );
+                return;
+            }
         }
         if self.topic_list_filter_active {
             crate::text_field::delete_forward(
@@ -1162,6 +1233,10 @@ impl App {
                 crate::text_field::cursor_left(&mut detail.filter_cursor);
                 return;
             }
+            if detail.query_filter_active {
+                crate::text_field::cursor_left(&mut detail.query_filter_cursor);
+                return;
+            }
         }
         if self.topic_list_filter_active {
             crate::text_field::cursor_left(&mut self.topic_list_filter_cursor);
@@ -1183,6 +1258,13 @@ impl App {
         if let Some(detail) = self.topic_detail.as_mut() {
             if detail.filter_active {
                 crate::text_field::cursor_right(&detail.filter_input, &mut detail.filter_cursor);
+                return;
+            }
+            if detail.query_filter_active {
+                crate::text_field::cursor_right(
+                    &detail.query_filter_input,
+                    &mut detail.query_filter_cursor,
+                );
                 return;
             }
         }
@@ -1213,6 +1295,10 @@ impl App {
                 crate::text_field::cursor_home(&mut detail.filter_cursor);
                 return;
             }
+            if detail.query_filter_active {
+                crate::text_field::cursor_home(&mut detail.query_filter_cursor);
+                return;
+            }
         }
         if self.topic_list_filter_active {
             crate::text_field::cursor_home(&mut self.topic_list_filter_cursor);
@@ -1234,6 +1320,13 @@ impl App {
         if let Some(detail) = self.topic_detail.as_mut() {
             if detail.filter_active {
                 crate::text_field::cursor_end(&detail.filter_input, &mut detail.filter_cursor);
+                return;
+            }
+            if detail.query_filter_active {
+                crate::text_field::cursor_end(
+                    &detail.query_filter_input,
+                    &mut detail.query_filter_cursor,
+                );
                 return;
             }
         }

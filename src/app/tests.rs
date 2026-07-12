@@ -617,6 +617,10 @@ fn app_in_topic_detail(topic_name: &str, partition_count: usize) -> App {
         filter_cursor: 0,
         filter_active: false,
         applied_filter: None,
+        query_filter_input: String::new(),
+        query_filter_cursor: 0,
+        query_filter_active: false,
+        applied_query_filter: None,
         replay_phase: None,
         message_view: None,
         sort: MessageSort::default(),
@@ -859,6 +863,118 @@ fn visible_messages_filters_by_key_or_value_case_insensitively() {
     let visible = detail.visible_messages();
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].key.as_deref(), Some("order-1".as_bytes()));
+}
+
+#[test]
+fn start_query_filter_input_opens_wizard_on_topic_detail() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::StartQueryFilterInput);
+    assert!(app.topic_detail.as_ref().unwrap().query_filter_active);
+}
+
+#[test]
+fn start_query_filter_input_is_noop_on_other_screens() {
+    let mut app = app_on_topic_list();
+    app.update(Action::StartQueryFilterInput);
+    assert_eq!(app.screen, Screen::TopicList);
+}
+
+#[test]
+fn apply_query_filter_with_valid_query_applies_and_closes_wizard() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::StartQueryFilterInput);
+    for c in r#"key.name = jxhui"#.chars() {
+        app.update(Action::FilterChar(c));
+    }
+    app.update(Action::ApplyQueryFilter);
+    let detail = app.topic_detail.as_ref().unwrap();
+    assert!(!detail.query_filter_active);
+    assert!(detail.applied_query_filter.is_some());
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn apply_query_filter_with_invalid_query_keeps_wizard_open_and_sets_error() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::StartQueryFilterInput);
+    for c in "not.a.valid.query".chars() {
+        app.update(Action::FilterChar(c));
+    }
+    app.update(Action::ApplyQueryFilter);
+    let detail = app.topic_detail.as_ref().unwrap();
+    assert!(detail.query_filter_active, "wizard should stay open on parse error");
+    assert!(detail.applied_query_filter.is_none());
+    assert!(app.status_message.as_deref().is_some_and(|s| s.contains("query filter error")));
+}
+
+#[test]
+fn apply_query_filter_with_empty_input_clears_any_applied_query() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.topic_detail.as_mut().unwrap().applied_query_filter =
+        Some(crate::query_filter::parse("key.a = b").unwrap());
+    app.update(Action::StartQueryFilterInput);
+    // Simulate clearing the pre-filled text (StartQueryFilterInput pre-fills it from
+    // the existing applied query, matching the substring filter's edit-in-place).
+    app.topic_detail.as_mut().unwrap().query_filter_input.clear();
+    app.update(Action::ApplyQueryFilter);
+    assert!(app.topic_detail.as_ref().unwrap().applied_query_filter.is_none());
+}
+
+#[test]
+fn cancel_filter_input_discards_query_filter_wizard_without_applying() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::StartQueryFilterInput);
+    for c in "key.a = b".chars() {
+        app.update(Action::FilterChar(c));
+    }
+    app.update(Action::CancelFilterInput);
+    let detail = app.topic_detail.as_ref().unwrap();
+    assert!(!detail.query_filter_active);
+    assert!(detail.query_filter_input.is_empty());
+    assert!(detail.applied_query_filter.is_none());
+}
+
+#[test]
+fn clear_filter_removes_applied_query_filter() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.topic_detail.as_mut().unwrap().applied_query_filter =
+        Some(crate::query_filter::parse("key.a = b").unwrap());
+    app.update(Action::ClearFilter);
+    assert!(app.topic_detail.as_ref().unwrap().applied_query_filter.is_none());
+}
+
+#[test]
+fn query_filter_end_to_end_filters_visible_messages_by_json_field() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message(r#"{"name":"jxhui"}"#, "{}"));
+            buffer.push(message(r#"{"name":"someone-else"}"#, "{}"));
+        }
+        detail.applied_query_filter = Some(crate::query_filter::parse("key.name = jxhui").unwrap());
+    }
+    let detail = app.topic_detail.as_ref().unwrap();
+    let visible = detail.visible_messages();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].key.as_deref(), Some(r#"{"name":"jxhui"}"#.as_bytes()));
+}
+
+#[test]
+fn substring_and_query_filters_and_combine() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message(r#"{"name":"jxhui"}"#, "shipped"));
+            buffer.push(message(r#"{"name":"jxhui"}"#, "pending"));
+            buffer.push(message(r#"{"name":"someone-else"}"#, "shipped"));
+        }
+        detail.applied_filter = Some("shipped".to_string());
+        detail.applied_query_filter = Some(crate::query_filter::parse("key.name = jxhui").unwrap());
+    }
+    let detail = app.topic_detail.as_ref().unwrap();
+    let visible = detail.visible_messages();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].value.as_deref(), Some("shipped".as_bytes()));
 }
 
 #[test]
