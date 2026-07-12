@@ -17,6 +17,10 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
 - **No runtime dependencies.** Prebuilt macOS and RHEL 9 binaries have librdkafka and OpenSSL statically linked in — nothing else to install.
 - **It's a TUI.** No Electron, no browser tab, no waiting for a page to load — `j`/`k` and it's already there.
 
+## Demo
+
+![rakko demo: filtering the topic list, tailing/seeking messages, opening the message inspector, and applying the advanced query filter with Tab-completion](assets/demo.gif)
+
 ## Features
 
 - **Connect to any cluster** — save named profiles (plaintext, TLS, or mutual TLS)
