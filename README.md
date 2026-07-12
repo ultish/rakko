@@ -163,7 +163,7 @@ On first launch a **splash** shows the stream otter:
 |--------|------|
 | **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **q** quit |
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
-| **Topics** | **Enter** open topic · **g** consumer groups · **r**/**R** refresh list |
+| **Topics** | **Enter** open topic · **g** consumer groups · **r**/**R** refresh list · **/** filter by name · **c** clear filter |
 | **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r**/**R** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **e** export selected · **E** export all visible · **i** import |
 | **Message view** | **j**/**k** or arrows scroll · **PgUp**/**PgDn** page · **Enter**/**Esc** close · **y** replay · **e** export this message |
 | **Groups** | **Enter** detail · **r**/**R** refresh list |
