@@ -14,7 +14,7 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
 - **Avro just works.** Auto-detects Confluent-wire-format Avro, fetches and caches the schema from your registry, and decodes it inline for browsing and filtering — without ever mutating the bytes you'd actually resend.
 - **JSONL export/import is a real backup format**, not a debugging dump — base64 raw bytes are the source of truth, so reimporting is byte-identical too.
 - **Kubernetes-friendly by staying out of the way** — no baked-in `kubectl`/port-forward magic to trust or debug. Point it at your tunnel like any other TLS/mTLS client.
-- **Airgap-ready.** Ships as a single statically-linked binary for RHEL 9 — no runtime deps to smuggle into a locked-down environment.
+- **No runtime dependencies.** Prebuilt macOS and RHEL 9 binaries have librdkafka and OpenSSL statically linked in — nothing else to install.
 - **It's a TUI.** No Electron, no browser tab, no waiting for a page to load — `j`/`k` and it's already there.
 
 ## Features
@@ -39,7 +39,7 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
 
 ## Quick start
 
-Prebuilt binary (macOS or airgapped RHEL 9 — no Rust/CMake toolchain needed): grab
+Prebuilt binary (macOS or RHEL 9 — no Rust/CMake toolchain needed): grab
 `rakko-macos-<arch>.tar.gz` or `rakko-linux-amd64.tar.gz` from the
 [Releases](https://github.com/ultish/rakko/releases) page, or build one yourself —
 see [Release builds](#release-builds).
@@ -237,70 +237,13 @@ Offset reset only works reliably when the group has **no active members** — th
 | Topic list / group list / broker list / broker config | On open, or **r** refresh |
 | Group lag / members | On open, **r**, or auto ~every 3s while detail is open |
 
-## Architecture
-
-Elm-style: input and background I/O both flow into a single `App::update` reducer;
-rendering is a pure function of `App` state. Background Kafka/HTTP calls never run on
-the render loop — see [PLAN.md](./PLAN.md) for the full design rationale.
-
-```mermaid
-flowchart LR
-    subgraph Terminal
-        KB[Keyboard / crossterm EventStream]
-    end
-
-    KB -->|Event::Key| K2A[key_to_action]
-    K2A -->|Action| UPD[App::update]
-
-    subgraph "Elm-style core (app/)"
-        UPD -->|mutates| STATE[(App state\nScreen, ProfileConfig,\nBrowseMode, Producer, ...)]
-        EVT[App::apply_event] -->|mutates| STATE
-        STATE --> UPD
-        STATE --> EVT
-        UPD -->|dispatches into| SCREENS["per-screen handlers\napp/{producer,topic_detail,\ngroup_detail,export_import,\nprofile_create}.rs"]
-        SCREENS -->|mutates| STATE
-    end
-
-    UPD -->|Command| DISP[handle_command]
-    EVT -->|Command| DISP
-
-    DISP -->|tokio::spawn / spawn_blocking| BG[Background tasks]
-
-    subgraph "kafka/ (spawn_blocking, sync rdkafka calls)"
-        ADMIN[admin.rs\ntopics]
-        CONS[consumer.rs\ntail + seek]
-        PROD[producer.rs]
-        GRP[group_offsets.rs\nlist / lag / reset]
-        SR[schema_registry.rs\nAvro schema fetch]
-    end
-
-    BG --> ADMIN & CONS & PROD & GRP & SR
-    ADMIN & CONS & PROD & GRP & SR -->|AppEvent via mpsc channel| EVT
-
-    STATE --> DRAW[ui::draw]
-    DRAW --> SCREEN[Terminal frame]
-
-    CFG[(config.toml\n~/.config/rakko)] -.load/save.-> STATE
-    RAW[[RawMessage\nbyte-preserving]] -.-> CONS
-    RAW -.-> PROD
-    RAW -.-> EXPORT[export.rs\nJSONL]
-```
-
-Everything that talks to Kafka or the network runs inside `kafka/` on a
-`tokio::task::spawn_blocking` (rdkafka's client is sync), reporting results back as an
-`AppEvent` over an `mpsc` channel; the render loop's `tokio::select!` merges that
-channel with terminal input and a couple of timer ticks (group-lag auto-refresh,
-banner animation). `RawMessage` (`src/raw_message.rs`) is the one byte-preserving type
-threaded through browsing, replay, and export/import, so replayed/exported messages
-are never a decode-then-re-encode round trip.
-
 ## Release builds
 
-Prebuilt, statically-linked binaries for airgapped/offline installs — no runtime
-librdkafka/OpenSSL to smuggle in. Both scripts write into `dist/` (a shared
-`SHA256SUMS` is merged, not clobbered, so you can run either or both).
+Prebuilt, statically-linked binaries — no separately-installed librdkafka/OpenSSL
+required. Both scripts write into `dist/` (a shared `SHA256SUMS` is merged, not
+clobbered, so you can run either or both).
 
-### Airgap / RHEL 9 binary (Linux/amd64)
+### RHEL 9 binary (Linux/amd64)
 
 Cross-builds a glibc-compatible **linux/amd64** binary via a Rocky 9 container, with statically vendored librdkafka + OpenSSL:
 
@@ -371,6 +314,63 @@ mkdir -p ~/.config/rakko
 cp config.example.toml ~/.config/rakko/config.toml
 cargo run -- --profile local
 ```
+
+### Architecture
+
+Elm-style: input and background I/O both flow into a single `App::update` reducer;
+rendering is a pure function of `App` state. Background Kafka/HTTP calls never run on
+the render loop — see [PLAN.md](./PLAN.md) for the full design rationale.
+
+```mermaid
+flowchart LR
+    subgraph Terminal
+        KB[Keyboard / crossterm EventStream]
+    end
+
+    KB -->|Event::Key| K2A[key_to_action]
+    K2A -->|Action| UPD[App::update]
+
+    subgraph "Elm-style core (app/)"
+        UPD -->|mutates| STATE[(App state\nScreen, ProfileConfig,\nBrowseMode, Producer, ...)]
+        EVT[App::apply_event] -->|mutates| STATE
+        STATE --> UPD
+        STATE --> EVT
+        UPD -->|dispatches into| SCREENS["per-screen handlers\napp/{producer,topic_detail,\ngroup_detail,export_import,\nprofile_create}.rs"]
+        SCREENS -->|mutates| STATE
+    end
+
+    UPD -->|Command| DISP[handle_command]
+    EVT -->|Command| DISP
+
+    DISP -->|tokio::spawn / spawn_blocking| BG[Background tasks]
+
+    subgraph "kafka/ (spawn_blocking, sync rdkafka calls)"
+        ADMIN[admin.rs\ntopics]
+        CONS[consumer.rs\ntail + seek]
+        PROD[producer.rs]
+        GRP[group_offsets.rs\nlist / lag / reset]
+        SR[schema_registry.rs\nAvro schema fetch]
+    end
+
+    BG --> ADMIN & CONS & PROD & GRP & SR
+    ADMIN & CONS & PROD & GRP & SR -->|AppEvent via mpsc channel| EVT
+
+    STATE --> DRAW[ui::draw]
+    DRAW --> SCREEN[Terminal frame]
+
+    CFG[(config.toml\n~/.config/rakko)] -.load/save.-> STATE
+    RAW[[RawMessage\nbyte-preserving]] -.-> CONS
+    RAW -.-> PROD
+    RAW -.-> EXPORT[export.rs\nJSONL]
+```
+
+Everything that talks to Kafka or the network runs inside `kafka/` on a
+`tokio::task::spawn_blocking` (rdkafka's client is sync), reporting results back as an
+`AppEvent` over an `mpsc` channel; the render loop's `tokio::select!` merges that
+channel with terminal input and a couple of timer ticks (group-lag auto-refresh,
+banner animation). `RawMessage` (`src/raw_message.rs`) is the one byte-preserving type
+threaded through browsing, replay, and export/import, so replayed/exported messages
+are never a decode-then-re-encode round trip.
 
 Design notes and milestone plan: [PLAN.md](./PLAN.md).
 
