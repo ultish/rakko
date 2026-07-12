@@ -37,13 +37,6 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
 - **Use a mouse or just the keyboard** — click and scroll, or stay entirely on the
   keyboard — both are fully supported
 
-## Prerequisites
-
-- **Rust** (stable) — [rustup](https://rustup.rs/)
-- **CMake** + a C/C++ toolchain — required to build `rdkafka` (`cmake-build`, vendored OpenSSL)
-  - macOS: `xcode-select --install` and `brew install cmake`
-  - Linux: `gcc`, `g++`, `make`, `cmake`, `perl`
-
 ## Quick start
 
 Prebuilt binary (macOS or airgapped RHEL 9 — no Rust/CMake toolchain needed): grab
@@ -52,7 +45,8 @@ Prebuilt binary (macOS or airgapped RHEL 9 — no Rust/CMake toolchain needed): 
 see [Release builds](#release-builds).
 
 Otherwise, build from source (`cargo run` for a debug build, or `cargo build --release`
-+ `./target/release/rakko` for release):
++ `./target/release/rakko` for release — needs Rust + CMake, see
+[Development](#development)):
 
 ```bash
 cargo build --release
@@ -344,6 +338,13 @@ Artifacts land in `dist/`:
 - `otool-macos-<arch>.txt` — dynamic-link audit (should be system frameworks + libSystem/libiconv only)
 
 ## Development
+
+Building from source (including any of the `cargo` commands below) needs:
+
+- **Rust** (stable) — [rustup](https://rustup.rs/)
+- **CMake** + a C/C++ toolchain — required to build `rdkafka` (`cmake-build`, vendored OpenSSL)
+  - macOS: `xcode-select --install` and `brew install cmake`
+  - Linux: `gcc`, `g++`, `make`, `cmake`, `perl`
 
 A local Docker Compose stack (Kafka + Schema Registry) covers manual testing and the
 `--ignored` integration tier — nothing else in the repo depends on it.
