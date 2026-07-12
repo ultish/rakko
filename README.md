@@ -140,26 +140,30 @@ No `schema_registry_url` → Avro is still detected, but not decoded (hex/raw fa
 ### Advanced query filter
 
 The plain `/` filter is a substring search. **`?`** opens a second, independent filter
-that queries structured fields inside JSON/Avro keys and values:
+— as a dialog, with room for a longer chained query and a built-in help panel — that
+queries structured fields inside JSON/Avro keys and values:
 
 ```
 key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
 ```
 
 - Paths start with `key.` or `value.`, then dot-separated field names — any depth.
-- `=` / `!=`, string/number/`true`/`false` literals (quote strings with spaces:
-  `value.title = "hello world"`); string comparison is case-insensitive.
+- `=` / `!=` / `>` / `<` / `>=` / `<=`. String/number/`true`/`false` literals (quote
+  strings with spaces: `value.title = "hello world"`; string comparison is
+  case-insensitive). `>`/`<`/`>=`/`<=` need a numeric value on both sides, e.g.
+  `value.timestamp > 23434`.
 - Chain conditions with `AND` (only `AND` — no `OR`/parens yet).
 - **Arrays**: a path through an array matches if *any* element satisfies the rest of
   the path — same implicit behavior as MongoDB's dot-notation array queries, e.g.
   `value.items.sku = "ABC123"` matches if any element of `items` has that sku, no
-  index needed, at any depth (arrays of arrays included).
+  index needed, at any depth (arrays of arrays included). Same any-element rule for
+  `>`/`<`/etc: `value.scores > 90` matches if any element of `scores` exceeds 90.
 - Needs the same Avro schema-cache as the substring filter — a message whose schema
   hasn't loaded yet won't match a `key.`/`value.` condition until it does.
 - Independent from `/`: apply both and a message must satisfy each. **c** clears
   whichever filter(s) are applied.
 - A parse error is shown in the status line and keeps the query editor open so you
-  can fix it.
+  can fix it. **F1** inside the dialog toggles a syntax/examples help panel.
 
 Logs are written to **`~/.config/rakko/rakko.log`** (never to the TTY while the UI is running). Control verbosity with `RUST_LOG` (e.g. `RUST_LOG=info`).
 

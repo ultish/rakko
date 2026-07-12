@@ -402,7 +402,16 @@ impl App {
                                 .unwrap_or_default();
                             detail.query_filter_cursor = detail.query_filter_input.chars().count();
                             detail.query_filter_active = true;
+                            detail.query_filter_help_visible = false;
                         }
+                    }
+                }
+                vec![]
+            }
+            Action::ToggleQueryFilterHelp => {
+                if let Some(detail) = self.topic_detail.as_mut() {
+                    if detail.query_filter_active {
+                        detail.query_filter_help_visible = !detail.query_filter_help_visible;
                     }
                 }
                 vec![]
@@ -965,6 +974,7 @@ impl App {
                     query_filter_input: String::new(),
                     query_filter_cursor: 0,
                     query_filter_active: false,
+                    query_filter_help_visible: false,
                     applied_query_filter: None,
                     replay_phase: None,
                     message_view: None,

@@ -620,6 +620,7 @@ fn app_in_topic_detail(topic_name: &str, partition_count: usize) -> App {
         query_filter_input: String::new(),
         query_filter_cursor: 0,
         query_filter_active: false,
+        query_filter_help_visible: false,
         applied_query_filter: None,
         replay_phase: None,
         message_view: None,
@@ -870,6 +871,34 @@ fn start_query_filter_input_opens_wizard_on_topic_detail() {
     let mut app = app_in_topic_detail("orders", 1);
     app.update(Action::StartQueryFilterInput);
     assert!(app.topic_detail.as_ref().unwrap().query_filter_active);
+}
+
+#[test]
+fn toggle_query_filter_help_flips_visibility_while_wizard_open() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::StartQueryFilterInput);
+    assert!(!app.topic_detail.as_ref().unwrap().query_filter_help_visible);
+    app.update(Action::ToggleQueryFilterHelp);
+    assert!(app.topic_detail.as_ref().unwrap().query_filter_help_visible);
+    app.update(Action::ToggleQueryFilterHelp);
+    assert!(!app.topic_detail.as_ref().unwrap().query_filter_help_visible);
+}
+
+#[test]
+fn toggle_query_filter_help_is_noop_when_wizard_closed() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::ToggleQueryFilterHelp);
+    assert!(!app.topic_detail.as_ref().unwrap().query_filter_help_visible);
+}
+
+#[test]
+fn start_query_filter_input_resets_help_visibility_on_reopen() {
+    let mut app = app_in_topic_detail("orders", 1);
+    app.update(Action::StartQueryFilterInput);
+    app.update(Action::ToggleQueryFilterHelp);
+    app.update(Action::CancelFilterInput);
+    app.update(Action::StartQueryFilterInput);
+    assert!(!app.topic_detail.as_ref().unwrap().query_filter_help_visible);
 }
 
 #[test]

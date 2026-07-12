@@ -13,14 +13,16 @@ over dumping raw commit subjects.
 
 ### Added
 
-- Advanced structured query filter on the message browser (**?**): field-path queries
+- Advanced structured query filter on the message browser (**?**), opened as a dialog
+  with room for a longer query and a built-in help panel (**F1**): field-path queries
   into JSON/Avro keys and values, e.g.
   `key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui`.
-  `=`/`!=`, `AND`-chaining, arbitrary nesting depth, and array fields matched by "any
-  element" (same implicit behavior as MongoDB's dot-notation array queries) — no index
-  syntax needed. Independent of and composable with the existing substring filter
-  (**/**); both apply together when both are set. A parse error shows in the status
-  line and keeps the query editor open to fix it.
+  `=`/`!=`/`>`/`<`/`>=`/`<=`, `AND`-chaining, arbitrary nesting depth, and array fields
+  matched by "any element" (same implicit behavior as MongoDB's dot-notation array
+  queries, including for the comparison operators) — no index syntax needed.
+  Independent of and composable with the existing substring filter (**/**); both apply
+  together when both are set. A parse error shows in the status line and keeps the
+  query dialog open to fix it.
 
 ## [0.3.0] - 2026-07-12
 

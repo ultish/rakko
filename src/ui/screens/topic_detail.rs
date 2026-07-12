@@ -31,9 +31,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let show_filter_row = detail.filter_active || detail.query_filter_active;
+    // Query filter gets its own dialog (below) rather than a row here — a query can
+    // get long enough (multiple AND-chained conditions) that a single terminal-width
+    // line isn't enough room to see what you're typing.
     let mut constraints = vec![Constraint::Length(1)]; // header
-    if show_filter_row {
+    if detail.filter_active {
         constraints.push(Constraint::Length(1)); // filter input line
     }
     constraints.push(Constraint::Min(3)); // message list
@@ -43,13 +45,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut next = chunks.iter();
     render_header(frame, app, *next.next().unwrap(), detail);
-    if show_filter_row {
-        let filter_area = *next.next().unwrap();
-        if detail.query_filter_active {
-            render_query_filter_input(frame, filter_area, detail);
-        } else {
-            render_filter_input(frame, filter_area, detail);
-        }
+    if detail.filter_active {
+        render_filter_input(frame, *next.next().unwrap(), detail);
     }
     render_message_list(frame, *next.next().unwrap(), app, detail);
     render_footer(frame, *next.next().unwrap());
@@ -60,6 +57,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     if let Some(phase) = &detail.replay_phase {
         render_replay_overlay(frame, area, phase);
+    }
+
+    if detail.query_filter_active {
+        render_query_filter_dialog(frame, area, detail);
     }
 }
 
@@ -111,16 +112,73 @@ fn render_filter_input(frame: &mut Frame, area: Rect, detail: &TopicDetailState)
     frame.render_widget(Paragraph::new(text).style(style), area);
 }
 
-/// Same reversed-video treatment as `render_filter_input`, distinct prompt so it's
-/// clear which of the two filter modes is capturing keystrokes.
-fn render_query_filter_input(frame: &mut Frame, area: Rect, detail: &TopicDetailState) {
+const QUERY_FILTER_HELP: &str = "\
+Fields:   key.<path>   value.<path>   (dot-separated, any nesting depth)
+Ops:      =   !=   >   <   >=   <=      (>,<,>=,<= need a numeric value)
+Combine:  AND  (only AND for now — no OR / parentheses)
+Strings:  bare word (jxhui) or quoted for spaces (\"hello world\") — case-insensitive
+Arrays:   matches if ANY element satisfies the rest of the path, at any depth
+          e.g. value.items.sku = \"ABC123\" matches if any item has that sku
+
+Examples:
+  key.person.name = jxhui
+  key.person.age = 20 AND value.house.owner = jxhui
+  value.tags = \"urgent\"
+  value.timestamp > 23434
+  value.orders.items.sku != \"X\"";
+
+/// Query-filter input as a centered dialog rather than a one-line bar — a chained
+/// query (`a = 1 AND b = 2 AND ...`) needs more room than a terminal-width row gives,
+/// and the dialog has space for the `F1` help panel below the input.
+fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetailState) {
+    let dialog = if detail.query_filter_help_visible {
+        centered_rect(80, 70, area)
+    } else {
+        centered_rect(80, 20, area)
+    };
+    frame.render_widget(Clear, dialog);
+
+    let mut constraints = vec![Constraint::Length(3), Constraint::Length(1)];
+    if detail.query_filter_help_visible {
+        constraints.push(Constraint::Min(1));
+    }
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .margin(1)
+        .split(dialog);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Advanced Query Filter")
+        .title_style(TITLE_STYLE);
+    frame.render_widget(block, dialog);
+
     let field = crate::text_field::display_with_cursor(
         &detail.query_filter_input,
         detail.query_filter_cursor,
     );
-    let text = format!("query> {field}");
-    let style = Style::default().add_modifier(Modifier::REVERSED);
-    frame.render_widget(Paragraph::new(text).style(style), area);
+    let input = Paragraph::new(format!("query> {field}"))
+        .style(Style::default().add_modifier(Modifier::REVERSED))
+        .block(Block::default().borders(Borders::ALL));
+    frame.render_widget(input, inner[0]);
+
+    let help_hint = if detail.query_filter_help_visible {
+        "F1: hide help"
+    } else {
+        "F1: show syntax & examples"
+    };
+    frame.render_widget(
+        Paragraph::new(format!("Enter: apply   Esc: cancel   {help_hint}")).style(STATUS_STYLE),
+        inner[1],
+    );
+
+    if detail.query_filter_help_visible {
+        frame.render_widget(
+            Paragraph::new(QUERY_FILTER_HELP).wrap(Wrap { trim: false }),
+            inner[2],
+        );
+    }
 }
 
 fn render_message_list(frame: &mut Frame, area: Rect, app: &App, detail: &TopicDetailState) {

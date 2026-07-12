@@ -17,6 +17,23 @@ enum Root {
 enum Op {
     Eq,
     Ne,
+    Gt,
+    Lt,
+    Ge,
+    Le,
+}
+
+/// The comparison actually threaded through path/array traversal. `Op::Ne` isn't one
+/// of these — it's computed as `NOT(Comparator::Eq)` at the top level (see
+/// `QueryFilter::matches`) rather than recursed into, so array fan-out gives "no
+/// element equals" instead of "some element differs" (see module docs on `!=`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Comparator {
+    Eq,
+    Gt,
+    Lt,
+    Ge,
+    Le,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,10 +70,19 @@ impl QueryFilter {
                 Root::Key => key,
                 Root::Value => value,
             };
-            let eq = root_value.is_some_and(|v| path_matches(v, &c.path, &c.literal));
-            match c.op {
-                Op::Eq => eq,
-                Op::Ne => !eq,
+            let (cmp, negate) = match c.op {
+                Op::Eq => (Comparator::Eq, false),
+                Op::Ne => (Comparator::Eq, true),
+                Op::Gt => (Comparator::Gt, false),
+                Op::Lt => (Comparator::Lt, false),
+                Op::Ge => (Comparator::Ge, false),
+                Op::Le => (Comparator::Le, false),
+            };
+            let found = root_value.is_some_and(|v| path_matches(v, &c.path, cmp, &c.literal));
+            if negate {
+                !found
+            } else {
+                found
             }
         })
     }
@@ -66,25 +92,44 @@ impl QueryFilter {
 /// matches if ANY element along the way satisfies the rest of the path (same implicit
 /// semantics as MongoDB's dot-notation array matching), so a path can walk through any
 /// number of nested arrays without index syntax.
-fn path_matches(value: &Value, path: &[String], literal: &Literal) -> bool {
+fn path_matches(value: &Value, path: &[String], cmp: Comparator, literal: &Literal) -> bool {
     match value {
-        Value::Array(items) => items.iter().any(|item| path_matches(item, path, literal)),
+        Value::Array(items) => items.iter().any(|item| path_matches(item, path, cmp, literal)),
         Value::Object(map) => match path.split_first() {
-            Some((head, rest)) => map.get(head).is_some_and(|next| path_matches(next, rest, literal)),
+            Some((head, rest)) => {
+                map.get(head).is_some_and(|next| path_matches(next, rest, cmp, literal))
+            }
             None => false, // path exhausted at an object — nothing to compare against
         },
-        leaf => path.is_empty() && literal_matches(leaf, literal),
+        leaf => path.is_empty() && leaf_matches(leaf, cmp, literal),
     }
 }
 
-fn literal_matches(value: &Value, literal: &Literal) -> bool {
-    match (value, literal) {
-        (Value::String(s), Literal::Str(l)) => s.to_lowercase() == l.to_lowercase(),
-        (Value::Number(n), Literal::Num(l)) => {
-            n.as_f64().is_some_and(|v| (v - l).abs() < 1e-9)
+fn leaf_matches(value: &Value, cmp: Comparator, literal: &Literal) -> bool {
+    match cmp {
+        Comparator::Eq => match (value, literal) {
+            (Value::String(s), Literal::Str(l)) => s.to_lowercase() == l.to_lowercase(),
+            (Value::Number(n), Literal::Num(l)) => {
+                n.as_f64().is_some_and(|v| (v - l).abs() < 1e-9)
+            }
+            (Value::Bool(b), Literal::Bool(l)) => b == l,
+            _ => false,
+        },
+        Comparator::Gt | Comparator::Lt | Comparator::Ge | Comparator::Le => {
+            // Parser guarantees a numeric literal for these operators; only a numeric
+            // leaf can ever satisfy one (see `parse_condition`).
+            let (Value::Number(n), Literal::Num(l)) = (value, literal) else {
+                return false;
+            };
+            let Some(v) = n.as_f64() else { return false };
+            match cmp {
+                Comparator::Gt => v > *l,
+                Comparator::Lt => v < *l,
+                Comparator::Ge => v >= *l,
+                Comparator::Le => v <= *l,
+                Comparator::Eq => unreachable!(),
+            }
         }
-        (Value::Bool(b), Literal::Bool(l)) => b == l,
-        _ => false,
     }
 }
 
@@ -94,6 +139,10 @@ enum Token {
     Str(String),
     Eq,
     Ne,
+    Gt,
+    Lt,
+    Ge,
+    Le,
 }
 
 fn tokenize(input: &str) -> Result<Vec<Token>, String> {
@@ -138,6 +187,26 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
         }
         if c == '=' {
             tokens.push(Token::Eq);
+            i += 1;
+            continue;
+        }
+        if c == '>' && chars.get(i + 1) == Some(&'=') {
+            tokens.push(Token::Ge);
+            i += 2;
+            continue;
+        }
+        if c == '>' {
+            tokens.push(Token::Gt);
+            i += 1;
+            continue;
+        }
+        if c == '<' && chars.get(i + 1) == Some(&'=') {
+            tokens.push(Token::Le);
+            i += 2;
+            continue;
+        }
+        if c == '<' {
+            tokens.push(Token::Lt);
             i += 1;
             continue;
         }
@@ -192,7 +261,11 @@ fn parse_condition(tokens: &[Token], pos: &mut usize) -> Result<Condition, Strin
     let op = match tokens.get(*pos) {
         Some(Token::Eq) => Op::Eq,
         Some(Token::Ne) => Op::Ne,
-        _ => return Err("expected '=' or '!='".to_string()),
+        Some(Token::Gt) => Op::Gt,
+        Some(Token::Lt) => Op::Lt,
+        Some(Token::Ge) => Op::Ge,
+        Some(Token::Le) => Op::Le,
+        _ => return Err("expected '=', '!=', '>', '<', '>=', or '<='".to_string()),
     };
     *pos += 1;
 
@@ -202,6 +275,10 @@ fn parse_condition(tokens: &[Token], pos: &mut usize) -> Result<Condition, Strin
         _ => return Err("expected a value after the operator".to_string()),
     };
     *pos += 1;
+
+    if matches!(op, Op::Gt | Op::Lt | Op::Ge | Op::Le) && !matches!(literal, Literal::Num(_)) {
+        return Err("'>', '<', '>=', and '<=' need a numeric value, e.g. value.timestamp > 23434".to_string());
+    }
 
     Ok(Condition { root, path, op, literal })
 }
@@ -384,6 +461,49 @@ mod tests {
     #[test]
     fn parse_error_bad_combinator() {
         assert!(parse(r#"key.name = jxhui OR key.age = 20"#).is_err());
+    }
+
+    #[test]
+    fn greater_than_and_less_than_compare_numeric_fields() {
+        let q = parse("value.timestamp > 23434").unwrap();
+        assert!(q.matches(None, Some(&json!({"timestamp": 23435}))));
+        assert!(!q.matches(None, Some(&json!({"timestamp": 23434}))));
+        assert!(!q.matches(None, Some(&json!({"timestamp": 100}))));
+
+        let q = parse("value.timestamp < 100").unwrap();
+        assert!(q.matches(None, Some(&json!({"timestamp": 50}))));
+        assert!(!q.matches(None, Some(&json!({"timestamp": 100}))));
+    }
+
+    #[test]
+    fn greater_equal_and_less_equal_are_inclusive() {
+        let q = parse("key.age >= 20").unwrap();
+        assert!(q.matches(Some(&json!({"age": 20})), None));
+        assert!(q.matches(Some(&json!({"age": 21})), None));
+        assert!(!q.matches(Some(&json!({"age": 19})), None));
+
+        let q = parse("key.age <= 20").unwrap();
+        assert!(q.matches(Some(&json!({"age": 20})), None));
+        assert!(!q.matches(Some(&json!({"age": 21})), None));
+    }
+
+    #[test]
+    fn comparison_operators_any_match_across_arrays() {
+        let q = parse("value.scores > 90").unwrap();
+        assert!(q.matches(None, Some(&json!({"scores": [10, 95, 20]}))));
+        assert!(!q.matches(None, Some(&json!({"scores": [10, 20, 30]}))));
+    }
+
+    #[test]
+    fn comparison_operator_never_matches_non_numeric_field() {
+        let q = parse(r#"key.name > 5"#).unwrap();
+        assert!(!q.matches(Some(&json!({"name": "jxhui"})), None));
+    }
+
+    #[test]
+    fn parse_error_comparison_operator_requires_numeric_literal() {
+        assert!(parse(r#"key.name > "abc""#).is_err());
+        assert!(parse(r#"key.name > true"#).is_err());
     }
 
     #[test]
