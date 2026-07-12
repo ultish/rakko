@@ -166,6 +166,10 @@ key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
   whichever filter(s) are applied.
 - A parse error is shown in the status line and keeps the query editor open so you
   can fix it. **Ctrl-h** inside the dialog toggles a syntax/examples help panel.
+- **Tab** completes `key`/`value`, then cycles through field names actually present
+  on the current page (`value.` → every top-level field; keep tabbing to go deeper,
+  e.g. `value.house.` → `owner`/`price`/`rooms`) — the candidate list is shown with
+  the current pick highlighted. Only completes at the end of the input.
 
 Logs are written to **`~/.config/rakko/rakko.log`** (never to the TTY while the UI is running). Control verbosity with `RUST_LOG` (e.g. `RUST_LOG=info`).
 
@@ -220,6 +224,16 @@ replay's "edit in producer"), never anything else. Export uses **x**/**X** inste
 
 Offset reset only works reliably when the group has **no active members** — the UI warns if members are present.
 
+### Mouse
+
+- **Scroll wheel** navigates whichever list is on screen (or scrolls the message
+  inspector, when it's open).
+- **Click** a list row to select it; **double-click** opens it (same as **Enter**).
+  Hovering a row highlights it.
+- **Click** a producer or export/import field box to focus it directly, instead of
+  Tab-cycling to it.
+- **Click** `1 Topics` / `2 Groups` / `3 Brokers` in the switcher bar to jump there.
+
 ### What updates live
 
 | Data | Live? |
@@ -229,7 +243,7 @@ Offset reset only works reliably when the group has **no active members** — th
 | Topic list / group list / broker list / broker config | On open, or **r** refresh |
 | Group lag / members | On open, **R**, or auto ~every 3s while detail is open |
 
-## Features (v1)
+## Features
 
 - Multi-cluster profiles (PLAINTEXT / TLS / mTLS; SASL designed for later)
 - In-TUI first-run / **n** profile create (writes `config.toml`); profile picker to switch
@@ -240,9 +254,6 @@ Offset reset only works reliably when the group has **no active members** — th
 - Produce: inline editor, load file, or `$EDITOR`
 - Single-message replay: original raw bytes → same topic
 - Export/import: JSONL with base64 raw bytes as source of truth
-
-## Features (v2)
-
 - Brokers screen: broker id/host/port, leader/replica partition counts (load
   distribution across the cluster), and a cluster-health line (under-replicated /
   offline partition counts) — drill in (**Enter**) for that broker's non-default
@@ -252,7 +263,11 @@ Offset reset only works reliably when the group has **no active members** — th
 - Topic/group list filtering (**/**, **c**), topics sorted by name
 - Advanced structured query filter (**?**) on the message browser — field-path queries
   into JSON/Avro keys/values (`key.a.b = "x" AND value.c != 5`), array fields matched
-  by any-element, independent of and composable with the plain substring filter
+  by any-element, independent of and composable with the plain substring filter, with
+  Tab-completion of field paths from the current page
+- Mouse support: scroll to navigate, click a row to select (double-click to open),
+  hover highlighting, click-to-focus producer/export-import fields, clickable
+  Topics/Groups/Brokers switcher bar
 
 ## Architecture
 
