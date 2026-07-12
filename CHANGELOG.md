@@ -11,6 +11,8 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-12
+
 ### Added
 
 - Tab-completion in the advanced query filter dialog: completes `key`/`value`, then
