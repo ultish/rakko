@@ -62,13 +62,21 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect, detail: &TopicDetailS
         BrowseMode::Tail(_) => "tail",
         BrowseMode::Seek(_) => "seek",
     };
-    let filter_label = match &detail.applied_filter {
-        Some(filter) => format!("  filter: \"{filter}\""),
-        None => String::new(),
-    };
-    let sort_label = format!("  sort {}", detail.sort.label());
-    let sr_label = match &app.schema_registry {
-        Some(sr) => format!("  SR:{} ({} schemas)", sr.base_url(), sr.cache_len()),
+
+    // Every segment joins with the same wide separator — previously only the first
+    // three did; sort/filter/SR were tacked on with a bare double-space, which read
+    // as cramped even when the terminal had plenty of width to spare.
+    let mut segments = vec![
+        format!("Topic: {}", detail.topic),
+        format!("{} partitions", detail.partition_count),
+        format!("mode {mode_label}"),
+        format!("sort {}", detail.sort.label()),
+    ];
+    if let Some(filter) = &detail.applied_filter {
+        segments.push(format!("filter: \"{filter}\""));
+    }
+    match &app.schema_registry {
+        Some(sr) => segments.push(format!("SR:{} ({} schemas)", sr.base_url(), sr.cache_len())),
         None => {
             if app
                 .active_profile
@@ -76,16 +84,12 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect, detail: &TopicDetailS
                 .and_then(|p| p.schema_registry_url.as_ref())
                 .is_some()
             {
-                "  SR:error".to_string()
-            } else {
-                String::new()
+                segments.push("SR:error".to_string());
             }
         }
-    };
-    let text = format!(
-        "Topic: {}  ·  {} partitions  ·  mode {}{}{}{}",
-        detail.topic, detail.partition_count, mode_label, sort_label, filter_label, sr_label
-    );
+    }
+
+    let text = segments.join("  ·  ");
     frame.render_widget(Paragraph::new(text).style(TITLE_STYLE), area);
 }
 

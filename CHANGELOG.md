@@ -47,6 +47,10 @@ over dumping raw commit subjects.
   message browser's (above the list, right under the banner) — it previously opened
   below the list, just above the footer, which put it in a different spot on every
   screen.
+- The message browser's header line (topic, partitions, mode, sort, filter, schema
+  registry) now spaces every segment evenly — sort/filter/SR were previously tacked
+  on with a bare double-space instead of the `·`-separated style used for the rest,
+  which read as cramped even with terminal width to spare.
 
 ## [0.2.0] - 2026-07-12
 
