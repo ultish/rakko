@@ -14,7 +14,7 @@ over dumping raw commit subjects.
 ### Added
 
 - Advanced structured query filter on the message browser (**?**), opened as a dialog
-  with room for a longer query and a built-in help panel (**F1**): field-path queries
+  with room for a longer query and a built-in help panel (**Ctrl-h**): field-path queries
   into JSON/Avro keys and values, e.g.
   `key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui`.
   `=`/`!=`/`>`/`<`/`>=`/`<=`, `AND`-chaining, arbitrary nesting depth, and array fields

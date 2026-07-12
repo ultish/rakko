@@ -112,9 +112,15 @@ fn render_filter_input(frame: &mut Frame, area: Rect, detail: &TopicDetailState)
     frame.render_widget(Paragraph::new(text).style(style), area);
 }
 
+// Each operator is paired with a word label (equals/not equals/greater than/etc) so
+// the line stays unambiguous even on terminal fonts that render `!=`/`>=`/`<=` as a
+// single ligature glyph (e.g. Fira Code, Cascadia Code, JetBrains Mono) — rakko emits
+// plain ASCII either way, this is purely a readability hedge against that rendering.
 const QUERY_FILTER_HELP: &str = "\
 Fields:   key.<path>   value.<path>   (dot-separated, any nesting depth)
-Ops:      =   !=   >   <   >=   <=      (>,<,>=,<= need a numeric value)
+Ops:      =  equals        != not equals
+          >  greater than  <  less than
+          >= greater/equal <= less/equal      (>,<,>=,<= need a numeric value)
 Combine:  AND  (only AND for now — no OR / parentheses)
 Strings:  bare word (jxhui) or quoted for spaces (\"hello world\") — case-insensitive
 Arrays:   matches if ANY element satisfies the rest of the path, at any depth
@@ -129,7 +135,7 @@ Examples:
 
 /// Query-filter input as a centered dialog rather than a one-line bar — a chained
 /// query (`a = 1 AND b = 2 AND ...`) needs more room than a terminal-width row gives,
-/// and the dialog has space for the `F1` help panel below the input.
+/// and the dialog has space for the `Ctrl-h` help panel below the input.
 fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetailState) {
     let dialog = if detail.query_filter_help_visible {
         centered_rect(80, 70, area)
@@ -164,9 +170,9 @@ fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetai
     frame.render_widget(input, inner[0]);
 
     let help_hint = if detail.query_filter_help_visible {
-        "F1: hide help"
+        "Ctrl-h: hide help"
     } else {
-        "F1: show syntax & examples"
+        "Ctrl-h: show syntax & examples"
     };
     frame.render_widget(
         Paragraph::new(format!("Enter: apply   Esc: cancel   {help_hint}")).style(STATUS_STYLE),

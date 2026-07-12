@@ -163,7 +163,7 @@ key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
 - Independent from `/`: apply both and a message must satisfy each. **c** clears
   whichever filter(s) are applied.
 - A parse error is shown in the status line and keeps the query editor open so you
-  can fix it. **F1** inside the dialog toggles a syntax/examples help panel.
+  can fix it. **Ctrl-h** inside the dialog toggles a syntax/examples help panel.
 
 Logs are written to **`~/.config/rakko/rakko.log`** (never to the TTY while the UI is running). Control verbosity with `RUST_LOG` (e.g. `RUST_LOG=info`).
 

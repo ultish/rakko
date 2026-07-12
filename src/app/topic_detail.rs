@@ -92,7 +92,7 @@ pub struct TopicDetailState {
     /// Cursor into `query_filter_input` while `query_filter_active`.
     pub query_filter_cursor: usize,
     pub query_filter_active: bool,
-    /// Toggled by F1 while the query-filter dialog is open — shows syntax/examples.
+    /// Toggled by Ctrl-h while the query-filter dialog is open — shows syntax/examples.
     pub query_filter_help_visible: bool,
     pub applied_query_filter: Option<crate::query_filter::QueryFilter>,
     pub replay_phase: Option<ReplayPhase>,

@@ -284,8 +284,12 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::ForceQuit)
             }
-            // F1 (not a printable char) toggles help without colliding with typed text.
-            KeyCode::F(1) => Some(Action::ToggleQueryFilterHelp),
+            // Ctrl-h (not Ctrl-c) toggles help — plain 'h' has to stay typeable, since
+            // query text routinely contains it (field names, string literals like
+            // "shipped").
+            KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ToggleQueryFilterHelp)
+            }
             KeyCode::Char(c) => Some(Action::FilterChar(c)),
             KeyCode::Backspace => Some(Action::FilterBackspace),
             KeyCode::Delete => Some(Action::FilterDelete),

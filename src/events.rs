@@ -148,7 +148,7 @@ pub enum Action {
     /// user can fix it (shares text-editing actions and `CancelFilterInput`/`ClearFilter`
     /// with the substring filter above).
     ApplyQueryFilter,
-    /// Toggles the syntax/examples help panel within the query-filter dialog (`F1`).
+    /// Toggles the syntax/examples help panel within the query-filter dialog (`Ctrl-h`).
     ToggleQueryFilterHelp,
     /// Jump directly to Topics/Groups/Brokers from any list-level screen (the sole
     /// navigation mechanism between top-level views — see the persistent switcher bar).
