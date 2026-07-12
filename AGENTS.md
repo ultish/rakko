@@ -9,9 +9,9 @@ Claude Code loads this via `CLAUDE.md` (`@AGENTS.md`); edit **this file only**.
 clusters: topics, live tail/seek message browsing with filter, consumer groups + lag
 + destructive offset reset, Avro/JSON auto-detect via Confluent Schema Registry, a
 3-mode producer, single-message replay (raw bytes, same topic), and JSONL
-export/import. Read `README.md` for user-facing usage and `PLAN.md` for the
-architecture/milestone plan — `PLAN.md` is the design-of-record; update it when
-architecture decisions change, don't let it silently drift from the code.
+export/import. Read `README.md` for user-facing usage and `.agents/PLAN.md` for the
+architecture/milestone plan — `.agents/PLAN.md` is the design-of-record; update it
+when architecture decisions change, don't let it silently drift from the code.
 
 ## Layout
 
@@ -22,10 +22,10 @@ architecture decisions change, don't let it silently drift from the code.
 - `src/kafka/` — `client_config.rs` (Profile → librdkafka `ClientConfig`),
   `admin.rs` (topic listing), `consumer.rs` (tail + seek, `BaseConsumer`-backed),
   `producer.rs`, `group_offsets.rs` (the `AdminClient` consumer-group-offset gap
-  workaround — read PLAN.md before touching this), `schema_registry.rs`.
+  workaround — read `.agents/PLAN.md` before touching this), `schema_registry.rs`.
 - `src/raw_message.rs` — the byte-preserving `RawMessage` type threaded through
   browsing, replay, and export/import. Replay and export must always use these raw
-  bytes, never a decoded-then-re-encoded value — see PLAN.md.
+  bytes, never a decoded-then-re-encoded value — see `.agents/PLAN.md`.
 - `src/serde_detect.rs` — Avro (magic byte + schema registry) / JSON / raw
   auto-detect. Decode-only, never mutates `RawMessage`.
 - `src/app/` / `src/events.rs` — the Elm-style `App`/`Action`/`AppEvent`/`Command`

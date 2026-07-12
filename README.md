@@ -319,7 +319,7 @@ cargo run -- --profile local
 
 Elm-style: input and background I/O both flow into a single `App::update` reducer;
 rendering is a pure function of `App` state. Background Kafka/HTTP calls never run on
-the render loop — see [PLAN.md](./PLAN.md) for the full design rationale.
+the render loop — see [PLAN.md](./.agents/PLAN.md) for the full design rationale.
 
 ```mermaid
 flowchart LR
@@ -372,7 +372,7 @@ banner animation). `RawMessage` (`src/raw_message.rs`) is the one byte-preservin
 threaded through browsing, replay, and export/import, so replayed/exported messages
 are never a decode-then-re-encode round trip.
 
-Design notes and milestone plan: [PLAN.md](./PLAN.md).
+Design notes and milestone plan: [PLAN.md](./.agents/PLAN.md).
 
 ## License
 
