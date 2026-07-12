@@ -11,6 +11,8 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-13
+
 ### Added
 
 - Brokers screen shows a per-broker load bar chart (leader/replica partition counts)
