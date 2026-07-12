@@ -10,6 +10,16 @@
 # compiles librdkafka and OpenSSL from C source, so the builder needs cmake and
 # perl (OpenSSL's Configure) in addition to gcc/gcc-c++/make.
 #
+# cargo-chef split (planner/builder): without it, `RUN cargo build` sits behind
+# `COPY src`, so ANY source edit invalidates that one giant layer and forces a full
+# recompile of librdkafka + vendored OpenSSL + every crate dependency, not just
+# rakko itself — that recompile is most of this build's wall-clock time. The planner
+# stage hashes only Cargo.toml/Cargo.lock into recipe.json; the builder stage "cooks"
+# (builds) just the dependency graph from that recipe *before* `COPY src` appears, so
+# routine code changes only invalidate the final, fast `cargo build` layer. This is
+# plain Docker layer-content caching (no BuildKit --mount=type=cache), so it works
+# the same way across docker/podman/Apple Container.
+#
 # IMPORTANT — build context is the repo root (Cargo.toml + src/ at context root):
 #
 #   # from repo root (recommended):
@@ -30,7 +40,7 @@
 
 # Platform comes from `docker/container build --platform=…` (do not hardcode
 # FROM --platform=linux/amd64 — BuildKit warns and some runtimes mishandle it).
-FROM rockylinux:9
+FROM rockylinux:9 AS base
 
 # Rocky 9 images ship curl-minimal, which conflicts with package "curl".
 # rustup works with curl-minimal (provides /usr/bin/curl).
@@ -66,12 +76,32 @@ ENV CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu
 # librdkafka / openssl-vendored can be memory-hungry under qemu; keep jobs modest.
 ENV CARGO_BUILD_JOBS=2
 
+RUN rustup target add x86_64-unknown-linux-gnu \
+    && cargo install cargo-chef --locked
+
 WORKDIR /src
 
-# Context is repo root (Cargo.toml + src/ at the root of the context)
+# ── planner: hash only the dependency graph, not the source tree ────────────────
+FROM base AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY assets ./assets
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── builder: cook deps from the recipe (cached across src/ edits), then build ───
+FROM base AS builder
+COPY Cargo.toml Cargo.lock ./
+COPY --from=planner /src/recipe.json recipe.json
+
+# `cargo fetch` needs a parseable manifest, which means *some* target file on disk —
+# it doesn't care that this one is a stub. It's overwritten by the real `COPY src`
+# below; `cargo chef cook` doesn't read this directory at all (it builds from a
+# skeleton derived from recipe.json), so the stub never leaks into the actual build.
+RUN mkdir -p src && printf 'fn main() {}\n' > src/main.rs
+
+# Fetch real dependency sources so the librdkafka patch below can find them, and so
+# `cargo chef cook --offline` doesn't need network. Registry cache persists into the
+# cook layer that follows (same stage, same filesystem).
+RUN cargo fetch --target x86_64-unknown-linux-gnu
 
 # Workaround for a librdkafka 2.12.1 cmake-build bug: rdkafka_conf.c guards
 # `#include <curl/curl.h>` with `#ifdef WITH_OAUTHBEARER_OIDC`, but CMake's
@@ -82,15 +112,24 @@ COPY assets ./assets
 # newest crates.io release (4.10.0+2.12.1) still vendors the buggy 2.12.1 —
 # see https://github.com/fede1024/rust-rdkafka/issues/829. Patch the vendored
 # source in place; drop this once rdkafka-sys ships librdkafka >= 2.15.0.
-RUN rustup target add x86_64-unknown-linux-gnu \
-    && cargo fetch --target x86_64-unknown-linux-gnu \
-    && rdkafka_conf="$(find /root/.cargo/registry/src -path '*/rdkafka-sys-*/librdkafka/src/rdkafka_conf.c' -print -quit)" \
+# Must happen before `cargo chef cook`, which is what actually compiles librdkafka.
+RUN rdkafka_conf="$(find /root/.cargo/registry/src -path '*/rdkafka-sys-*/librdkafka/src/rdkafka_conf.c' -print -quit)" \
     && test -n "$rdkafka_conf" \
     && sed -i 's/#ifdef WITH_OAUTHBEARER_OIDC/#if WITH_OAUTHBEARER_OIDC/' "$rdkafka_conf" \
     && grep -n '#if WITH_OAUTHBEARER_OIDC' "$rdkafka_conf" | head -1
 
+# The expensive step: librdkafka + vendored OpenSSL + every crate dependency.
+# Cached as long as recipe.json's content is unchanged, i.e. as long as
+# Cargo.toml/Cargo.lock don't change — routine src/ edits never invalidate this.
+RUN cargo chef cook --release --offline --target x86_64-unknown-linux-gnu --recipe-path recipe.json
+
+# Context is repo root (Cargo.toml + src/ at the root of the context)
+COPY src ./src
+COPY assets ./assets
+
 # Explicit target for clarity when platform is linux/amd64.
-# rdkafka builds librdkafka + vendored OpenSSL from source — expect a long first build.
+# Only rakko's own crate compiles here — deps (incl. librdkafka/OpenSSL) came
+# pre-built from the cook layer above.
 RUN cargo build --release --offline --target x86_64-unknown-linux-gnu \
     && mkdir -p /out \
     && cp target/x86_64-unknown-linux-gnu/release/rakko /out/rakko \
