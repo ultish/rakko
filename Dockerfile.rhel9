@@ -25,10 +25,10 @@
 # version. That's why this is a single stage again — the cache-mount mechanism
 # makes cargo-chef's Docker-layer-ordering trick unnecessary.
 #
-# Portability: cache mounts need BuildKit. Docker (with buildx) and podman
-# (buildah, since ~4.1) both support `RUN --mount=type=cache`; Apple Container's
-# support is unverified — if that runtime fails on the `--mount` flag, drop back
-# to a plain `RUN cargo fetch && cargo build` (slower every time, but correct).
+# Portability: cache mounts need BuildKit. Confirmed working on all three
+# supported runtimes — docker (buildx), podman (buildah, since ~4.1), and Apple
+# Container — via `./scripts/build-tui-rhel9.sh` with each `DOCKER=` value: full
+# build, correct x86-64 ELF output, clean dynamic-link audit.
 #
 # IMPORTANT — build context is the repo root (Cargo.toml + src/ at context root):
 #
