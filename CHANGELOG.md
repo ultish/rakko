@@ -13,13 +13,24 @@ over dumping raw commit subjects.
 
 ### Added
 
-- New **Brokers** screen (**b** from the topic list): broker id/host/port plus a
-  cluster-health line (under-replicated / offline partition counts, from the same
-  metadata call — no extra round trip).
-- **1**/**2**/**3** jump directly between Topics/Groups/Brokers from any list-level
-  screen, instead of needing to **Esc** back to topic list first.
+- New **Brokers** screen: id/host/port, leader/replica partition counts (load
+  distribution across the cluster, from the same metadata call — no extra round
+  trip), and a cluster-health line (under-replicated / offline partition counts).
+  **Enter** drills into a broker's non-default config values (sensitive entries
+  redacted).
+- Persistent view-switcher bar under the banner on every list-level screen —
+  **1**/**2**/**3** jump directly between Topics/Groups/Brokers, replacing the old
+  per-screen **g**/**b** shortcuts (removed) with one consistent mechanism shown in
+  the same place everywhere.
 - Topic list: **/** filters topics by name (case-insensitive substring), **c**
   clears it — same pattern as the message browser's existing filter.
+
+### Changed
+
+- Keybind consistency pass: **e** is now reserved app-wide for "edit" (profile
+  picker, replay's edit-in-producer) — it no longer doubles as "export" on the
+  message browser. Export selected/all moved to **x**/**X**; group detail's
+  offset-reset trigger moved from **x** to **z** so **x** has one meaning everywhere.
 
 ### Fixed
 

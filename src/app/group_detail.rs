@@ -55,21 +55,6 @@ pub(super) fn parse_reset_input(kind: ResetInputKind, input: &str) -> Result<Off
 }
 
 impl App {
-    pub(super) fn open_groups(&mut self) -> Vec<Command> {
-        if self.screen != Screen::TopicList {
-            return vec![];
-        }
-        let Some(profile) = self.active_profile.clone() else {
-            return vec![];
-        };
-        self.screen = Screen::GroupList;
-        self.groups.clear();
-        self.group_list_selected_index = 0;
-        self.group_detail = None;
-        self.status_message = Some("loading consumer groups...".to_string());
-        vec![Command::LoadGroups(profile)]
-    }
-
     /// Reloads group lag/members if we're on group detail and not mid offset-reset wizard.
     pub(super) fn refresh_group_detail_if_idle(&mut self, announce: bool) -> Vec<Command> {
         if self.screen != Screen::GroupDetail {

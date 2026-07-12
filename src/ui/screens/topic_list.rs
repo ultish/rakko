@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     .title_style(TITLE_STYLE),
             );
         frame.render_widget(message, main);
-        render_keybind_footer(frame, footer, "r: refresh   g: groups   Esc: back   q: quit");
+        render_keybind_footer(frame, footer, "r: refresh   Esc: back   q: quit");
         return;
     }
 
@@ -102,9 +102,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_keybind_footer(
         frame,
         footer,
-        &format!(
-            "Enter: open   g: groups   b: brokers   r: refresh   /: filter{filter_hint}   1/2/3: topics/groups/brokers   Esc: back   q: quit"
-        ),
+        &format!("Enter: open   r: refresh   /: filter{filter_hint}   Esc: back   q: quit"),
     );
 }
 

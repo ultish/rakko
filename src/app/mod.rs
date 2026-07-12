@@ -6,6 +6,7 @@
 //! the handful of genuinely shared helpers (schema-fetch dedup, the filter /
 //! offset-reset-input text editing shared between two screens).
 
+mod broker_detail;
 mod export_import;
 mod group_detail;
 mod producer;
@@ -15,6 +16,7 @@ mod topic_detail;
 #[cfg(test)]
 mod tests;
 
+pub use broker_detail::BrokerDetailState;
 pub use export_import::{ExportImportFocus, ExportImportMode, ExportImportState};
 pub use group_detail::{GroupDetailState, OffsetResetPhase, ResetInputKind};
 pub use producer::{ProducerFocus, ProducerInputMode, ProducerState};
@@ -48,6 +50,7 @@ pub enum Screen {
     GroupList,
     GroupDetail,
     BrokerList,
+    BrokerDetail,
     Producer,
     ExportImport,
 }
@@ -73,6 +76,7 @@ pub struct App {
     pub brokers: Vec<BrokerSummary>,
     pub broker_list_selected_index: usize,
     pub cluster_health: ClusterHealth,
+    pub broker_detail: Option<BrokerDetailState>,
     pub producer: Option<ProducerState>,
     pub export_import: Option<ExportImportState>,
     /// Schema Registry client for the active profile (if `schema_registry_url` is set).
@@ -120,6 +124,7 @@ impl App {
             brokers: Vec::new(),
             broker_list_selected_index: 0,
             cluster_health: ClusterHealth::default(),
+            broker_detail: None,
             producer: None,
             export_import: None,
             schema_registry: None,
@@ -425,8 +430,6 @@ impl App {
                 }
                 vec![]
             }
-            Action::OpenGroups => self.open_groups(),
-            Action::OpenBrokers => self.open_brokers(),
             Action::SwitchToTopics => self.switch_top_level(Screen::TopicList),
             Action::SwitchToGroups => self.switch_top_level(Screen::GroupList),
             Action::SwitchToBrokers => self.switch_top_level(Screen::BrokerList),
@@ -769,6 +772,11 @@ impl App {
             Screen::BrokerList => {
                 Self::clamp_index(&mut self.broker_list_selected_index, self.brokers.len(), delta);
             }
+            Screen::BrokerDetail => {
+                if let Some(detail) = &mut self.broker_detail {
+                    Self::clamp_index(&mut detail.selected_index, detail.entries.len(), delta);
+                }
+            }
             Screen::Producer | Screen::ExportImport => {
                 // Text-entry screens; j/k are characters there.
             }
@@ -886,8 +894,8 @@ impl App {
                 }]
             }
             Screen::GroupDetail => vec![],
-            // No detail drill-down in v1 — Enter is a no-op.
-            Screen::BrokerList => vec![],
+            Screen::BrokerList => self.open_broker_detail(),
+            Screen::BrokerDetail => vec![],
             Screen::Producer => vec![],
             Screen::ExportImport => self.export_import_submit(),
         }
@@ -947,6 +955,12 @@ impl App {
             }
             Screen::BrokerList => {
                 self.screen = Screen::TopicList;
+                self.status_message = None;
+                vec![]
+            }
+            Screen::BrokerDetail => {
+                self.screen = Screen::BrokerList;
+                self.broker_detail = None;
                 self.status_message = None;
                 vec![]
             }
@@ -1176,23 +1190,9 @@ impl App {
                 }
                 vec![Command::LoadBrokers(profile)]
             }
+            Screen::BrokerDetail => self.refresh_broker_detail(announce),
             _ => vec![],
         }
-    }
-
-    fn open_brokers(&mut self) -> Vec<Command> {
-        if self.screen != Screen::TopicList {
-            return vec![];
-        }
-        let Some(profile) = self.active_profile.clone() else {
-            return vec![];
-        };
-        self.screen = Screen::BrokerList;
-        self.brokers.clear();
-        self.broker_list_selected_index = 0;
-        self.cluster_health = ClusterHealth::default();
-        self.status_message = Some("loading brokers...".to_string());
-        vec![Command::LoadBrokers(profile)]
     }
 
     /// Digit-key top-level switch (M10): jumps directly between Topics/Groups/Brokers
@@ -1216,6 +1216,9 @@ impl App {
         }
         if self.screen == Screen::GroupDetail {
             self.group_detail = None;
+        }
+        if self.screen == Screen::BrokerDetail {
+            self.broker_detail = None;
         }
 
         self.screen = target;
@@ -1423,6 +1426,27 @@ impl App {
             }
             AppEvent::BrokersLoadFailed(message) => {
                 self.status_message = Some(format!("failed to load brokers: {message}"));
+                vec![]
+            }
+            AppEvent::BrokerConfigLoaded { broker_id, entries } => {
+                if let Some(detail) = self.broker_detail.as_mut() {
+                    if detail.broker_id == broker_id {
+                        let entries_len = entries.len();
+                        detail.entries = entries;
+                        detail.selected_index = if entries_len == 0 {
+                            0
+                        } else {
+                            detail.selected_index.min(entries_len - 1)
+                        };
+                        self.status_message = None;
+                    }
+                    // else: stale reply for a broker the user has since navigated away
+                    // from — dropped, same pattern as MessageArrived's topic-tag check.
+                }
+                vec![]
+            }
+            AppEvent::BrokerConfigLoadFailed(message) => {
+                self.status_message = Some(format!("failed to load broker config: {message}"));
                 vec![]
             }
             AppEvent::OffsetResetSucceeded { group } => {

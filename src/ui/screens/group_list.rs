@@ -25,11 +25,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     .title_style(TITLE_STYLE),
             );
         frame.render_widget(message, main);
-        render_keybind_footer(
-            frame,
-            footer,
-            "r: refresh   1/2/3: topics/groups/brokers   Esc: back   q: quit",
-        );
+        render_keybind_footer(frame, footer, "r: refresh   Esc: back   q: quit");
         return;
     }
 
@@ -66,9 +62,5 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Some(&["Name", "State", "Members", "Protocol"]),
         app.group_list_selected_index,
     );
-    render_keybind_footer(
-        frame,
-        footer,
-        "Enter: open   r: refresh   1/2/3: topics/groups/brokers   Esc: back   q: quit",
-    );
+    render_keybind_footer(frame, footer, "Enter: open   r: refresh   Esc: back   q: quit");
 }

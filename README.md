@@ -163,16 +163,27 @@ On first launch a **splash** shows the stream otter:
 - Force with `RAKKO_TRUECOLOR=1` / `0`; respects `NO_COLOR`
 - Press **Enter** / **Space** / **Esc** (or any key) to continue
 
+On any of the list-level screens (Topics, Messages, Groups, Group detail, Brokers,
+Broker detail) a **switcher bar** sits under the banner: `1 Topics   2 Groups   3
+Brokers`, with the active view highlighted. **1**/**2**/**3** jump straight there —
+the only way to move between top-level views (no per-screen `g`/`b` shortcuts, so it
+means the same thing everywhere it appears). Producer/Export-import/Create-profile
+don't show it — a stray digit there would clobber an in-progress draft.
+
+Shortcuts are kept consistent app-wide: **e** always means *edit* (profile picker,
+replay's "edit in producer"), never anything else. Export uses **x**/**X** instead.
+
 | Screen | Keys |
 |--------|------|
 | **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **q** quit |
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
-| **Topics** | **Enter** open topic · **g** consumer groups · **b** brokers · **r**/**R** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch topics/groups/brokers |
-| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r**/**R** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **e** export selected · **E** export all visible · **i** import · **1**/**2**/**3** switch topics/groups/brokers |
-| **Message view** | **j**/**k** or arrows scroll · **PgUp**/**PgDn** page · **Enter**/**Esc** close · **y** replay · **e** export this message |
-| **Groups** | **Enter** detail · **r**/**R** refresh list · **1**/**2**/**3** switch topics/groups/brokers |
-| **Group detail** | **x** reset offsets · **r**/**R** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch topics/groups/brokers |
-| **Brokers** | **r**/**R** refresh list · **1**/**2**/**3** switch topics/groups/brokers |
+| **Topics** | **Enter** open topic · **r**/**R** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
+| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r**/**R** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
+| **Message view** | **j**/**k** or arrows scroll · **PgUp**/**PgDn** page · **Enter**/**Esc** close · **y** replay · **x** export this message |
+| **Groups** | **Enter** detail · **r**/**R** refresh list · **1**/**2**/**3** switch view |
+| **Group detail** | **z** reset offsets · **r**/**R** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch view |
+| **Brokers** | **Enter** view broker config · **r**/**R** refresh list · **1**/**2**/**3** switch view |
+| **Broker detail** | **r**/**R** refresh config · **Esc** back · **1**/**2**/**3** switch view |
 | **Producer** | **Tab** focus · **F3**/Ctrl-m mode (inline / file / `$EDITOR`) · **F2**/Ctrl-p send · **Esc** back |
 | **Replay** | **y**/**Enter** raw replay (byte-identical) · **e** edit in producer · **n**/**Esc** cancel |
 | **Export/import** | type path · **←**/**→**/**Home**/**End** cursor · **Delete** · **Tab** (import: path ↔ topic) · **Enter** run · **Esc** back |
@@ -185,7 +196,7 @@ Offset reset only works reliably when the group has **no active members** — th
 |------|--------|
 | Messages in **tail** mode | Yes — continuous consumer poll |
 | Messages in **seek** mode | No — load pages with **n**/**p** |
-| Topic list / group list / broker list | On open, or **r** refresh |
+| Topic list / group list / broker list / broker config | On open, or **r** refresh |
 | Group lag / members | On open, **R**, or auto ~every 3s while detail is open |
 
 ## Features (v1)
@@ -202,10 +213,12 @@ Offset reset only works reliably when the group has **no active members** — th
 
 ## Features (v2)
 
-- Brokers screen: broker id/host/port plus a cluster-health line (under-replicated /
-  offline partition counts)
-- Global view switcher: **1**/**2**/**3** jump directly between Topics/Groups/Brokers
-  from any list-level screen
+- Brokers screen: broker id/host/port, leader/replica partition counts (load
+  distribution across the cluster), and a cluster-health line (under-replicated /
+  offline partition counts) — drill in (**Enter**) for that broker's non-default
+  config values (`describe_configs`, sensitive entries redacted)
+- Persistent view-switcher bar: **1**/**2**/**3** jump directly between Topics/Groups/
+  Brokers from any list-level screen
 
 ## Architecture
 

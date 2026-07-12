@@ -13,6 +13,7 @@ use super::*;
 use super::topic_detail::SeekState;
 use crate::config::AuthMode;
 use crate::events::SeekPageRequest;
+use crate::kafka::admin::BrokerConfigEntry;
 use crate::kafka::group_offsets::PartitionLag;
 use crate::raw_message::RawMessage;
 use std::collections::HashMap;
@@ -913,41 +914,9 @@ fn sample_group_detail() -> GroupDetailState {
 }
 
 #[test]
-fn open_groups_from_topic_list_loads_groups() {
-    let mut app = app_on_topic_list();
-    let commands = app.update(Action::OpenGroups);
-    assert_eq!(app.screen, Screen::GroupList);
-    assert!(matches!(commands.as_slice(), [Command::LoadGroups(_)]));
-}
-
-#[test]
-fn open_groups_from_other_screens_is_noop() {
-    let mut app = app_in_topic_detail("orders", 1);
-    let commands = app.update(Action::OpenGroups);
-    assert!(commands.is_empty());
-    assert_eq!(app.screen, Screen::TopicDetail);
-}
-
-#[test]
-fn open_brokers_from_topic_list_loads_brokers() {
-    let mut app = app_on_topic_list();
-    let commands = app.update(Action::OpenBrokers);
-    assert_eq!(app.screen, Screen::BrokerList);
-    assert!(matches!(commands.as_slice(), [Command::LoadBrokers(_)]));
-}
-
-#[test]
-fn open_brokers_from_other_screens_is_noop() {
-    let mut app = app_in_topic_detail("orders", 1);
-    let commands = app.update(Action::OpenBrokers);
-    assert!(commands.is_empty());
-    assert_eq!(app.screen, Screen::TopicDetail);
-}
-
-#[test]
 fn back_on_broker_list_returns_to_topic_list() {
     let mut app = app_on_topic_list();
-    app.update(Action::OpenBrokers);
+    app.update(Action::SwitchToBrokers);
     let commands = app.update(Action::Back);
     assert_eq!(app.screen, Screen::TopicList);
     assert!(commands.is_empty());
@@ -956,17 +925,123 @@ fn back_on_broker_list_returns_to_topic_list() {
 #[test]
 fn brokers_loaded_populates_brokers_and_health() {
     let mut app = app_on_topic_list();
-    app.update(Action::OpenBrokers);
+    app.update(Action::SwitchToBrokers);
     app.apply_event(AppEvent::BrokersLoaded {
         brokers: vec![
-            BrokerSummary { id: 0, host: "kafka-0".into(), port: 9092 },
-            BrokerSummary { id: 1, host: "kafka-1".into(), port: 9092 },
+            BrokerSummary {
+                id: 0,
+                host: "kafka-0".into(),
+                port: 9092,
+                leader_partitions: 3,
+                replica_partitions: 5,
+            },
+            BrokerSummary {
+                id: 1,
+                host: "kafka-1".into(),
+                port: 9092,
+                leader_partitions: 2,
+                replica_partitions: 5,
+            },
         ],
         health: ClusterHealth { under_replicated: 1, offline: 0 },
     });
     assert_eq!(app.brokers.len(), 2);
+    assert_eq!(app.brokers[0].leader_partitions, 3);
     assert_eq!(app.cluster_health.under_replicated, 1);
     assert_eq!(app.cluster_health.offline, 0);
+}
+
+#[test]
+fn confirm_on_broker_list_opens_broker_detail_and_loads_config() {
+    let mut app = app_on_topic_list();
+    app.update(Action::SwitchToBrokers);
+    app.apply_event(AppEvent::BrokersLoaded {
+        brokers: vec![BrokerSummary {
+            id: 0,
+            host: "kafka-0".into(),
+            port: 9092,
+            leader_partitions: 3,
+            replica_partitions: 5,
+        }],
+        health: ClusterHealth::default(),
+    });
+    let commands = app.update(Action::Confirm);
+    assert_eq!(app.screen, Screen::BrokerDetail);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::LoadBrokerConfig { broker_id: 0, .. }]
+    ));
+}
+
+#[test]
+fn broker_config_loaded_populates_entries_for_matching_broker() {
+    let mut app = app_on_topic_list();
+    app.update(Action::SwitchToBrokers);
+    app.apply_event(AppEvent::BrokersLoaded {
+        brokers: vec![BrokerSummary {
+            id: 7,
+            host: "kafka-7".into(),
+            port: 9092,
+            leader_partitions: 0,
+            replica_partitions: 0,
+        }],
+        health: ClusterHealth::default(),
+    });
+    app.update(Action::Confirm);
+    app.apply_event(AppEvent::BrokerConfigLoaded {
+        broker_id: 7,
+        entries: vec![BrokerConfigEntry {
+            name: "message.max.bytes".into(),
+            value: "20971520".into(),
+        }],
+    });
+    let detail = app.broker_detail.as_ref().unwrap();
+    assert_eq!(detail.entries.len(), 1);
+    assert_eq!(detail.entries[0].name, "message.max.bytes");
+}
+
+#[test]
+fn broker_config_loaded_for_stale_broker_id_is_ignored() {
+    let mut app = app_on_topic_list();
+    app.update(Action::SwitchToBrokers);
+    app.apply_event(AppEvent::BrokersLoaded {
+        brokers: vec![BrokerSummary {
+            id: 7,
+            host: "kafka-7".into(),
+            port: 9092,
+            leader_partitions: 0,
+            replica_partitions: 0,
+        }],
+        health: ClusterHealth::default(),
+    });
+    app.update(Action::Confirm);
+    // Reply for a broker the user has since navigated away from (e.g. id 99) — dropped.
+    app.apply_event(AppEvent::BrokerConfigLoaded {
+        broker_id: 99,
+        entries: vec![BrokerConfigEntry { name: "x".into(), value: "y".into() }],
+    });
+    assert!(app.broker_detail.as_ref().unwrap().entries.is_empty());
+}
+
+#[test]
+fn back_on_broker_detail_returns_to_broker_list() {
+    let mut app = app_on_topic_list();
+    app.update(Action::SwitchToBrokers);
+    app.apply_event(AppEvent::BrokersLoaded {
+        brokers: vec![BrokerSummary {
+            id: 0,
+            host: "kafka-0".into(),
+            port: 9092,
+            leader_partitions: 0,
+            replica_partitions: 0,
+        }],
+        health: ClusterHealth::default(),
+    });
+    app.update(Action::Confirm);
+    let commands = app.update(Action::Back);
+    assert_eq!(app.screen, Screen::BrokerList);
+    assert!(app.broker_detail.is_none());
+    assert!(commands.is_empty());
 }
 
 #[test]

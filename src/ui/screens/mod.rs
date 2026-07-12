@@ -1,3 +1,4 @@
+pub mod broker_detail;
 pub mod broker_list;
 pub mod export_import;
 pub mod group_detail;

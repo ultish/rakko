@@ -36,6 +36,13 @@ impl KafkaClient {
         admin::list_brokers(&self.profile).await
     }
 
+    pub async fn fetch_broker_configs(
+        &self,
+        broker_id: i32,
+    ) -> crate::error::AppResult<Vec<admin::BrokerConfigEntry>> {
+        admin::fetch_broker_configs(&self.profile, broker_id).await
+    }
+
     pub async fn describe_group(
         &self,
         group_id: &str,

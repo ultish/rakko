@@ -33,18 +33,22 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
                     .title_style(TITLE_STYLE),
             );
         frame.render_widget(message, main);
-        render_keybind_footer(
-            frame,
-            footer,
-            "r: refresh   1/2/3: topics/groups/brokers   Esc: back   q: quit",
-        );
+        render_keybind_footer(frame, footer, "r: refresh   Esc: back   q: quit");
         return;
     }
 
     let items: Vec<Vec<String>> = app
         .brokers
         .iter()
-        .map(|broker| vec![broker.id.to_string(), broker.host.clone(), broker.port.to_string()])
+        .map(|broker| {
+            vec![
+                broker.id.to_string(),
+                broker.host.clone(),
+                broker.port.to_string(),
+                broker.leader_partitions.to_string(),
+                broker.replica_partitions.to_string(),
+            ]
+        })
         .collect();
 
     let title = match &app.status_message {
@@ -57,13 +61,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         main,
         &title,
         &items,
-        Some(&["ID", "Host", "Port"]),
+        Some(&["ID", "Host", "Port", "Leader", "Replicas"]),
         app.broker_list_selected_index,
     );
     render_keybind_footer(
         frame,
         footer,
-        "r: refresh   1/2/3: topics/groups/brokers   Esc: back   q: quit",
+        "Enter: config   r: refresh   Esc: back   q: quit",
     );
 }
 

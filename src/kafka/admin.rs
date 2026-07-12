@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use rdkafka::admin::{AdminClient, AdminOptions, ResourceSpecifier};
@@ -29,6 +30,11 @@ pub struct BrokerSummary {
     pub id: i32,
     pub host: String,
     pub port: i32,
+    /// Partitions this broker leads. Computed from the same `fetch_metadata()` call
+    /// used to list brokers (no extra round trip) — shows load distribution.
+    pub leader_partitions: usize,
+    /// Partitions this broker holds a replica for (including the led ones).
+    pub replica_partitions: usize,
 }
 
 /// Cluster-wide partition health, computed from the same `fetch_metadata()` call used
@@ -37,6 +43,15 @@ pub struct BrokerSummary {
 pub struct ClusterHealth {
     pub under_replicated: usize,
     pub offline: usize,
+}
+
+/// A single non-default broker config entry (`describe_configs`, filtered to values
+/// that differ from Kafka's hardcoded default — mirrors `kafka-configs.sh --describe`
+/// without `--all`, since the full default set is ~200 entries of noise).
+#[derive(Debug, Clone)]
+pub struct BrokerConfigEntry {
+    pub name: String,
+    pub value: String,
 }
 
 /// Kafka/librdkafka convention: internal topics (e.g. `__consumer_offsets`,
@@ -143,19 +158,15 @@ fn list_brokers_blocking(profile: &Profile) -> AppResult<(Vec<BrokerSummary>, Cl
     let consumer: BaseConsumer = consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
     let metadata = consumer.fetch_metadata(None, METADATA_TIMEOUT)?;
 
-    let brokers = metadata
-        .brokers()
-        .iter()
-        .map(|b| BrokerSummary {
-            id: b.id(),
-            host: b.host().to_string(),
-            port: b.port(),
-        })
-        .collect();
-
+    let mut leader_counts: HashMap<i32, usize> = HashMap::new();
+    let mut replica_counts: HashMap<i32, usize> = HashMap::new();
     let mut health = ClusterHealth::default();
     for topic in metadata.topics() {
         for partition in topic.partitions() {
+            *leader_counts.entry(partition.leader()).or_insert(0) += 1;
+            for replica in partition.replicas() {
+                *replica_counts.entry(*replica).or_insert(0) += 1;
+            }
             if partition.isr().len() < partition.replicas().len() {
                 health.under_replicated += 1;
             }
@@ -165,7 +176,60 @@ fn list_brokers_blocking(profile: &Profile) -> AppResult<(Vec<BrokerSummary>, Cl
         }
     }
 
+    let brokers = metadata
+        .brokers()
+        .iter()
+        .map(|b| BrokerSummary {
+            id: b.id(),
+            host: b.host().to_string(),
+            port: b.port(),
+            leader_partitions: leader_counts.get(&b.id()).copied().unwrap_or(0),
+            replica_partitions: replica_counts.get(&b.id()).copied().unwrap_or(0),
+        })
+        .collect();
+
     Ok((brokers, health))
+}
+
+/// Fetches a single broker's non-default config values via `describe_configs`.
+/// Sensitive entries (`is_sensitive`) are redacted rather than sent to the UI.
+pub async fn fetch_broker_configs(profile: &Profile, broker_id: i32) -> AppResult<Vec<BrokerConfigEntry>> {
+    let profile = profile.clone();
+    tokio::task::spawn_blocking(move || fetch_broker_configs_blocking(&profile, broker_id))
+        .await
+        .map_err(|err| AppError::Other(format!("broker config fetch task panicked: {err}")))?
+}
+
+fn fetch_broker_configs_blocking(profile: &Profile, broker_id: i32) -> AppResult<Vec<BrokerConfigEntry>> {
+    let admin_client: AdminClient<DefaultClientContext> =
+        consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+    let specifier = ResourceSpecifier::Broker(broker_id);
+    let opts = AdminOptions::new().request_timeout(Some(DESCRIBE_CONFIGS_TIMEOUT));
+    let results = futures::executor::block_on(admin_client.describe_configs([&specifier], &opts))?;
+
+    let resource = results
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Other(format!("no config resource returned for broker {broker_id}")))?
+        .map_err(|err| {
+            AppError::Other(format!("describe_configs failed for broker {broker_id}: {err}"))
+        })?;
+
+    let mut entries: Vec<BrokerConfigEntry> = resource
+        .entries
+        .into_iter()
+        .filter(|e| !e.is_default)
+        .map(|e| BrokerConfigEntry {
+            name: e.name,
+            value: if e.is_sensitive {
+                "<sensitive>".to_string()
+            } else {
+                e.value.unwrap_or_default()
+            },
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
 }
 
 /// Reads the broker's `message.max.bytes` via `describe_configs` on the first
@@ -278,5 +342,46 @@ mod integration_tests {
             .await
             .expect("fetch_broker_message_max_bytes");
         assert_eq!(detected, Some(20_971_520));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:19092)"]
+    async fn list_brokers_finds_the_single_node_cluster_and_a_led_partition() {
+        let profile = local_profile();
+        let topic = unique_name("brokerlist");
+        producer::produce(&profile, &topic, None, Some(b"v".to_vec()), Vec::new())
+            .await
+            .expect("produce should succeed against the local broker");
+
+        let (brokers, health) = list_brokers(&profile).await.expect("list_brokers");
+        assert_eq!(brokers.len(), 1, "docker-compose stack is single-node KRaft");
+        let broker = &brokers[0];
+        // The freshly produced topic's single partition is led (and replicated) by
+        // the only broker in this single-node stack.
+        assert!(broker.leader_partitions >= 1);
+        assert!(broker.replica_partitions >= broker.leader_partitions);
+        // Single-node, replication factor 1: nothing under-replicated or offline.
+        assert_eq!(health.under_replicated, 0);
+        assert_eq!(health.offline, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires `docker compose up -d` (localhost:19092)"]
+    async fn fetch_broker_configs_includes_the_compose_message_max_bytes_override() {
+        let profile = local_profile();
+        let (brokers, _) = list_brokers(&profile).await.expect("list_brokers");
+        let broker_id = brokers.first().expect("at least one broker").id;
+
+        let entries = fetch_broker_configs(&profile, broker_id)
+            .await
+            .expect("fetch_broker_configs");
+        let entry = entries
+            .iter()
+            .find(|e| e.name == "message.max.bytes")
+            .unwrap_or_else(|| panic!("message.max.bytes not in non-default entries: {entries:?}"));
+        assert_eq!(entry.value, "20971520");
+        // Non-default filter must actually be filtering — the full default set is
+        // ~200 entries, so a real broker returning far fewer confirms the filter ran.
+        assert!(entries.len() < 100);
     }
 }

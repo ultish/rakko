@@ -232,7 +232,7 @@ fn render_footer(frame: &mut Frame, area: Rect) {
     render_keybind_footer(
         frame,
         area,
-        "Enter: view   Tab/s: mode   o: sort   n/p: page   r/R: refresh   /: filter   w: produce   y: replay   e: export one   E: export all   i: import   Esc: back",
+        "Enter: view   Tab/s: mode   o: sort   n/p: page   r/R: refresh   /: filter   w: produce   y: replay   x: export one   X: export all   i: import   Esc: back",
     );
 }
 
@@ -299,7 +299,7 @@ fn render_message_inspector(
         Span::raw("   "),
         Span::styled("y: replay", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("   "),
-        Span::styled("e: export", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled("x: export", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!(
             "   line {}/{} ",
             scroll + 1,

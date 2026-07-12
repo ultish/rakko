@@ -1,6 +1,6 @@
 use apache_avro::Schema;
 
-use crate::kafka::admin::{BrokerSummary, ClusterHealth, TopicSummary};
+use crate::kafka::admin::{BrokerConfigEntry, BrokerSummary, ClusterHealth, TopicSummary};
 use crate::kafka::group_offsets::{GroupDetail, GroupSummary, OffsetResetTarget};
 use crate::raw_message::RawMessage;
 
@@ -70,6 +70,13 @@ pub enum AppEvent {
         health: ClusterHealth,
     },
     BrokersLoadFailed(String),
+    /// One broker's non-default config entries. Tagged with broker_id for the same
+    /// stale-event-rejection reason as `MessageArrived`/`SeekPageLoaded`.
+    BrokerConfigLoaded {
+        broker_id: i32,
+        entries: Vec<BrokerConfigEntry>,
+    },
+    BrokerConfigLoadFailed(String),
     OffsetResetSucceeded { group: String },
     OffsetResetFailed(String),
     ProduceSucceeded,
@@ -133,11 +140,8 @@ pub enum Action {
     CancelFilterInput,
     /// Clears an already-applied filter (topic-detail screen only).
     ClearFilter,
-    /// Open the consumer-group list (from topic list).
-    OpenGroups,
-    /// Open the broker list (from topic list).
-    OpenBrokers,
-    /// Jump directly to Topics/Groups/Brokers from any list-level screen.
+    /// Jump directly to Topics/Groups/Brokers from any list-level screen (the sole
+    /// navigation mechanism between top-level views — see the persistent switcher bar).
     SwitchToTopics,
     SwitchToGroups,
     SwitchToBrokers,
@@ -263,6 +267,10 @@ pub enum Command {
         group: String,
     },
     LoadBrokers(crate::config::Profile),
+    LoadBrokerConfig {
+        profile: crate::config::Profile,
+        broker_id: i32,
+    },
     ResetGroupOffsets {
         profile: crate::config::Profile,
         group: String,
