@@ -30,6 +30,12 @@ impl KafkaClient {
         group_offsets::list_groups(&self.profile).await
     }
 
+    pub async fn list_brokers(
+        &self,
+    ) -> crate::error::AppResult<(Vec<admin::BrokerSummary>, admin::ClusterHealth)> {
+        admin::list_brokers(&self.profile).await
+    }
+
     pub async fn describe_group(
         &self,
         group_id: &str,

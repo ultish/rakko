@@ -13,6 +13,11 @@ over dumping raw commit subjects.
 
 ### Added
 
+- New **Brokers** screen (**b** from the topic list): broker id/host/port plus a
+  cluster-health line (under-replicated / offline partition counts, from the same
+  metadata call — no extra round trip).
+- **1**/**2**/**3** jump directly between Topics/Groups/Brokers from any list-level
+  screen, instead of needing to **Esc** back to topic list first.
 - Topic list: **/** filters topics by name (case-insensitive substring), **c**
   clears it — same pattern as the message browser's existing filter.
 

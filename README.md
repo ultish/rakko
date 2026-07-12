@@ -163,11 +163,12 @@ On first launch a **splash** shows the stream otter:
 |--------|------|
 | **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **q** quit |
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
-| **Topics** | **Enter** open topic · **g** consumer groups · **r**/**R** refresh list · **/** filter by name · **c** clear filter |
-| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r**/**R** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **e** export selected · **E** export all visible · **i** import |
+| **Topics** | **Enter** open topic · **g** consumer groups · **b** brokers · **r**/**R** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch topics/groups/brokers |
+| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r**/**R** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **e** export selected · **E** export all visible · **i** import · **1**/**2**/**3** switch topics/groups/brokers |
 | **Message view** | **j**/**k** or arrows scroll · **PgUp**/**PgDn** page · **Enter**/**Esc** close · **y** replay · **e** export this message |
-| **Groups** | **Enter** detail · **r**/**R** refresh list |
-| **Group detail** | **x** reset offsets · **r**/**R** refresh lag (also auto every ~3s while open) |
+| **Groups** | **Enter** detail · **r**/**R** refresh list · **1**/**2**/**3** switch topics/groups/brokers |
+| **Group detail** | **x** reset offsets · **r**/**R** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch topics/groups/brokers |
+| **Brokers** | **r**/**R** refresh list · **1**/**2**/**3** switch topics/groups/brokers |
 | **Producer** | **Tab** focus · **F3**/Ctrl-m mode (inline / file / `$EDITOR`) · **F2**/Ctrl-p send · **Esc** back |
 | **Replay** | **y**/**Enter** raw replay (byte-identical) · **e** edit in producer · **n**/**Esc** cancel |
 | **Export/import** | type path · **←**/**→**/**Home**/**End** cursor · **Delete** · **Tab** (import: path ↔ topic) · **Enter** run · **Esc** back |
@@ -180,7 +181,7 @@ Offset reset only works reliably when the group has **no active members** — th
 |------|--------|
 | Messages in **tail** mode | Yes — continuous consumer poll |
 | Messages in **seek** mode | No — load pages with **n**/**p** |
-| Topic list / group list | On open, or **r** refresh |
+| Topic list / group list / broker list | On open, or **r** refresh |
 | Group lag / members | On open, **R**, or auto ~every 3s while detail is open |
 
 ## Features (v1)
@@ -194,6 +195,13 @@ Offset reset only works reliably when the group has **no active members** — th
 - Produce: inline editor, load file, or `$EDITOR`
 - Single-message replay: original raw bytes → same topic
 - Export/import: JSONL with base64 raw bytes as source of truth
+
+## Features (v2)
+
+- Brokers screen: broker id/host/port plus a cluster-health line (under-replicated /
+  offline partition counts)
+- Global view switcher: **1**/**2**/**3** jump directly between Topics/Groups/Brokers
+  from any list-level screen
 
 ## Architecture
 

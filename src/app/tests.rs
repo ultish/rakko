@@ -929,6 +929,84 @@ fn open_groups_from_other_screens_is_noop() {
 }
 
 #[test]
+fn open_brokers_from_topic_list_loads_brokers() {
+    let mut app = app_on_topic_list();
+    let commands = app.update(Action::OpenBrokers);
+    assert_eq!(app.screen, Screen::BrokerList);
+    assert!(matches!(commands.as_slice(), [Command::LoadBrokers(_)]));
+}
+
+#[test]
+fn open_brokers_from_other_screens_is_noop() {
+    let mut app = app_in_topic_detail("orders", 1);
+    let commands = app.update(Action::OpenBrokers);
+    assert!(commands.is_empty());
+    assert_eq!(app.screen, Screen::TopicDetail);
+}
+
+#[test]
+fn back_on_broker_list_returns_to_topic_list() {
+    let mut app = app_on_topic_list();
+    app.update(Action::OpenBrokers);
+    let commands = app.update(Action::Back);
+    assert_eq!(app.screen, Screen::TopicList);
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn brokers_loaded_populates_brokers_and_health() {
+    let mut app = app_on_topic_list();
+    app.update(Action::OpenBrokers);
+    app.apply_event(AppEvent::BrokersLoaded {
+        brokers: vec![
+            BrokerSummary { id: 0, host: "kafka-0".into(), port: 9092 },
+            BrokerSummary { id: 1, host: "kafka-1".into(), port: 9092 },
+        ],
+        health: ClusterHealth { under_replicated: 1, offline: 0 },
+    });
+    assert_eq!(app.brokers.len(), 2);
+    assert_eq!(app.cluster_health.under_replicated, 1);
+    assert_eq!(app.cluster_health.offline, 0);
+}
+
+#[test]
+fn switch_to_groups_from_topic_list_loads_groups() {
+    let mut app = app_on_topic_list();
+    let commands = app.update(Action::SwitchToGroups);
+    assert_eq!(app.screen, Screen::GroupList);
+    assert!(matches!(commands.as_slice(), [Command::LoadGroups(_)]));
+}
+
+#[test]
+fn switch_to_topics_is_noop_when_already_on_topics() {
+    let mut app = app_on_topic_list();
+    let commands = app.update(Action::SwitchToTopics);
+    assert!(commands.is_empty());
+    assert_eq!(app.screen, Screen::TopicList);
+}
+
+#[test]
+fn switch_to_groups_from_tailing_topic_detail_stops_tail() {
+    let mut app = app_in_topic_detail("orders", 1);
+    let commands = app.update(Action::SwitchToGroups);
+    assert_eq!(app.screen, Screen::GroupList);
+    assert!(app.topic_detail.is_none());
+    assert!(commands.iter().any(|c| matches!(c, Command::StopTail)));
+    assert!(commands.iter().any(|c| matches!(c, Command::LoadGroups(_))));
+}
+
+#[test]
+fn switch_to_brokers_from_group_detail_clears_group_detail() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::GroupDetail;
+    app.group_detail = Some(sample_group_detail());
+    let commands = app.update(Action::SwitchToBrokers);
+    assert_eq!(app.screen, Screen::BrokerList);
+    assert!(app.group_detail.is_none());
+    assert!(matches!(commands.as_slice(), [Command::LoadBrokers(_)]));
+}
+
+#[test]
 fn confirm_on_group_list_loads_group_detail() {
     let mut app = app_on_topic_list();
     app.screen = Screen::GroupList;

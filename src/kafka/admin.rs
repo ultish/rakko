@@ -24,6 +24,21 @@ pub struct TopicSummary {
     pub total_message_count: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct BrokerSummary {
+    pub id: i32,
+    pub host: String,
+    pub port: i32,
+}
+
+/// Cluster-wide partition health, computed from the same `fetch_metadata()` call used
+/// to list brokers (no extra round trip).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClusterHealth {
+    pub under_replicated: usize,
+    pub offline: usize,
+}
+
 /// Kafka/librdkafka convention: internal topics (e.g. `__consumer_offsets`,
 /// `__transaction_state`) are prefixed with `__` and shouldn't show up in a
 /// user-facing topic list.
@@ -109,6 +124,48 @@ fn fetch_compression_type(admin_client: &AdminClient<DefaultClientContext>, topi
         .and_then(|resource| resource.ok())
         .and_then(|resource| resource.get("compression.type")?.value.clone())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Lists all brokers plus cluster-wide health, from a single `fetch_metadata()` call.
+///
+/// Under-replicated = a partition whose ISR set is smaller than its replica set;
+/// offline = a partition with no leader (`leader() == -1`) or a metadata error.
+/// No `describe_cluster`/KIP-700 binding exists in rdkafka 0.39's Rust API, so there is
+/// no safe-Rust way to identify the controller broker — not attempted here.
+pub async fn list_brokers(profile: &Profile) -> AppResult<(Vec<BrokerSummary>, ClusterHealth)> {
+    let profile = profile.clone();
+    tokio::task::spawn_blocking(move || list_brokers_blocking(&profile))
+        .await
+        .map_err(|err| AppError::Other(format!("broker listing task panicked: {err}")))?
+}
+
+fn list_brokers_blocking(profile: &Profile) -> AppResult<(Vec<BrokerSummary>, ClusterHealth)> {
+    let consumer: BaseConsumer = consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+    let metadata = consumer.fetch_metadata(None, METADATA_TIMEOUT)?;
+
+    let brokers = metadata
+        .brokers()
+        .iter()
+        .map(|b| BrokerSummary {
+            id: b.id(),
+            host: b.host().to_string(),
+            port: b.port(),
+        })
+        .collect();
+
+    let mut health = ClusterHealth::default();
+    for topic in metadata.topics() {
+        for partition in topic.partitions() {
+            if partition.isr().len() < partition.replicas().len() {
+                health.under_replicated += 1;
+            }
+            if partition.leader() == -1 || partition.error().is_some() {
+                health.offline += 1;
+            }
+        }
+    }
+
+    Ok((brokers, health))
 }
 
 /// Reads the broker's `message.max.bytes` via `describe_configs` on the first

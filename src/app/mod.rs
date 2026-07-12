@@ -31,7 +31,7 @@ use std::path::PathBuf;
 
 use crate::config::{self, Config, Profile};
 use crate::events::{Action, AppEvent, Command};
-use crate::kafka::admin::TopicSummary;
+use crate::kafka::admin::{BrokerSummary, ClusterHealth, TopicSummary};
 use crate::kafka::group_offsets::{GroupSummary, OffsetResetTarget};
 use crate::kafka::schema_registry::SchemaRegistry;
 use crate::ring_buffer::RingBuffer;
@@ -47,6 +47,7 @@ pub enum Screen {
     TopicDetail,
     GroupList,
     GroupDetail,
+    BrokerList,
     Producer,
     ExportImport,
 }
@@ -69,6 +70,9 @@ pub struct App {
     pub groups: Vec<GroupSummary>,
     pub group_list_selected_index: usize,
     pub group_detail: Option<GroupDetailState>,
+    pub brokers: Vec<BrokerSummary>,
+    pub broker_list_selected_index: usize,
+    pub cluster_health: ClusterHealth,
     pub producer: Option<ProducerState>,
     pub export_import: Option<ExportImportState>,
     /// Schema Registry client for the active profile (if `schema_registry_url` is set).
@@ -113,6 +117,9 @@ impl App {
             groups: Vec::new(),
             group_list_selected_index: 0,
             group_detail: None,
+            brokers: Vec::new(),
+            broker_list_selected_index: 0,
+            cluster_health: ClusterHealth::default(),
             producer: None,
             export_import: None,
             schema_registry: None,
@@ -419,6 +426,10 @@ impl App {
                 vec![]
             }
             Action::OpenGroups => self.open_groups(),
+            Action::OpenBrokers => self.open_brokers(),
+            Action::SwitchToTopics => self.switch_top_level(Screen::TopicList),
+            Action::SwitchToGroups => self.switch_top_level(Screen::GroupList),
+            Action::SwitchToBrokers => self.switch_top_level(Screen::BrokerList),
             Action::StartOffsetReset => self.start_offset_reset(),
             Action::OffsetResetChooseEarliest => {
                 self.choose_offset_reset_target(OffsetResetTarget::Earliest)
@@ -755,6 +766,9 @@ impl App {
                     Self::clamp_index(&mut detail.selected_index, detail.lags.len(), delta);
                 }
             }
+            Screen::BrokerList => {
+                Self::clamp_index(&mut self.broker_list_selected_index, self.brokers.len(), delta);
+            }
             Screen::Producer | Screen::ExportImport => {
                 // Text-entry screens; j/k are characters there.
             }
@@ -872,6 +886,8 @@ impl App {
                 }]
             }
             Screen::GroupDetail => vec![],
+            // No detail drill-down in v1 — Enter is a no-op.
+            Screen::BrokerList => vec![],
             Screen::Producer => vec![],
             Screen::ExportImport => self.export_import_submit(),
         }
@@ -926,6 +942,11 @@ impl App {
             Screen::GroupDetail => {
                 self.screen = Screen::GroupList;
                 self.group_detail = None;
+                self.status_message = None;
+                vec![]
+            }
+            Screen::BrokerList => {
+                self.screen = Screen::TopicList;
                 self.status_message = None;
                 vec![]
             }
@@ -1146,8 +1167,83 @@ impl App {
             }
             Screen::GroupDetail => self.refresh_group_detail_if_idle(announce),
             Screen::TopicDetail => self.refresh_topic_detail(announce),
+            Screen::BrokerList => {
+                let Some(profile) = self.active_profile.clone() else {
+                    return vec![];
+                };
+                if announce {
+                    self.status_message = Some("refreshing brokers...".into());
+                }
+                vec![Command::LoadBrokers(profile)]
+            }
             _ => vec![],
         }
+    }
+
+    fn open_brokers(&mut self) -> Vec<Command> {
+        if self.screen != Screen::TopicList {
+            return vec![];
+        }
+        let Some(profile) = self.active_profile.clone() else {
+            return vec![];
+        };
+        self.screen = Screen::BrokerList;
+        self.brokers.clear();
+        self.broker_list_selected_index = 0;
+        self.cluster_health = ClusterHealth::default();
+        self.status_message = Some("loading brokers...".to_string());
+        vec![Command::LoadBrokers(profile)]
+    }
+
+    /// Digit-key top-level switch (M10): jumps directly between Topics/Groups/Brokers
+    /// from any list-level screen, always re-issuing the load command (matches this
+    /// app's "eventual consistency, no manual cache invalidation" style elsewhere).
+    fn switch_top_level(&mut self, target: Screen) -> Vec<Command> {
+        if self.screen == target {
+            return vec![];
+        }
+
+        let mut commands = Vec::new();
+        // Leaving TopicDetail while tailing needs the same StopTail as `back()` — don't
+        // leave an orphaned tail task running.
+        if self.screen == Screen::TopicDetail {
+            if let Some(detail) = self.topic_detail.as_ref() {
+                if matches!(detail.mode, BrowseMode::Tail(_)) {
+                    commands.push(Command::StopTail);
+                }
+            }
+            self.topic_detail = None;
+        }
+        if self.screen == Screen::GroupDetail {
+            self.group_detail = None;
+        }
+
+        self.screen = target;
+        self.status_message = None;
+
+        let Some(profile) = self.active_profile.clone() else {
+            return commands;
+        };
+        match target {
+            Screen::TopicList => {
+                self.status_message = Some("loading topics...".into());
+                commands.push(Command::LoadTopics(profile));
+            }
+            Screen::GroupList => {
+                self.groups.clear();
+                self.group_list_selected_index = 0;
+                self.status_message = Some("loading consumer groups...".into());
+                commands.push(Command::LoadGroups(profile));
+            }
+            Screen::BrokerList => {
+                self.brokers.clear();
+                self.broker_list_selected_index = 0;
+                self.status_message = Some("loading brokers...".into());
+                commands.push(Command::LoadBrokers(profile));
+            }
+            _ => {}
+        }
+        commands
     }
 
     /// Applies a background event. May return `FetchSchema` commands when Avro messages
@@ -1311,6 +1407,22 @@ impl App {
             }
             AppEvent::GroupDetailLoadFailed(message) => {
                 self.status_message = Some(format!("failed to load group: {message}"));
+                vec![]
+            }
+            AppEvent::BrokersLoaded { brokers, health } => {
+                self.brokers = brokers;
+                self.cluster_health = health;
+                if self.brokers.is_empty() {
+                    self.broker_list_selected_index = 0;
+                } else {
+                    self.broker_list_selected_index =
+                        self.broker_list_selected_index.min(self.brokers.len() - 1);
+                }
+                self.status_message = None;
+                vec![]
+            }
+            AppEvent::BrokersLoadFailed(message) => {
+                self.status_message = Some(format!("failed to load brokers: {message}"));
                 vec![]
             }
             AppEvent::OffsetResetSucceeded { group } => {

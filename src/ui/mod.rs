@@ -40,6 +40,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::TopicDetail => screens::topic_detail::render(frame, app, content),
         Screen::GroupList => screens::group_list::render(frame, app, content),
         Screen::GroupDetail => screens::group_detail::render(frame, app, content),
+        Screen::BrokerList => screens::broker_list::render(frame, app, content),
         Screen::Producer => screens::producer::render(frame, app, content),
         Screen::ExportImport => screens::export_import::render(frame, app, content),
     }

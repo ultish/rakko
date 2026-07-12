@@ -130,70 +130,12 @@ src/
 7. **M7 — Export/import JSONL.** Streaming writer (paged via M2's primitives, never buffering a full topic), reader with target-topic override reusing M4's producer path. Composes every prior primitive, naturally last.
 8. **M8 — Airgap RHEL9 build.** A `Dockerfile.rhel9` + wrapper script, adapted from the sibling `harness` project's `tui/Dockerfile.rhel9` / `scripts/build-tui-rhel9.sh` (Rocky Linux 9 builder → glibc-compatible with RHEL9, avoids `GLIBC_2.xx not found` at runtime; `cargo build --release --target x86_64-unknown-linux-gnu`; extracted binary packaged as a versioned `.tar.gz` + `SHA256SUMS`; multi-runtime docker/podman/Apple-Container wrapper with `--platform linux/amd64` for Apple Silicon). **Delta from that reference**: rakko's `rdkafka` (`cmake-build`, `ssl`, `ssl-vendored`) compiles librdkafka from C source and statically vendors OpenSSL, so the Rocky 9 builder image needs `cmake` and `perl` in addition to `gcc gcc-c++ make`. Verify with `ldd` on the built binary (same check the reference script runs) that only expected dynamic deps (glibc, libgcc_s) remain — no stray dynamic OpenSSL/librdkafka links defeating the point of vendoring. Sequenced last since it packages the finished v1 binary rather than gating any feature work.
 
-## Milestones (v2 — planned, not yet built)
+## Milestones (v2)
 
-Picks up after v1 (M1–M8, shipped as 0.1.0/0.2.0). Two features, sequenced so M9
-lands first since M10 needs a third sibling screen to be worth the navigation change.
+Picks up after v1 (M1–M8, shipped as 0.1.0/0.2.0).
 
-9. **M9 — Broker list screen.** New read-only screen, same shape as topics/groups.
-   - `kafka/admin.rs`: `pub struct BrokerSummary { id: i32, host: String, port: i32 }`
-     + `pub async fn list_brokers(profile: &Profile) -> AppResult<Vec<BrokerSummary>>`,
-     blocking impl via one `consumer.fetch_metadata(None, METADATA_TIMEOUT)` call —
-     `Metadata::brokers()` gives `MetadataBroker::{id, host, port}` directly (confirmed
-     present in `rdkafka` 0.39's `src/metadata.rs`).
-   - **Cluster health, same metadata call, no extra round trip**: `MetadataPartition`
-     exposes `.replicas()`, `.isr()`, `.leader()`, `.error()` (confirmed present).
-     Under-replicated = `isr().len() < replicas().len()`; offline = `leader() == -1`
-     or `.error().is_some()`. Roll this into a small `ClusterHealth { under_replicated:
-     usize, offline: usize }` returned alongside brokers (or folded into
-     `BrokerSummary`'s caller), shown as a header line on the new screen (e.g. "3
-     brokers · 0 under-replicated · 0 offline", colored via `ERROR_STYLE` when nonzero)
-     — this directly closes the "cluster health at a glance" gap flagged earlier.
-   - **Known API gap — don't chase this**: rdkafka 0.39's Rust bindings have no
-     `describe_cluster`/KIP-700 binding (confirmed absent from `src/admin.rs`).
-     `Metadata::orig_broker_id()` is *which broker answered this request*, not the
-     controller. There is no safe-Rust way to identify the controller broker without a
-     raw protocol call — skip a "controller" badge in v1 rather than spending time on
-     a dead end.
-   - App/UI: `Screen::BrokerList` variant; `brokers: Vec<BrokerSummary>` +
-     `broker_list_selected_index: usize` fields flat on `App` (mirror `topics`/
-     `topic_list_selected_index` — no dedicated `app/broker_list.rs` submodule needed
-     yet, since v1 of this screen has no drill-down, same as how `topic_list` itself
-     has no submodule today). `Command::LoadBrokers(Profile)` /
-     `AppEvent::BrokersLoaded{ brokers, health }` / `BrokersLoadFailed(String)`, spawned
-     in `main.rs` the same way as `spawn_topic_load`/`spawn_group_load`.
-     `ui/screens/broker_list.rs` mirrors `topic_list.rs`'s shape (columns: ID, Host,
-     Port). No detail drill-down in v1 — Enter is a no-op; per-broker `describe_configs`
-     (the pattern already exists in `fetch_broker_message_max_bytes_blocking`) is a
-     natural M9.1 if a broker-detail screen is wanted later.
-   - Reachable via `g`-style keybind from topic list initially (e.g. `b`), superseded
-     by M10's switcher once that lands.
-
-10. **M10 — Global top-level view switcher.** Digit keys `1`/`2`/`3` jump directly
-    between Topics/Groups/Brokers from any of the "list-level" screens, instead of the
-    current model (Groups only reachable via `g` *from* topic list, laterally moving
-    means `Esc`-ing back first). Confirmed free: no existing `Char('1'/'2'/'3')`
-    bindings in `main.rs`.
-    - New discrete actions (matching the existing `OffsetResetChooseEarliest`-style
-      one-action-per-choice convention, not a parameterized variant):
-      `Action::SwitchToTopics`, `SwitchToGroups`, `SwitchToBrokers`.
-    - `main.rs` key mapping: gate on
-      `matches!(app.screen, Screen::TopicList | Screen::TopicDetail | Screen::GroupList
-      | Screen::GroupDetail | Screen::BrokerList)`. Placing this arm *after* the
-      existing filter-input / replay-wizard / offset-reset-wizard early-return guard
-      blocks (already in `key_to_action`) is sufficient to keep digits from firing
-      while one of those is capturing keystrokes — don't add redundant checks.
-      Deliberately excludes Producer/ExportImport/ProfileCreate: a stray digit
-      shouldn't blow away an in-progress produce/export draft.
-    - Reducer: each `SwitchToX` sets `self.screen` to the target list screen directly.
-      Leaving `TopicDetail` while in `BrowseMode::Tail` still needs `Command::StopTail`
-      (same requirement `back()` already has — don't leave an orphaned tail task).
-      Open design call for the implementer: reload target data on every switch (simple,
-      matches this app's existing "eventual consistency, no manual cache invalidation"
-      style) vs. only on first-ever visit (fewer redundant fetches). Lean toward
-      always-refresh — it's a cheap background command, and matches how `open_groups()`
-      already unconditionally issues `LoadGroups` today rather than checking staleness.
-    - Update footer text on all three list screens + README's keybind table.
+9. **M9 — Broker list screen.** New read-only screen, same shape as topics/groups. `kafka/admin.rs` gained `BrokerSummary { id, host, port }` and `ClusterHealth { under_replicated, offline }`, both filled from one `fetch_metadata()` call via `list_brokers()` — under-replicated = `isr().len() < replicas().len()`, offline = `leader() == -1 || error().is_some()`, computed across every partition on the cluster (no filtering of internal topics — this is cluster health, not the topic list). No `describe_cluster`/KIP-700 binding exists in rdkafka 0.39's Rust API, so there's no safe-Rust way to identify the controller broker — a "controller" badge was skipped rather than chasing a raw-protocol dead end. `Screen::BrokerList` + flat `brokers`/`broker_list_selected_index`/`cluster_health` fields on `App` (no dedicated `app/broker_list.rs` submodule — same as `topic_list`, no drill-down in v1, Enter is a no-op). `ui/screens/broker_list.rs` renders a health line ("N broker(s) · X under-replicated · Y offline", `ERROR_STYLE` when nonzero) above an ID/Host/Port table. Reachable via `b` from the topic list.
+10. **M10 — Global top-level view switcher.** `1`/`2`/`3` jump directly between Topics/Groups/Brokers from any list-level screen (`TopicList`, `TopicDetail`, `GroupList`, `GroupDetail`, `BrokerList`), instead of `Esc`-ing back to topic list first to move laterally. New discrete actions `Action::SwitchToTopics`/`SwitchToGroups`/`SwitchToBrokers`, gated in `main.rs`'s `key_to_action` after the existing filter-input / replay-wizard / offset-reset-wizard hijack blocks so digits never leak into those; Producer/ExportImport/ProfileCreate are excluded so a stray digit can't blow away an in-progress draft. The reducer's `switch_top_level()` helper always re-issues the target's load command (topics/groups/brokers) even if already visited — matches the app's existing "eventual consistency, no manual cache invalidation" style — and still emits `Command::StopTail` when leaving a tailing `TopicDetail`, same as `back()`.
 
 ## Verification
 

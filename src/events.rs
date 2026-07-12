@@ -1,6 +1,6 @@
 use apache_avro::Schema;
 
-use crate::kafka::admin::TopicSummary;
+use crate::kafka::admin::{BrokerSummary, ClusterHealth, TopicSummary};
 use crate::kafka::group_offsets::{GroupDetail, GroupSummary, OffsetResetTarget};
 use crate::raw_message::RawMessage;
 
@@ -65,6 +65,11 @@ pub enum AppEvent {
     GroupsLoadFailed(String),
     GroupDetailLoaded(GroupDetail),
     GroupDetailLoadFailed(String),
+    BrokersLoaded {
+        brokers: Vec<BrokerSummary>,
+        health: ClusterHealth,
+    },
+    BrokersLoadFailed(String),
     OffsetResetSucceeded { group: String },
     OffsetResetFailed(String),
     ProduceSucceeded,
@@ -130,6 +135,12 @@ pub enum Action {
     ClearFilter,
     /// Open the consumer-group list (from topic list).
     OpenGroups,
+    /// Open the broker list (from topic list).
+    OpenBrokers,
+    /// Jump directly to Topics/Groups/Brokers from any list-level screen.
+    SwitchToTopics,
+    SwitchToGroups,
+    SwitchToBrokers,
     /// Begin the offset-reset wizard on the group-detail screen.
     StartOffsetReset,
     /// Choose earliest/latest/absolute/timestamp in the offset-reset wizard.
@@ -251,6 +262,7 @@ pub enum Command {
         profile: crate::config::Profile,
         group: String,
     },
+    LoadBrokers(crate::config::Profile),
     ResetGroupOffsets {
         profile: crate::config::Profile,
         group: String,

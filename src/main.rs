@@ -321,6 +321,7 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('/') => Some(Action::StartFilterInput),
         KeyCode::Char('c') if filter_applied => Some(Action::ClearFilter),
         KeyCode::Char('g') if app.screen == Screen::TopicList => Some(Action::OpenGroups),
+        KeyCode::Char('b') if app.screen == Screen::TopicList => Some(Action::OpenBrokers),
         // Group detail: `x` starts offset-reset; `r`/`R` refresh lag (same as other screens).
         KeyCode::Char('x') if app.screen == Screen::GroupDetail => Some(Action::StartOffsetReset),
         KeyCode::Char('R') | KeyCode::Char('r')
@@ -330,9 +331,32 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
                     | Screen::GroupList
                     | Screen::GroupDetail
                     | Screen::TopicDetail
+                    | Screen::BrokerList
             ) =>
         {
             Some(Action::Refresh)
+        }
+        // M10: digit keys jump directly between list-level screens. Reached only after
+        // the filter-input / replay-wizard / offset-reset-wizard / profile-create /
+        // export-import early-return guards above, so a stray digit while one of those
+        // is capturing keystrokes never fires this. Producer/ExportImport/ProfileCreate
+        // are deliberately excluded so a digit doesn't blow away an in-progress draft.
+        KeyCode::Char('1' | '2' | '3')
+            if matches!(
+                app.screen,
+                Screen::TopicList
+                    | Screen::TopicDetail
+                    | Screen::GroupList
+                    | Screen::GroupDetail
+                    | Screen::BrokerList
+            ) =>
+        {
+            match key.code {
+                KeyCode::Char('1') => Some(Action::SwitchToTopics),
+                KeyCode::Char('2') => Some(Action::SwitchToGroups),
+                KeyCode::Char('3') => Some(Action::SwitchToBrokers),
+                _ => unreachable!(),
+            }
         }
         KeyCode::Char('w') if app.screen == Screen::TopicDetail => Some(Action::OpenProducer),
         KeyCode::Char('y') if app.screen == Screen::TopicDetail => Some(Action::RequestReplay),
@@ -402,6 +426,17 @@ fn spawn_group_load(profile: config::Profile, tx: mpsc::UnboundedSender<AppEvent
         let event = match client.list_groups().await {
             Ok(groups) => AppEvent::GroupsLoaded(groups),
             Err(err) => AppEvent::GroupsLoadFailed(err.to_string()),
+        };
+        let _ = tx.send(event);
+    });
+}
+
+fn spawn_broker_load(profile: config::Profile, tx: mpsc::UnboundedSender<AppEvent>) {
+    tokio::spawn(async move {
+        let client = kafka::KafkaClient::new(profile);
+        let event = match client.list_brokers().await {
+            Ok((brokers, health)) => AppEvent::BrokersLoaded { brokers, health },
+            Err(err) => AppEvent::BrokersLoadFailed(err.to_string()),
         };
         let _ = tx.send(event);
     });
@@ -517,6 +552,7 @@ fn handle_command(
         Command::LoadGroupDetail { profile, group } => {
             spawn_group_detail_load(profile, group, tx.clone())
         }
+        Command::LoadBrokers(profile) => spawn_broker_load(profile, tx.clone()),
         Command::ResetGroupOffsets {
             profile,
             group,
