@@ -17,6 +17,26 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
 - **Airgap-ready.** Ships as a single statically-linked binary for RHEL 9 — no runtime deps to smuggle into a locked-down environment.
 - **It's a TUI.** No Electron, no browser tab, no waiting for a page to load — `j`/`k` and it's already there.
 
+## Features
+
+- **Connect to any cluster** — save named profiles (plaintext, TLS, or mutual TLS)
+  and switch between clusters without leaving the TUI
+- **See what's going on** — topic list with partition/replication/compression info,
+  and a brokers view with per-broker load and overall cluster health
+- **Browse messages your way** — watch a topic live as messages arrive, or page back
+  through history; filter by plain text, or write a structured query against JSON/Avro
+  fields (e.g. "only messages where `value.status = "failed"`")
+- **Avro decoded automatically** — point rakko at your Schema Registry and Avro
+  messages show up as readable JSON, no manual schema handling
+- **Keep an eye on consumer groups** — see members and per-partition lag, and reset
+  offsets if a group gets stuck
+- **Send and resend messages** — write a new message from the terminal, or replay an
+  existing one byte-for-byte back to its topic
+- **Back up and restore topics** — export messages to a file and import them again
+  later, byte-identical to the originals
+- **Use a mouse or just the keyboard** — click and scroll, or stay entirely on the
+  keyboard — both are fully supported
+
 ## Prerequisites
 
 - **Rust** (stable) — [rustup](https://rustup.rs/)
@@ -24,36 +44,36 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
   - macOS: `xcode-select --install` and `brew install cmake`
   - Linux: `gcc`, `g++`, `make`, `cmake`, `perl`
 
-## Quick start (local stack)
+## Quick start
+
+Prebuilt binary (macOS or airgapped RHEL 9 — no Rust/CMake toolchain needed): grab
+`rakko-macos-<arch>.tar.gz` or `rakko-linux-amd64.tar.gz` from the
+[Releases](https://github.com/ultish/rakko/releases) page, or build one yourself —
+see [Release builds](#release-builds).
+
+Otherwise, build from source (`cargo run` for a debug build, or `cargo build --release`
++ `./target/release/rakko` for release):
 
 ```bash
-# 1. Start Kafka + Schema Registry
-docker compose up -d
-
-# 2a. First run with no config — the TUI opens a create-profile form
-cargo run
-#    (save a profile named "local" pointing at localhost:19092)
-
-# 2b. Or copy the example config and skip the form
-mkdir -p ~/.config/rakko
-cp config.example.toml ~/.config/rakko/config.toml
-cargo run -- --profile local
+cargo build --release
+./target/release/rakko
 ```
 
-| Service          | Host address        |
-|------------------|---------------------|
-| Kafka            | `localhost:19092`   |
-| Schema Registry  | `http://localhost:18081` |
+No config yet, so rakko opens a **create-profile form** — enter your cluster's
+bootstrap servers (and auth, if needed), press Enter to save and connect. See
+[Configuration](#configuration) below for TLS/mTLS examples and the on-disk format.
 
-Non-default host ports (19092/18081, not 9092/8081), deliberately chosen so this
-stack doesn't collide with an unrelated Kafka deployment that may already be running
-on your machine.
+Once you have a saved profile, pass `--profile <name>` to skip the picker
+(`cargo run -- --profile local`, or `./target/release/rakko --profile local`).
 
-Stop the stack with `docker compose down`.
+Don't have a cluster handy? [Development](#development) has a local Docker Compose
+stack (Kafka + Schema Registry) to try rakko against.
 
 ## Configuration
 
 Config lives at **`~/.config/rakko/config.toml`** on both macOS and Linux (not `~/Library/Application Support`).
+
+Logs are written to **`~/.config/rakko/rakko.log`** (never to the TTY while the UI is running). Control verbosity with `RUST_LOG` (e.g. `RUST_LOG=info`).
 
 ### First run / in-app profile creation
 
@@ -127,6 +147,8 @@ Optional per-profile producer knobs:
 "compression.type" = "zstd"
 ```
 
+## Message browsing
+
 ### Schema Registry (Avro)
 
 Set `schema_registry_url` on the profile (see example above). When browsing messages:
@@ -171,31 +193,9 @@ key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
   e.g. `value.house.` → `owner`/`price`/`rooms`) — the candidate list is shown with
   the current pick highlighted. Only completes at the end of the input.
 
-Logs are written to **`~/.config/rakko/rakko.log`** (never to the TTY while the UI is running). Control verbosity with `RUST_LOG` (e.g. `RUST_LOG=info`).
-
-## Running
-
-```bash
-# Debug build
-cargo run
-
-# Skip profile picker
-cargo run -- --profile local
-
-# Release binary
-cargo build --release
-./target/release/rakko --profile local
-```
-
 ## Keybinds
 
 Global: **`q`** quit (confirms) · **Ctrl-c** force quit · **Esc** back · **j/k** or arrows move · **Enter** confirm · **`A`** toggle banner braille-stream animation.
-
-On first launch a **splash** shows the stream otter:
-- **Truecolor terminals** (`COLORTERM=truecolor`, etc.): half-block photo art (~72 columns)
-- **Otherwise**: braille silhouette (smaller ears)
-- Force with `RAKKO_TRUECOLOR=1` / `0`; respects `NO_COLOR`
-- Press **Enter** / **Space** / **Esc** (or any key) to continue
 
 On any of the list-level screens (Topics, Messages, Groups, Group detail, Brokers,
 Broker detail) a **switcher bar** sits under the banner: `1 Topics   2 Groups   3
@@ -213,7 +213,7 @@ replay's "edit in producer"), never anything else. Export uses **x**/**X** inste
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
 | **Topics** | **Enter** open topic · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
 | **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page (seek) · **/** filter · **?** query filter · **c** clear filter(s) · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
-| **Message view** | **j**/**k** or **↑**/**↓** scroll the focused panel · **PgUp**/**PgDn** page · **Tab**/click switch panel (Key/Headers/Value) · **←**/**→** resize the focused panel · **Enter**/**Esc** close · **y** replay · **x** export this message |
+| **Message view** | 2×2 grid: **Attrs** (topic/partition/offset/timestamp/formats) + **Headers** on top, **Key**/**Value** below · **j**/**k** or **↑**/**↓** scroll the focused panel · **PgUp**/**PgDn** page · **Tab**/click switch focus between **Headers**/**Key**/**Value** (Attrs has no scrollback, so isn't focusable) · **←**/**→** resize the focused panel against its row-mate (Attrs↔Headers or Key↔Value) · **Enter**/**Esc** close · **y** replay · **x** export this message |
 | **Groups** | **Enter** detail · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
 | **Group detail** | **z** reset offsets · **r** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch view |
 | **Brokers** | **Enter** view broker config · **r** refresh list · **1**/**2**/**3** switch view |
@@ -241,33 +241,7 @@ Offset reset only works reliably when the group has **no active members** — th
 | Messages in **tail** mode | Yes — continuous consumer poll |
 | Messages in **seek** mode | No — load pages with **n**/**p** |
 | Topic list / group list / broker list / broker config | On open, or **r** refresh |
-| Group lag / members | On open, **R**, or auto ~every 3s while detail is open |
-
-## Features
-
-- Multi-cluster profiles (PLAINTEXT / TLS / mTLS; SASL designed for later)
-- In-TUI first-run / **n** profile create (writes `config.toml`); profile picker to switch
-- Topics: partitions, RF, compression, approximate message counts
-- Message browse: live tail (ring buffer) + seek by page; filter on raw/decoded text
-- Auto-detect + decode: Confluent Avro (magic byte → `GET /schemas/ids/{id}` when `schema_registry_url` is set, cached), JSON, raw/hex
-- Consumer groups: members, per-partition lag (manual + auto refresh), destructive offset reset
-- Produce: inline editor, load file, or `$EDITOR`
-- Single-message replay: original raw bytes → same topic
-- Export/import: JSONL with base64 raw bytes as source of truth
-- Brokers screen: broker id/host/port, leader/replica partition counts (load
-  distribution across the cluster), and a cluster-health line (under-replicated /
-  offline partition counts) — drill in (**Enter**) for that broker's non-default
-  config values (`describe_configs`, sensitive entries redacted)
-- Persistent view-switcher bar: **1**/**2**/**3** jump directly between Topics/Groups/
-  Brokers from any list-level screen
-- Topic/group list filtering (**/**, **c**), topics sorted by name
-- Advanced structured query filter (**?**) on the message browser — field-path queries
-  into JSON/Avro keys/values (`key.a.b = "x" AND value.c != 5`), array fields matched
-  by any-element, independent of and composable with the plain substring filter, with
-  Tab-completion of field paths from the current page
-- Mouse support: scroll to navigate, click a row to select (double-click to open),
-  hover highlighting, click-to-focus producer/export-import fields, clickable
-  Topics/Groups/Brokers switcher bar
+| Group lag / members | On open, **r**, or auto ~every 3s while detail is open |
 
 ## Architecture
 
@@ -326,9 +300,15 @@ banner animation). `RawMessage` (`src/raw_message.rs`) is the one byte-preservin
 threaded through browsing, replay, and export/import, so replayed/exported messages
 are never a decode-then-re-encode round trip.
 
-## Airgap / RHEL 9 binary
+## Release builds
 
-Build a glibc-compatible **linux/amd64** binary (Rocky 9 builder) with statically vendored librdkafka + OpenSSL:
+Prebuilt, statically-linked binaries for airgapped/offline installs — no runtime
+librdkafka/OpenSSL to smuggle in. Both scripts write into `dist/` (a shared
+`SHA256SUMS` is merged, not clobbered, so you can run either or both).
+
+### Airgap / RHEL 9 binary (Linux/amd64)
+
+Cross-builds a glibc-compatible **linux/amd64** binary via a Rocky 9 container, with statically vendored librdkafka + OpenSSL:
 
 ```bash
 ./scripts/build-tui-rhel9.sh
@@ -341,16 +321,54 @@ Artifacts land in `dist/`:
 - `rakko-linux-amd64` / `rakko`
 - `rakko-linux-amd64.tar.gz`
 - `SHA256SUMS`
+- `ldd.txt` — dynamic-link audit (should be glibc/libgcc_s only)
 
 Requires a working container runtime with **linux/amd64** support (on Apple Silicon: Rosetta or Apple Container). First build is slow (compiles librdkafka + OpenSSL).
 
+### macOS binary
+
+Native build (no container) — runs on whatever Mac you're on, producing that Mac's
+architecture (`arm64` or `x86_64`). The same vendored librdkafka/OpenSSL Cargo
+features apply on any platform, so this is just `cargo build --release` plus
+packaging to match the RHEL 9 script's `dist/` conventions:
+
+```bash
+./scripts/build-macos.sh
+```
+
+Artifacts land in `dist/`:
+
+- `rakko-macos-<arch>`
+- `rakko-macos-<arch>.tar.gz`
+- `SHA256SUMS` (merged with any RHEL 9 entries)
+- `otool-macos-<arch>.txt` — dynamic-link audit (should be system frameworks + libSystem/libiconv only)
+
 ## Development
+
+A local Docker Compose stack (Kafka + Schema Registry) covers manual testing and the
+`--ignored` integration tier — nothing else in the repo depends on it.
+
+```bash
+docker compose up -d
+```
+
+| Service          | Host address        |
+|------------------|---------------------|
+| Kafka            | `localhost:19092`   |
+| Schema Registry  | `http://localhost:18081` |
+
+Non-default host ports (19092/18081, not 9092/8081), deliberately chosen so this
+stack doesn't collide with an unrelated Kafka deployment that may already be running
+on your machine. Stop it with `docker compose down`.
 
 ```bash
 cargo test                     # pure-logic tests (no broker)
-docker compose up -d           # start the local Kafka + Schema Registry stack
-cargo test -- --ignored        # integration tests against that stack
-cargo run                      # UI against your config
+cargo test -- --ignored        # integration tests against the compose stack above
+
+# Try the UI against the compose stack:
+mkdir -p ~/.config/rakko
+cp config.example.toml ~/.config/rakko/config.toml
+cargo run -- --profile local
 ```
 
 Design notes and milestone plan: [PLAN.md](./PLAN.md).
