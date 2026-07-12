@@ -95,11 +95,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
         render_selectable_list(
             frame,
+            app,
             main,
             &title,
             &items,
             Some(&["Name", "State", "Members", "Protocol"]),
             app.group_list_selected_index,
+            true,
         );
     }
 

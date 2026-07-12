@@ -27,6 +27,7 @@ use export_import::ExportScope;
 use group_detail::parse_reset_input;
 use topic_detail::PageDirection;
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 use std::path::PathBuf;
@@ -41,6 +42,18 @@ use crate::serde_detect::{detect_format, DetectedFormat};
 
 const TAIL_BUFFER_CAPACITY: usize = 500;
 const SEEK_PAGE_SIZE: usize = 100;
+
+/// A clickable region of the last-rendered frame, in terminal cell coordinates.
+/// `ui::draw` clears these at the start of every frame; screens re-register them
+/// while rendering (kept geometry-only here — plain `u16`s, not `ratatui::Rect` —
+/// so `App` stays ratatui-agnostic; the `ui` layer does the `Rect` conversion).
+pub struct ClickRegion {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub action: Action,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -109,6 +122,15 @@ pub struct App {
     pub banner_animation: bool,
     /// Full-screen detailed otter splash — shown once at startup until dismissed.
     pub show_splash: bool,
+    /// Clickable regions registered by the most recent `ui::draw` call. Interior
+    /// mutability so screen `render(frame, app, area)` functions (which only get
+    /// `&App`) can register as they go, without becoming `&mut App`.
+    click_regions: RefCell<Vec<ClickRegion>>,
+    /// Last-known mouse cell position (crossterm reports `Moved` events whenever
+    /// mouse capture is on, even with no button held — see `EnableMouseCapture` in
+    /// main.rs). `None` until the first mouse event arrives. Used for hover
+    /// highlighting only; unrelated to `click_regions`, which is action targets.
+    mouse_pos: Cell<Option<(u16, u16)>>,
 }
 
 impl App {
@@ -155,6 +177,8 @@ impl App {
             banner_frame: 0,
             banner_animation: true,
             show_splash: true,
+            click_regions: RefCell::new(Vec::new()),
+            mouse_pos: Cell::new(None),
         }
     }
 
@@ -206,6 +230,44 @@ impl App {
                     .collect()
             }
         }
+    }
+
+    /// Discards last frame's clickable regions; called once at the top of `ui::draw`
+    /// before screens re-register theirs.
+    pub fn clear_click_regions(&self) {
+        self.click_regions.borrow_mut().clear();
+    }
+
+    /// Registers a clickable region for the frame currently being drawn.
+    pub fn register_click(&self, x: u16, y: u16, width: u16, height: u16, action: Action) {
+        self.click_regions
+            .borrow_mut()
+            .push(ClickRegion { x, y, width, height, action });
+    }
+
+    /// The action for the topmost region containing `(x, y)`, if any — later
+    /// registrations (e.g. a dialog rendered over the screen behind it) win.
+    pub fn action_at(&self, x: u16, y: u16) -> Option<Action> {
+        self.click_regions
+            .borrow()
+            .iter()
+            .rev()
+            .find(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+            .map(|r| r.action.clone())
+    }
+
+    /// Records the mouse's current cell position — called on every mouse event,
+    /// independent of `click_regions`/actions, purely so rendering can decide what
+    /// to draw as hovered.
+    pub fn set_mouse_pos(&self, x: u16, y: u16) {
+        self.mouse_pos.set(Some((x, y)));
+    }
+
+    /// Whether the last-known mouse position falls inside the given rect.
+    pub fn is_hovered(&self, x: u16, y: u16, width: u16, height: u16) -> bool {
+        self.mouse_pos
+            .get()
+            .is_some_and(|(mx, my)| mx >= x && mx < x + width && my >= y && my < y + height)
     }
 
     /// Activates a profile and (re)builds the Schema Registry client from its URL.
@@ -337,6 +399,10 @@ impl App {
             }
             Action::MoveSelectionDown => {
                 self.move_selection(1);
+                vec![]
+            }
+            Action::SelectRow(index) => {
+                self.set_selection(index);
                 vec![]
             }
             Action::Confirm => self.confirm(),
@@ -565,6 +631,12 @@ impl App {
                 }
                 vec![]
             }
+            Action::ProducerFocusField(field) => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.set_focus(field);
+                }
+                vec![]
+            }
             Action::ProducerChar(c) => {
                 self.producer_insert_char(c);
                 vec![]
@@ -690,6 +762,12 @@ impl App {
                         };
                         state.set_focus(next);
                     }
+                }
+                vec![]
+            }
+            Action::ExportImportFocusField(field) => {
+                if let Some(state) = self.export_import.as_mut() {
+                    state.set_focus(field);
                 }
                 vec![]
             }
@@ -835,17 +913,47 @@ impl App {
         if self.scroll_message_view(delta) {
             return;
         }
+        self.with_current_selection(|index, len| Self::clamp_index(index, len, delta));
+    }
+
+    /// Mouse click on a list row: jumps the current screen's selection straight to
+    /// `index` (clamped), rather than nudging it by a delta.
+    fn set_selection(&mut self, index: usize) {
+        // Same freeze conditions as `move_selection` — a rendered row behind an
+        // overlay shouldn't be clickable through it.
+        if self.profile_create.is_some() {
+            return;
+        }
+        if self
+            .group_detail
+            .as_ref()
+            .is_some_and(|d| d.reset_phase.is_some())
+        {
+            return;
+        }
+        if self
+            .topic_detail
+            .as_ref()
+            .is_some_and(|d| d.replay_phase.is_some() || d.message_view.is_some())
+        {
+            return;
+        }
+        self.with_current_selection(|current, len| {
+            *current = if len == 0 { 0 } else { index.min(len - 1) };
+        });
+    }
+
+    /// Runs `f` against the current screen's selection index and its list length.
+    /// Shared by `move_selection` (delta) and `set_selection` (absolute, from a
+    /// mouse click) so the per-screen dispatch only lives in one place.
+    fn with_current_selection(&mut self, f: impl FnOnce(&mut usize, usize)) {
         match self.screen {
             Screen::ProfilePicker => {
-                Self::clamp_index(
-                    &mut self.selected_profile_index,
-                    self.config.profiles.len(),
-                    delta,
-                );
+                f(&mut self.selected_profile_index, self.config.profiles.len());
             }
             Screen::TopicList => {
                 let len = self.visible_topics().len();
-                Self::clamp_index(&mut self.topic_list_selected_index, len, delta);
+                f(&mut self.topic_list_selected_index, len);
             }
             Screen::TopicDetail => {
                 let len = self
@@ -858,28 +966,31 @@ impl App {
                     })
                     .unwrap_or(0);
                 if let Some(detail) = &mut self.topic_detail {
-                    Self::clamp_index(&mut detail.selected_index, len, delta);
+                    f(&mut detail.selected_index, len);
                 }
             }
             Screen::GroupList => {
                 let len = self.visible_groups().len();
-                Self::clamp_index(&mut self.group_list_selected_index, len, delta);
+                f(&mut self.group_list_selected_index, len);
             }
             Screen::GroupDetail => {
                 if let Some(detail) = &mut self.group_detail {
-                    Self::clamp_index(&mut detail.selected_index, detail.lags.len(), delta);
+                    let len = detail.lags.len();
+                    f(&mut detail.selected_index, len);
                 }
             }
             Screen::BrokerList => {
-                Self::clamp_index(&mut self.broker_list_selected_index, self.brokers.len(), delta);
+                let len = self.brokers.len();
+                f(&mut self.broker_list_selected_index, len);
             }
             Screen::BrokerDetail => {
                 if let Some(detail) = &mut self.broker_detail {
-                    Self::clamp_index(&mut detail.selected_index, detail.entries.len(), delta);
+                    let len = detail.entries.len();
+                    f(&mut detail.selected_index, len);
                 }
             }
             Screen::Producer | Screen::ExportImport => {
-                // Text-entry screens; j/k are characters there.
+                // Text-entry screens; no row selection there.
             }
         }
     }

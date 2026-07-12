@@ -15,9 +15,13 @@ mod ui;
 
 use std::io::Stdout;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use clap::Parser;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use futures::StreamExt;
@@ -37,12 +41,12 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 /// broken — best-effort (errors are swallowed since we may already be unwinding).
 fn restore_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
 }
 
 fn init_terminal() -> AppResult<Term> {
     enable_raw_mode()?;
-    execute!(std::io::stdout(), EnterAlternateScreen)?;
+    execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(std::io::stdout());
     Ok(Terminal::new(backend)?)
 }
@@ -414,6 +418,41 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
     }
 }
 
+/// Scroll wheel nudges whatever list/pane the currently-active `move_selection`
+/// dispatch targets (message inspector included — see `App::move_selection`'s own
+/// guard for that). A left click looks up whatever `Action` the last-drawn frame
+/// registered at that cell (list row, producer/export field) — a miss (empty
+/// space, a non-interactive click) is silently ignored, not an error.
+fn mouse_to_action(mouse: MouseEvent, app: &App) -> Option<Action> {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => Some(Action::MoveSelectionUp),
+        MouseEventKind::ScrollDown => Some(Action::MoveSelectionDown),
+        MouseEventKind::Down(MouseButton::Left) => app.action_at(mouse.column, mouse.row),
+        _ => None,
+    }
+}
+
+/// How close together two clicks on the same row need to be to count as a
+/// double-click — long enough for a deliberate double-click, short enough that two
+/// unrelated single clicks on the same row don't get merged.
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
+
+/// Double-click only applies to row selection (open-on-double-click, like a file
+/// manager) — deliberately NOT to `ProducerFocusField`/`ExportImportFocusField`
+/// clicks, since `Confirm` submits on the export/import screen (`ExportImportSubmit`)
+/// and a double-click to reposition a cursor in that field must never trigger it.
+fn check_double_click(action: &Action, last: &mut Option<(Instant, Action)>) -> bool {
+    if !matches!(action, Action::SelectRow(_)) {
+        *last = None;
+        return false;
+    }
+    let is_double = last
+        .as_ref()
+        .is_some_and(|(t, prev)| prev == action && t.elapsed() < DOUBLE_CLICK_WINDOW);
+    *last = if is_double { None } else { Some((Instant::now(), action.clone())) };
+    is_double
+}
+
 fn spawn_topic_load(profile: config::Profile, tx: mpsc::UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
         // If the profile omits message_max_bytes, ask the broker once and pass the
@@ -568,6 +607,26 @@ fn stop_tail(tail_stop: &mut Option<watch::Sender<bool>>) {
 ///
 /// `RunExternalEditor` is **not** handled here — it needs the live terminal and is
 /// processed synchronously in the event loop (leave alt screen → editor → re-enter).
+/// Runs `action` through the reducer and dispatches every resulting `Command` —
+/// shared by keyboard and mouse input, which both feed `Action`s into the same
+/// pipeline from here on.
+fn dispatch_action(
+    action: Action,
+    terminal: &mut Term,
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    tail_stop: &mut Option<watch::Sender<bool>>,
+) -> AppResult<()> {
+    for command in app.update(action) {
+        if let Command::RunExternalEditor { initial } = command {
+            run_external_editor(terminal, app, initial)?;
+        } else {
+            handle_command(command, tx, tail_stop);
+        }
+    }
+    Ok(())
+}
+
 fn handle_command(
     command: Command,
     tx: &mpsc::UnboundedSender<AppEvent>,
@@ -714,7 +773,7 @@ fn run_external_editor(terminal: &mut Term, app: &mut App, initial: String) -> A
     // Release the terminal so the editor can use the real tty. Do not clear the main
     // screen buffer — only leave the alternate screen / raw mode.
     disable_raw_mode()?;
-    execute!(std::io::stdout(), LeaveAlternateScreen)?;
+    execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
 
     let event = match external_editor::edit_in_external_editor(&initial) {
         Ok(content) => AppEvent::ExternalEditorDone { content },
@@ -722,7 +781,7 @@ fn run_external_editor(terminal: &mut Term, app: &mut App, initial: String) -> A
     };
 
     enable_raw_mode()?;
-    execute!(std::io::stdout(), EnterAlternateScreen)?;
+    execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     // Force a full redraw after re-entering the alternate screen.
     terminal.clear()?;
     let _ = app.apply_event(event);
@@ -782,6 +841,11 @@ async fn run_loop(
     // `App`) since it's a background-task handle, not UI state.
     let mut tail_stop: Option<watch::Sender<bool>> = None;
 
+    // Tracks the most recent `SelectRow` click for double-click detection (see
+    // `check_double_click`). Not on `App`: it's input-timing bookkeeping, not model
+    // state, and `Instant` can't cross the reducer boundary cleanly.
+    let mut last_row_click: Option<(Instant, Action)> = None;
+
     // Soft-refresh consumer-group lag while the group-detail screen is open.
     let mut lag_refresh = tokio::time::interval(std::time::Duration::from_secs(3));
     lag_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -805,12 +869,16 @@ async fn run_loop(
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => {
                         if let Some(action) = key_to_action(key, app) {
-                            for command in app.update(action) {
-                                if let Command::RunExternalEditor { initial } = command {
-                                    run_external_editor(terminal, app, initial)?;
-                                } else {
-                                    handle_command(command, tx, &mut tail_stop);
-                                }
+                            dispatch_action(action, terminal, app, tx, &mut tail_stop)?;
+                        }
+                    }
+                    Some(Ok(Event::Mouse(mouse))) => {
+                        app.set_mouse_pos(mouse.column, mouse.row);
+                        if let Some(action) = mouse_to_action(mouse, app) {
+                            let double_click = check_double_click(&action, &mut last_row_click);
+                            dispatch_action(action, terminal, app, tx, &mut tail_stop)?;
+                            if double_click {
+                                dispatch_action(Action::Confirm, terminal, app, tx, &mut tail_stop)?;
                             }
                         }
                     }

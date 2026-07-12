@@ -4,6 +4,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ExportImportFocus, ExportImportMode};
+use crate::events::Action;
 use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -48,19 +49,23 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     render_field(
         frame,
+        app,
         chunks[1],
         "Path",
         &state.display_with_cursor(ExportImportFocus::Path),
         state.focus == ExportImportFocus::Path,
+        ExportImportFocus::Path,
     );
 
     if state.mode == ExportImportMode::Import {
         render_field(
             frame,
+            app,
             chunks[2],
             "Target topic",
             &state.display_with_cursor(ExportImportFocus::TargetTopic),
             state.focus == ExportImportFocus::TargetTopic,
+            ExportImportFocus::TargetTopic,
         );
     }
 
@@ -94,7 +99,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(status).style(STATUS_STYLE), chunks[4]);
 }
 
-fn render_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
+#[allow(clippy::too_many_arguments)]
+fn render_field(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    label: &str,
+    value: &str,
+    focused: bool,
+    field: ExportImportFocus,
+) {
     let style = if focused {
         Style::default().add_modifier(Modifier::REVERSED)
     } else {
@@ -107,4 +121,5 @@ fn render_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused
             .block(Block::default().borders(Borders::ALL).title(label).title_style(TITLE_STYLE)),
         area,
     );
+    app.register_click(area.x, area.y, area.width, area.height, Action::ExportImportFocusField(field));
 }

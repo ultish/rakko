@@ -58,11 +58,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     render_selectable_list(
         frame,
+        app,
         main,
         &title,
         &items,
         Some(&["ID", "Host", "Port", "Leader", "Replicas"]),
         app.broker_list_selected_index,
+        true,
     );
     render_keybind_footer(
         frame,

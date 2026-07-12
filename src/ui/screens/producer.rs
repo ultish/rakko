@@ -4,6 +4,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, ProducerFocus, ProducerInputMode, ProducerState};
+use crate::events::Action;
 use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
 use crate::ui::widgets::editor_pane::render_editor_pane;
 
@@ -34,8 +35,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     render_header(frame, chunks[0], state);
-    render_key(frame, chunks[1], state);
-    render_body(frame, chunks[2], state);
+    render_key(frame, app, chunks[1], state);
+    render_body(frame, app, chunks[2], state);
     render_status(frame, chunks[3], app);
     render_footer(frame, chunks[4], state);
 }
@@ -54,7 +55,7 @@ fn mode_label(mode: ProducerInputMode) -> &'static str {
     }
 }
 
-fn render_key(frame: &mut Frame, area: Rect, state: &ProducerState) {
+fn render_key(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) {
     let focused = state.focus == ProducerFocus::Key;
     let title = if focused { "Key (focused)" } else { "Key" };
     let cursor = if focused {
@@ -63,9 +64,10 @@ fn render_key(frame: &mut Frame, area: Rect, state: &ProducerState) {
         None
     };
     render_editor_pane(frame, area, &state.key_input, cursor, title);
+    app.register_click(area.x, area.y, area.width, area.height, Action::ProducerFocusField(ProducerFocus::Key));
 }
 
-fn render_body(frame: &mut Frame, area: Rect, state: &ProducerState) {
+fn render_body(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) {
     match state.mode {
         ProducerInputMode::Inline => {
             let focused = state.focus == ProducerFocus::Value;
@@ -85,6 +87,7 @@ fn render_body(frame: &mut Frame, area: Rect, state: &ProducerState) {
                     "Value"
                 },
             );
+            app.register_click(area.x, area.y, area.width, area.height, Action::ProducerFocusField(ProducerFocus::Value));
         }
         ProducerInputMode::FilePath => {
             let focused = state.focus == ProducerFocus::FilePath;
@@ -116,6 +119,13 @@ fn render_body(frame: &mut Frame, area: Rect, state: &ProducerState) {
             frame.render_widget(
                 Paragraph::new(display).style(STATUS_STYLE).block(block),
                 chunks[0],
+            );
+            app.register_click(
+                chunks[0].x,
+                chunks[0].y,
+                chunks[0].width,
+                chunks[0].height,
+                Action::ProducerFocusField(ProducerFocus::FilePath),
             );
             render_editor_pane(frame, chunks[1], &state.value_input, None, "Loaded value");
         }

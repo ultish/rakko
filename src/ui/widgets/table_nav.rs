@@ -2,7 +2,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use ratatui::Frame;
 
-use crate::ui::theme::{SELECTED_ROW_STYLE, TITLE_STYLE};
+use crate::app::App;
+use crate::events::Action;
+use crate::ui::theme::{HOVER_ROW_STYLE, SELECTED_ROW_STYLE, TITLE_STYLE};
 
 /// Matches `Table` default spacing between columns.
 const COLUMN_SPACING: u16 = 1;
@@ -16,13 +18,20 @@ const HIGHLIGHT_SYMBOL: &str = "> ";
 /// (`Value` / `Name` / …) uses `Fill` so it expands with the **terminal/area
 /// width**. Cell text is truncated to the resolved column width so long values
 /// use the remaining space instead of a fixed character cap.
+///
+/// `selectable` registers a `SelectRow(index)` click region per visible row when
+/// true — set false for read-only informational tables (e.g. group-detail's
+/// member list) that don't back a real selection cursor.
+#[allow(clippy::too_many_arguments)]
 pub fn render_selectable_list(
     frame: &mut Frame,
+    app: &App,
     area: Rect,
     title: &str,
     items: &[Vec<String>],
     header: Option<&[&str]>,
     selected: usize,
+    selectable: bool,
 ) {
     let column_count = header
         .map(<[&str]>::len)
@@ -79,11 +88,54 @@ pub fn render_selectable_list(
     }
 
     let mut state = TableState::default();
-    if !items.is_empty() {
-        state.select(Some(selected.min(items.len() - 1)));
-    }
+    let clamped_selected = (!items.is_empty()).then(|| selected.min(items.len() - 1));
+    state.select(clamped_selected);
 
     frame.render_stateful_widget(table, area, &mut state);
+
+    if selectable && !items.is_empty() {
+        register_row_interactions(
+            frame,
+            app,
+            area,
+            header.is_some(),
+            items.len(),
+            state.offset(),
+            clamped_selected.unwrap_or(usize::MAX),
+        );
+    }
+}
+
+/// `state.offset()` (captured just before the render call above, which is where
+/// `Table` computes it — auto-scrolling to keep the selection in view) plus the row
+/// height (always 1; `render_selectable_list` never sets a custom `Row::height`) is
+/// enough to derive each visible row's rect without duplicating `Table`'s internal
+/// layout. Registers a `SelectRow` click per visible row and, separately, paints a
+/// hover tint (skipping `selected`, which already has its own highlight style).
+fn register_row_interactions(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    has_header: bool,
+    item_count: usize,
+    offset: usize,
+    selected: usize,
+) {
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let header_h = u16::from(has_header);
+    let rows_y = inner.y + header_h;
+    let rows_h = inner.height.saturating_sub(header_h);
+    let visible = (rows_h as usize).min(item_count.saturating_sub(offset));
+    for i in 0..visible {
+        let row_index = offset + i;
+        let y = rows_y + i as u16;
+        app.register_click(inner.x, y, inner.width, 1, Action::SelectRow(row_index));
+        if row_index != selected && app.is_hovered(inner.x, y, inner.width, 1) {
+            frame
+                .buffer_mut()
+                .set_style(Rect { x: inner.x, y, width: inner.width, height: 1 }, HOVER_ROW_STYLE);
+        }
+    }
 }
 
 /// Resolve `Constraint`s into concrete column widths for `available` columns space.

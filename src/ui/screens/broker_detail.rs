@@ -45,6 +45,6 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         None => title_base,
     };
 
-    render_selectable_list(frame, main, &title, &items, Some(&["Name", "Value"]), detail.selected_index);
+    render_selectable_list(frame, app, main, &title, &items, Some(&["Name", "Value"]), detail.selected_index, true);
     render_keybind_footer(frame, footer, "r: refresh   Esc: back   q: quit");
 }

@@ -13,6 +13,7 @@ use crate::ui::widgets::view_switcher;
 
 /// Draws splash (first paint) or banner + active screen.
 pub fn draw(frame: &mut Frame, app: &App) {
+    app.clear_click_regions();
     let area = frame.area();
 
     if app.show_splash {

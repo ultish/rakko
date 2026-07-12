@@ -48,11 +48,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
         render_selectable_list(
             frame,
+            app,
             main,
             &title,
             &items,
             Some(&["Name", "Bootstrap servers", "TLS"]),
             app.selected_profile_index,
+            true,
         );
         render_keybind_footer(
             frame,

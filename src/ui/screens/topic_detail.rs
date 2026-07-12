@@ -218,11 +218,13 @@ fn render_message_list(frame: &mut Frame, area: Rect, app: &App, detail: &TopicD
 
     render_selectable_list(
         frame,
+        app,
         area,
         &list_title(detail),
         &items,
         Some(&["P", "Offset", "KFmt", "Key", "VFmt", "Value"]),
         detail.selected_index,
+        true,
     );
 }
 

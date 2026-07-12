@@ -9,9 +9,17 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::app::{App, Screen};
+use crate::events::Action;
 use crate::ui::theme::{SELECTED_ROW_STYLE, STATUS_STYLE};
 
-const ENTRIES: [(&str, &str); 3] = [("1", "Topics"), ("2", "Groups"), ("3", "Brokers")];
+const ENTRIES: [(&str, &str, Action); 3] = [
+    ("1", "Topics", Action::SwitchToTopics),
+    ("2", "Groups", Action::SwitchToGroups),
+    ("3", "Brokers", Action::SwitchToBrokers),
+];
+/// Column gap between switcher entries — matches the `"   "` spacer pushed between
+/// spans in `render` below.
+const GAP: u16 = 3;
 
 /// Which of the three switcher entries (if any) `screen` belongs to.
 fn active_index(screen: Screen) -> Option<usize> {
@@ -35,12 +43,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let mut spans = Vec::new();
-    for (i, (key, label)) in ENTRIES.iter().enumerate() {
+    let mut x = area.x;
+    for (i, (key, label, action)) in ENTRIES.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::raw("   "));
+            spans.push(Span::raw(" ".repeat(GAP as usize)));
+            x += GAP;
         }
         let style = if i == active { SELECTED_ROW_STYLE } else { STATUS_STYLE };
-        spans.push(Span::styled(format!("{key} {label}"), style));
+        let text = format!("{key} {label}");
+        let width = text.chars().count() as u16;
+        spans.push(Span::styled(text, style));
+        app.register_click(x, area.y, width, 1, action.clone());
+        x += width;
     }
     frame.render_widget(Paragraph::new(Line::from(spans)).style(Style::default()), area);
 }

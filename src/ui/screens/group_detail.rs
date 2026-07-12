@@ -35,9 +35,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     render_header(frame, chunks[0], detail);
     if !detail.members.is_empty() {
-        render_members(frame, chunks[1], detail);
+        render_members(frame, app, chunks[1], detail);
     }
-    render_lag_table(frame, chunks[2], detail);
+    render_lag_table(frame, app, chunks[2], detail);
     render_footer(frame, chunks[3], detail);
 
     if let Some(phase) = &detail.reset_phase {
@@ -79,7 +79,7 @@ fn render_header(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
     );
 }
 
-fn render_members(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
+fn render_members(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDetailState) {
     let items: Vec<Vec<String>> = detail
         .members
         .iter()
@@ -87,15 +87,17 @@ fn render_members(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
         .collect();
     render_selectable_list(
         frame,
+        app,
         area,
         "Members",
         &items,
         Some(&["Member id", "Client id", "Host"]),
         0,
+        false,
     );
 }
 
-fn render_lag_table(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
+fn render_lag_table(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDetailState) {
     if detail.lags.is_empty() {
         let message = Paragraph::new(
             "No committed offsets found for this group (it may never have consumed).",
@@ -131,11 +133,13 @@ fn render_lag_table(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
 
     render_selectable_list(
         frame,
+        app,
         area,
         "Partition lag",
         &items,
         Some(&["Topic", "Partition", "Committed", "Low", "High", "Lag"]),
         detail.selected_index,
+        true,
     );
 }
 

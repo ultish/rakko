@@ -11,6 +11,16 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-12
+
+### Added
+
+- Mouse support: scroll wheel navigates the current list (or scrolls the message
+  inspector, when open); clicking a list row selects it, and double-clicking it opens
+  it (same as Enter); hovering a row highlights it; clicking a producer or
+  export/import field box focuses it directly instead of Tab-cycling to it; the
+  Topics/Groups/Brokers switcher bar is clickable.
+
 ## [0.4.0] - 2026-07-12
 
 ### Added

@@ -90,6 +90,17 @@ impl ProducerState {
         self.snap_cursor_to_end();
     }
 
+    /// Mouse click on a field's box: focuses it directly. No-op if `field` isn't
+    /// valid for the current mode (e.g. clicking a stale region right after a mode
+    /// switch reflowed the layout).
+    pub fn set_focus(&mut self, field: ProducerFocus) {
+        if !self.focus_cycle().contains(&field) {
+            return;
+        }
+        self.focus = field;
+        self.snap_cursor_to_end();
+    }
+
     /// After a mode change, snap focus onto a field that mode actually uses.
     pub fn normalize_focus(&mut self) {
         let cycle = self.focus_cycle();

@@ -1,5 +1,6 @@
 use apache_avro::Schema;
 
+use crate::app::{ExportImportFocus, ProducerFocus};
 use crate::kafka::admin::{BrokerConfigEntry, BrokerSummary, ClusterHealth, TopicSummary};
 use crate::kafka::group_offsets::{GroupDetail, GroupSummary, OffsetResetTarget};
 use crate::raw_message::RawMessage;
@@ -102,8 +103,9 @@ pub enum AppEvent {
 }
 
 /// User- or timer-driven state transitions, dispatched by the render loop into
-/// `App::update`.
-#[derive(Debug, Clone)]
+/// `App::update`. `PartialEq` is used to detect a double-click (two `SelectRow`
+/// clicks on the same row within a short window) in main.rs.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// Request quit: opens a confirmation dialog (`q`). Confirm with y/Enter.
     Quit,
@@ -115,6 +117,9 @@ pub enum Action {
     CancelQuit,
     MoveSelectionUp,
     MoveSelectionDown,
+    /// Mouse click on a rendered list row: selects it directly (same per-screen
+    /// target as `MoveSelection*`, just by absolute index instead of delta).
+    SelectRow(usize),
     Confirm,
     Back,
     /// Flips between Tail and Seek browsing on the topic-detail screen; a no-op on any
@@ -172,6 +177,9 @@ pub enum Action {
     ProducerToggleMode,
     /// Cycle focus among fields valid for the current input mode.
     ProducerFocusNext,
+    /// Mouse click on a field's box: focuses it directly (no-op if that field
+    /// isn't valid for the current input mode).
+    ProducerFocusField(ProducerFocus),
     ProducerChar(char),
     ProducerBackspace,
     ProducerDelete,
@@ -212,6 +220,8 @@ pub enum Action {
     ExportImportSubmit,
     /// Toggle focus between path and target-topic fields on the import screen.
     ExportImportFocusNext,
+    /// Mouse click on a field's box: focuses it directly.
+    ExportImportFocusField(ExportImportFocus),
     /// Manual refresh of the current list/detail screen (topics, groups, or group lag).
     Refresh,
     /// Toggle message list order between newest-first and oldest-first (topic detail).
