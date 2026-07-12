@@ -28,14 +28,14 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
 - **Connect to any cluster** — save named profiles (plaintext, TLS, or mutual TLS)
   and switch between clusters without leaving the TUI
 - **See what's going on** — topic list with partition/replication/compression info,
-  and a brokers view with per-broker load and overall cluster health
+  and a brokers view with a load bar chart and overall cluster health
 - **Browse messages your way** — watch a topic live as messages arrive, or page back
   through history; filter by plain text, or write a structured query against JSON/Avro
   fields (e.g. "only messages where `value.status = "failed"`")
 - **Avro decoded automatically** — point rakko at your Schema Registry and Avro
   messages show up as readable JSON, no manual schema handling
-- **Keep an eye on consumer groups** — see members and per-partition lag, and reset
-  offsets if a group gets stuck
+- **Keep an eye on consumer groups** — see members and per-partition lag with a
+  total-lag trend sparkline, and reset offsets if a group gets stuck
 - **Send and resend messages** — write a new message from the terminal, or replay an
   existing one byte-for-byte back to its topic
 - **Back up and restore topics** — export messages to a file and import them again

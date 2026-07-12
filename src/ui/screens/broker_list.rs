@@ -1,5 +1,6 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::style::Style;
+use ratatui::widgets::{Bar, BarChart, Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -56,21 +57,56 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         None => "Brokers".to_string(),
     };
 
+    let main_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(main);
+
     render_selectable_list(
         frame,
         app,
-        main,
+        main_chunks[0],
         &title,
         &items,
         Some(&["ID", "Host", "Port", "Leader", "Replicas"]),
         app.broker_list_selected_index,
         true,
     );
+    render_load_chart(frame, main_chunks[1], app);
     render_keybind_footer(
         frame,
         footer,
         "Enter: config   r: refresh   Esc: back   q: quit",
     );
+}
+
+/// Replica-partition count per broker — the same load-distribution numbers already in
+/// the table, just visualized so an imbalanced cluster is obvious at a glance.
+fn render_load_chart(frame: &mut Frame, area: Rect, app: &App) {
+    let bars: Vec<Bar> = app
+        .brokers
+        .iter()
+        .map(|broker| {
+            Bar::default()
+                .label(format!("id {}", broker.id))
+                .value(broker.replica_partitions as u64)
+                .text_value(format!("{}/{}", broker.leader_partitions, broker.replica_partitions))
+                .style(Style::new().cyan())
+        })
+        .collect();
+
+    let chart = BarChart::horizontal(bars)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Load (leader/replicas)")
+                .title_style(TITLE_STYLE),
+        )
+        .bar_width(1)
+        .bar_gap(1)
+        .value_style(Style::new().bold());
+
+    frame.render_widget(chart, area);
 }
 
 fn render_health_line(frame: &mut Frame, area: Rect, app: &App) {

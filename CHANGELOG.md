@@ -11,6 +11,14 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- Brokers screen shows a per-broker load bar chart (leader/replica partition counts)
+  next to the table, so an imbalanced cluster is visible at a glance.
+- Group detail screen shows a total-lag trend sparkline once a couple of refreshes
+  (manual or auto) have accumulated history, so whether a group is catching up or
+  falling behind is visible without watching the raw number tick.
+
 ## [0.7.0] - 2026-07-12
 
 ### Changed

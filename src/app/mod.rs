@@ -1722,11 +1722,18 @@ impl App {
                     let has_active_members = detail.has_active_members();
                     let total_lag = detail.total_lag();
                     // Keep cursor + any in-progress offset-reset wizard across soft refresh.
-                    let (prev_selected, prev_reset) = self
+                    // Lag history only carries over if it's the same group — switching groups
+                    // starts a fresh trend rather than splicing in an unrelated group's history.
+                    let (prev_selected, prev_reset, mut lag_history) = self
                         .group_detail
                         .as_ref()
-                        .map(|d| (d.selected_index, d.reset_phase.clone()))
-                        .unwrap_or((0, None));
+                        .filter(|d| d.name == detail.name)
+                        .map(|d| (d.selected_index, d.reset_phase.clone(), d.lag_history.clone()))
+                        .unwrap_or((0, None, std::collections::VecDeque::new()));
+                    if lag_history.len() >= group_detail::LAG_HISTORY_CAPACITY {
+                        lag_history.pop_front();
+                    }
+                    lag_history.push_back(total_lag);
                     let lag_len = detail.lags.len();
                     let selected_index = if lag_len == 0 {
                         0
@@ -1742,6 +1749,7 @@ impl App {
                         lags: detail.lags,
                         selected_index,
                         reset_phase: prev_reset,
+                        lag_history,
                     });
                     if !self
                         .status_message

@@ -1,8 +1,15 @@
 //! Consumer-group list/detail screens: lag table, and the multi-step offset-reset wizard.
 
+use std::collections::VecDeque;
+
 use super::{App, Screen};
 use crate::events::Command;
 use crate::kafka::group_offsets::{GroupMember, OffsetResetTarget, PartitionLag};
+
+/// How many past `total_lag` samples to retain for the header sparkline — enough to
+/// show a trend across several auto-refreshes (~3s apart) without growing unbounded
+/// over a long-lived session.
+pub const LAG_HISTORY_CAPACITY: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResetInputKind {
@@ -33,6 +40,9 @@ pub struct GroupDetailState {
     pub has_active_members: bool,
     pub total_lag: i64,
     pub reset_phase: Option<OffsetResetPhase>,
+    /// Recent `total_lag` samples, oldest first, capped at `LAG_HISTORY_CAPACITY` —
+    /// feeds the header's lag-trend sparkline.
+    pub lag_history: VecDeque<i64>,
 }
 
 pub(super) fn parse_reset_input(kind: ResetInputKind, input: &str) -> Result<OffsetResetTarget, String> {

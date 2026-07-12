@@ -1,5 +1,6 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::style::Style;
+use ratatui::widgets::{Block, Borders, Paragraph, Sparkline, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, GroupDetailState, OffsetResetPhase};
@@ -23,10 +24,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    // Header grows to fit a 2-row trend sparkline underneath the summary text (1 text
+    // row + 2 sparkline rows + 2 border rows = 5) once there are at least 2 lag
+    // samples — a single sample has nothing to trend, so skip the extra rows until
+    // there's something to show.
+    let header_height = if detail.lag_history.len() >= 2 { 5 } else { 3 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(header_height),
             Constraint::Length(if detail.members.is_empty() { 0 } else { 6 }),
             Constraint::Min(3),
             Constraint::Length(1),
@@ -71,12 +77,35 @@ fn render_header(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
     } else {
         TITLE_STYLE
     };
-    frame.render_widget(
-        Paragraph::new(text)
-            .style(style)
-            .block(Block::default().borders(Borders::ALL).title("Consumer group")),
-        area,
-    );
+    let block = Block::default().borders(Borders::ALL).title("Consumer group");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if detail.lag_history.len() >= 2 {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(2)])
+            .split(inner);
+        frame.render_widget(Paragraph::new(text).style(style), rows[0]);
+        render_lag_sparkline(frame, rows[1], detail);
+    } else {
+        frame.render_widget(Paragraph::new(text).style(style), inner);
+    }
+}
+
+fn render_lag_sparkline(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
+    // total_lag shouldn't go negative in practice (it's a watermark difference), but
+    // the type is i64 — clamp defensively rather than let a transient negative value
+    // panic the u64 conversion Sparkline needs.
+    let data: Vec<u64> = detail
+        .lag_history
+        .iter()
+        .map(|&lag| lag.max(0) as u64)
+        .collect();
+    let sparkline = Sparkline::default()
+        .data(&data)
+        .style(Style::new().cyan());
+    frame.render_widget(sparkline, area);
 }
 
 fn render_members(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDetailState) {

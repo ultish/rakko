@@ -1185,6 +1185,7 @@ fn sample_group_detail() -> GroupDetailState {
         has_active_members: false,
         total_lag: 10,
         reset_phase: None,
+        lag_history: std::collections::VecDeque::from([10]),
     }
 }
 
@@ -2604,4 +2605,59 @@ fn group_detail_loaded_preserves_selection_and_reset_wizard() {
     let g = app.group_detail.as_ref().unwrap();
     assert!(matches!(g.reset_phase, Some(OffsetResetPhase::ChooseMode)));
     assert_eq!(g.selected_index, 0);
+}
+
+fn group_detail_response(name: &str, lag: i64) -> crate::kafka::group_offsets::GroupDetail {
+    crate::kafka::group_offsets::GroupDetail {
+        name: name.into(),
+        state: "Empty".into(),
+        members: vec![],
+        lags: vec![PartitionLag {
+            topic: "orders".into(),
+            partition: 0,
+            committed_offset: Some(20 - lag),
+            high_watermark: 20,
+            low_watermark: 0,
+            lag: Some(lag),
+        }],
+    }
+}
+
+#[test]
+fn group_detail_loaded_accumulates_lag_history_across_refreshes() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::GroupDetail;
+    app.apply_event(AppEvent::GroupDetailLoaded(group_detail_response("my-group", 10)));
+    app.apply_event(AppEvent::GroupDetailLoaded(group_detail_response("my-group", 7)));
+    app.apply_event(AppEvent::GroupDetailLoaded(group_detail_response("my-group", 12)));
+    let g = app.group_detail.as_ref().unwrap();
+    assert_eq!(g.lag_history, std::collections::VecDeque::from([10, 7, 12]));
+}
+
+#[test]
+fn group_detail_lag_history_caps_at_capacity() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::GroupDetail;
+    for i in 0..(crate::app::group_detail::LAG_HISTORY_CAPACITY + 5) {
+        app.apply_event(AppEvent::GroupDetailLoaded(group_detail_response(
+            "my-group",
+            i as i64,
+        )));
+    }
+    let g = app.group_detail.as_ref().unwrap();
+    assert_eq!(g.lag_history.len(), crate::app::group_detail::LAG_HISTORY_CAPACITY);
+    // Oldest samples were evicted, not the newest.
+    assert_eq!(*g.lag_history.back().unwrap(), (crate::app::group_detail::LAG_HISTORY_CAPACITY + 4) as i64);
+}
+
+#[test]
+fn group_detail_lag_history_resets_when_switching_groups() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::GroupDetail;
+    app.apply_event(AppEvent::GroupDetailLoaded(group_detail_response("group-a", 10)));
+    app.apply_event(AppEvent::GroupDetailLoaded(group_detail_response("group-a", 20)));
+    app.apply_event(AppEvent::GroupDetailLoaded(group_detail_response("group-b", 99)));
+    let g = app.group_detail.as_ref().unwrap();
+    assert_eq!(g.name, "group-b");
+    assert_eq!(g.lag_history, std::collections::VecDeque::from([99]));
 }
