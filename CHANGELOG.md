@@ -22,8 +22,9 @@ over dumping raw commit subjects.
   **1**/**2**/**3** jump directly between Topics/Groups/Brokers, replacing the old
   per-screen **g**/**b** shortcuts (removed) with one consistent mechanism shown in
   the same place everywhere.
-- Topic list: **/** filters topics by name (case-insensitive substring), **c**
-  clears it — same pattern as the message browser's existing filter.
+- Topic list and consumer-group list both get **/** to filter by name
+  (case-insensitive substring) and **c** to clear it — the same pattern, on both
+  screens, as the message browser's existing filter.
 
 ### Changed
 
@@ -31,6 +32,10 @@ over dumping raw commit subjects.
   picker, replay's edit-in-producer) — it no longer doubles as "export" on the
   message browser. Export selected/all moved to **x**/**X**; group detail's
   offset-reset trigger moved from **x** to **z** so **x** has one meaning everywhere.
+- Dropped the redundant **R** binding — refresh was always identical behavior on
+  **r** and **R**, so screens now list only **r**.
+- Topic list is now sorted alphabetically by name instead of whatever order the
+  broker's metadata response happens to return.
 
 ### Fixed
 
@@ -38,6 +43,10 @@ over dumping raw commit subjects.
   "Par…" regardless of available width — it shared a width cap with the message
   browser's single-letter **P** column, which was far too tight for the spelled-out
   header used here.
+- The topic list and group list now open their filter bar in the same place as the
+  message browser's (above the list, right under the banner) — it previously opened
+  below the list, just above the footer, which put it in a different spot on every
+  screen.
 
 ## [0.2.0] - 2026-07-12
 

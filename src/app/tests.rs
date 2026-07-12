@@ -40,6 +40,16 @@ fn topic(name: &str) -> TopicSummary {
     }
 }
 
+fn group(name: &str) -> GroupSummary {
+    GroupSummary {
+        name: name.into(),
+        state: "Empty".into(),
+        member_count: 0,
+        protocol: String::new(),
+        protocol_type: "consumer".into(),
+    }
+}
+
 #[test]
 fn quit_opens_confirm_dialog_without_exiting() {
     let mut app = App::new(Config::default(), test_config_path());
@@ -890,6 +900,16 @@ fn app_on_topic_list() -> App {
     app.active_profile = Some(profile("a"));
     app.screen = Screen::TopicList;
     app.topics = vec![topic("orders")];
+    app
+}
+
+fn app_on_group_list() -> App {
+    let mut app = App::new(Config {
+        profiles: vec![profile("a")],
+    }, test_config_path());
+    app.active_profile = Some(profile("a"));
+    app.screen = Screen::GroupList;
+    app.groups = vec![group("g1")];
     app
 }
 
@@ -2065,6 +2085,101 @@ fn confirm_on_filtered_topic_list_opens_the_filtered_selection_not_raw_index() {
     app.update(Action::Confirm);
     assert_eq!(app.screen, Screen::TopicDetail);
     assert_eq!(app.topic_detail.as_ref().unwrap().topic, "apricot");
+}
+
+#[test]
+fn topics_loaded_sorts_by_name() {
+    let mut app = app_on_topic_list();
+    app.apply_event(AppEvent::TopicsLoaded {
+        topics: vec![topic("zeta"), topic("alpha"), topic("Mid")],
+        auto_message_max_bytes: None,
+    });
+    let names: Vec<&str> = app.topics.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, vec!["Mid", "alpha", "zeta"]); // byte-wise: uppercase sorts first
+}
+
+#[test]
+fn group_list_filter_lifecycle_apply() {
+    let mut app = app_on_group_list();
+    app.groups = vec![group("orders-consumer"), group("payments-consumer"), group("orders-dlq-consumer")];
+    app.update(Action::StartFilterInput);
+    assert!(app.group_list_filter_active);
+    for c in "order".chars() {
+        app.update(Action::FilterChar(c));
+    }
+    assert_eq!(app.group_list_filter_input, "order");
+    app.update(Action::ApplyFilter);
+    assert_eq!(app.group_list_applied_filter.as_deref(), Some("order"));
+    assert!(!app.group_list_filter_active);
+    let visible: Vec<&str> = app.visible_groups().iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(visible, vec!["orders-consumer", "orders-dlq-consumer"]);
+}
+
+#[test]
+fn group_list_filter_cancel_discards_typed_text_without_touching_applied_filter() {
+    let mut app = app_on_group_list();
+    app.group_list_applied_filter = Some("existing".to_string());
+    app.update(Action::StartFilterInput);
+    app.update(Action::FilterChar('x'));
+    app.update(Action::CancelFilterInput);
+    assert_eq!(app.group_list_applied_filter.as_deref(), Some("existing"));
+    assert!(!app.group_list_filter_active);
+    assert!(app.group_list_filter_input.is_empty());
+}
+
+#[test]
+fn group_list_clear_filter_removes_applied_filter() {
+    let mut app = app_on_group_list();
+    app.group_list_applied_filter = Some("existing".to_string());
+    app.update(Action::ClearFilter);
+    assert!(app.group_list_applied_filter.is_none());
+}
+
+#[test]
+fn visible_groups_filters_by_name_case_insensitively() {
+    let mut app = app_on_group_list();
+    app.groups = vec![group("Orders"), group("payments")];
+    app.group_list_applied_filter = Some("ORD".to_string());
+    let visible: Vec<&str> = app.visible_groups().iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(visible, vec!["Orders"]);
+}
+
+#[test]
+fn group_list_selection_clamps_against_filtered_not_raw_count() {
+    let mut app = app_on_group_list();
+    app.groups = vec![group("apple"), group("banana"), group("apricot")];
+    app.group_list_applied_filter = Some("ap".to_string());
+    let visible_len = app.visible_groups().len();
+    assert_eq!(visible_len, 2); // apple, apricot
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::MoveSelectionDown);
+    assert_eq!(app.group_list_selected_index, visible_len - 1);
+}
+
+#[test]
+fn confirm_on_filtered_group_list_opens_the_filtered_selection_not_raw_index() {
+    let mut app = app_on_group_list();
+    app.groups = vec![group("apple"), group("banana"), group("apricot")];
+    app.group_list_applied_filter = Some("ap".to_string());
+    // Filtered view is [apple, apricot]; select index 1 -> apricot, NOT
+    // app.groups[1] (banana), which is what indexing the raw Vec would give.
+    app.group_list_selected_index = 1;
+    let commands = app.update(Action::Confirm);
+    assert_eq!(app.screen, Screen::GroupDetail);
+    match commands.as_slice() {
+        [Command::LoadGroupDetail { group, .. }] => assert_eq!(group, "apricot"),
+        other => panic!("expected LoadGroupDetail, got {other:?}"),
+    }
+}
+
+#[test]
+fn groups_loaded_clamps_selection_against_filtered_count() {
+    let mut app = app_on_group_list();
+    app.group_list_applied_filter = Some("ap".to_string());
+    app.group_list_selected_index = 2;
+    app.apply_event(AppEvent::GroupsLoaded(vec![group("apple"), group("apricot")]));
+    assert_eq!(app.group_list_selected_index, 1); // clamped to filtered len
 }
 
 #[test]

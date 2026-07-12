@@ -9,16 +9,19 @@ use crate::ui::widgets::footer::render_keybind_footer;
 use crate::ui::widgets::table_nav::render_selectable_list;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let mut constraints = vec![Constraint::Min(1)]; // main content
+    // Filter bar sits above the list (same position as the message browser's), not
+    // below it — keeps the filter's on-screen placement consistent across screens.
+    let mut constraints = Vec::new();
     if app.topic_list_filter_active {
         constraints.push(Constraint::Length(1)); // filter input line
     }
+    constraints.push(Constraint::Min(1)); // main content
     constraints.push(Constraint::Length(1)); // footer
 
     let chunks = Layout::default().direction(Direction::Vertical).constraints(constraints).split(area);
     let mut next = chunks.iter();
-    let main = *next.next().unwrap();
     let filter_area = app.topic_list_filter_active.then(|| *next.next().unwrap());
+    let main = *next.next().unwrap();
     let footer = *next.next().unwrap();
 
     if app.topics.is_empty() {

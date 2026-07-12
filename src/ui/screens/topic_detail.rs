@@ -232,7 +232,7 @@ fn render_footer(frame: &mut Frame, area: Rect) {
     render_keybind_footer(
         frame,
         area,
-        "Enter: view   Tab/s: mode   o: sort   n/p: page   r/R: refresh   /: filter   w: produce   y: replay   x: export one   X: export all   i: import   Esc: back",
+        "Enter: view   Tab/s: mode   o: sort   n/p: page   r: refresh   /: filter   w: produce   y: replay   x: export one   X: export all   i: import   Esc: back",
     );
 }
 

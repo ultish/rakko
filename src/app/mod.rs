@@ -71,7 +71,14 @@ pub struct App {
     pub topic_list_applied_filter: Option<String>,
     pub topic_detail: Option<TopicDetailState>,
     pub groups: Vec<GroupSummary>,
+    /// Selection cursor for the group list. Indexes into `visible_groups()`, not
+    /// `groups` directly, so it stays valid while a filter is applied.
     pub group_list_selected_index: usize,
+    pub group_list_filter_input: String,
+    /// Cursor into `group_list_filter_input` while `group_list_filter_active`.
+    pub group_list_filter_cursor: usize,
+    pub group_list_filter_active: bool,
+    pub group_list_applied_filter: Option<String>,
     pub group_detail: Option<GroupDetailState>,
     pub brokers: Vec<BrokerSummary>,
     pub broker_list_selected_index: usize,
@@ -120,6 +127,10 @@ impl App {
             topic_detail: None,
             groups: Vec::new(),
             group_list_selected_index: 0,
+            group_list_filter_input: String::new(),
+            group_list_filter_cursor: 0,
+            group_list_filter_active: false,
+            group_list_applied_filter: None,
             group_detail: None,
             brokers: Vec::new(),
             broker_list_selected_index: 0,
@@ -177,6 +188,21 @@ impl App {
                 self.topics
                     .iter()
                     .filter(|t| t.name.to_lowercase().contains(&needle))
+                    .collect()
+            }
+        }
+    }
+
+    /// Groups for the list / selection, filtered by name when a filter is applied.
+    /// `group_list_selected_index` indexes into this, not `groups` directly.
+    pub fn visible_groups(&self) -> Vec<&GroupSummary> {
+        match &self.group_list_applied_filter {
+            None => self.groups.iter().collect(),
+            Some(filter) => {
+                let needle = filter.to_lowercase();
+                self.groups
+                    .iter()
+                    .filter(|g| g.name.to_lowercase().contains(&needle))
                     .collect()
             }
         }
@@ -355,6 +381,12 @@ impl App {
                         self.topic_list_filter_cursor = self.topic_list_filter_input.chars().count();
                         self.topic_list_filter_active = true;
                     }
+                    Screen::GroupList => {
+                        self.group_list_filter_input =
+                            self.group_list_applied_filter.clone().unwrap_or_default();
+                        self.group_list_filter_cursor = self.group_list_filter_input.chars().count();
+                        self.group_list_filter_active = true;
+                    }
                     _ => {}
                 }
                 vec![]
@@ -408,6 +440,15 @@ impl App {
                     self.topic_list_filter_active = false;
                     self.topic_list_selected_index = 0;
                 }
+                if self.group_list_filter_active {
+                    self.group_list_applied_filter = if self.group_list_filter_input.is_empty() {
+                        None
+                    } else {
+                        Some(self.group_list_filter_input.clone())
+                    };
+                    self.group_list_filter_active = false;
+                    self.group_list_selected_index = 0;
+                }
                 vec![]
             }
             Action::CancelFilterInput => {
@@ -417,12 +458,17 @@ impl App {
                 }
                 self.topic_list_filter_active = false;
                 self.topic_list_filter_input.clear();
+                self.group_list_filter_active = false;
+                self.group_list_filter_input.clear();
                 vec![]
             }
             Action::ClearFilter => {
                 self.topic_list_applied_filter = None;
                 self.topic_list_filter_input.clear();
                 self.topic_list_selected_index = 0;
+                self.group_list_applied_filter = None;
+                self.group_list_filter_input.clear();
+                self.group_list_selected_index = 0;
                 if let Some(detail) = self.topic_detail.as_mut() {
                     detail.applied_filter = None;
                     detail.filter_input.clear();
@@ -762,7 +808,8 @@ impl App {
                 }
             }
             Screen::GroupList => {
-                Self::clamp_index(&mut self.group_list_selected_index, self.groups.len(), delta);
+                let len = self.visible_groups().len();
+                Self::clamp_index(&mut self.group_list_selected_index, len, delta);
             }
             Screen::GroupDetail => {
                 if let Some(detail) = &mut self.group_detail {
@@ -879,7 +926,11 @@ impl App {
             }
             Screen::TopicDetail => self.open_or_close_message_view(),
             Screen::GroupList => {
-                let Some(group) = self.groups.get(self.group_list_selected_index).cloned() else {
+                let Some(group) = self
+                    .visible_groups()
+                    .get(self.group_list_selected_index)
+                    .map(|g| (*g).clone())
+                else {
                     return vec![];
                 };
                 let Some(profile) = self.active_profile.clone() else {
@@ -1027,6 +1078,14 @@ impl App {
                 &mut self.topic_list_filter_cursor,
                 c,
             );
+            return;
+        }
+        if self.group_list_filter_active {
+            crate::text_field::insert_char(
+                &mut self.group_list_filter_input,
+                &mut self.group_list_filter_cursor,
+                c,
+            );
         }
     }
 
@@ -1048,6 +1107,13 @@ impl App {
             crate::text_field::backspace(
                 &mut self.topic_list_filter_input,
                 &mut self.topic_list_filter_cursor,
+            );
+            return;
+        }
+        if self.group_list_filter_active {
+            crate::text_field::backspace(
+                &mut self.group_list_filter_input,
+                &mut self.group_list_filter_cursor,
             );
         }
     }
@@ -1074,6 +1140,13 @@ impl App {
                 &mut self.topic_list_filter_input,
                 &mut self.topic_list_filter_cursor,
             );
+            return;
+        }
+        if self.group_list_filter_active {
+            crate::text_field::delete_forward(
+                &mut self.group_list_filter_input,
+                &mut self.group_list_filter_cursor,
+            );
         }
     }
 
@@ -1092,6 +1165,10 @@ impl App {
         }
         if self.topic_list_filter_active {
             crate::text_field::cursor_left(&mut self.topic_list_filter_cursor);
+            return;
+        }
+        if self.group_list_filter_active {
+            crate::text_field::cursor_left(&mut self.group_list_filter_cursor);
         }
     }
 
@@ -1114,6 +1191,13 @@ impl App {
                 &self.topic_list_filter_input,
                 &mut self.topic_list_filter_cursor,
             );
+            return;
+        }
+        if self.group_list_filter_active {
+            crate::text_field::cursor_right(
+                &self.group_list_filter_input,
+                &mut self.group_list_filter_cursor,
+            );
         }
     }
 
@@ -1132,6 +1216,10 @@ impl App {
         }
         if self.topic_list_filter_active {
             crate::text_field::cursor_home(&mut self.topic_list_filter_cursor);
+            return;
+        }
+        if self.group_list_filter_active {
+            crate::text_field::cursor_home(&mut self.group_list_filter_cursor);
         }
     }
 
@@ -1153,6 +1241,13 @@ impl App {
             crate::text_field::cursor_end(
                 &self.topic_list_filter_input,
                 &mut self.topic_list_filter_cursor,
+            );
+            return;
+        }
+        if self.group_list_filter_active {
+            crate::text_field::cursor_end(
+                &self.group_list_filter_input,
+                &mut self.group_list_filter_cursor,
             );
         }
     }
@@ -1254,9 +1349,10 @@ impl App {
     pub fn apply_event(&mut self, event: AppEvent) -> Vec<Command> {
         match event {
             AppEvent::TopicsLoaded {
-                topics,
+                mut topics,
                 auto_message_max_bytes,
             } => {
+                topics.sort_by(|a, b| a.name.cmp(&b.name));
                 self.topics = topics;
                 // Preserve selection (and any applied filter) across refresh; clamp
                 // against the filtered count if the visible list shrank.
@@ -1358,12 +1454,14 @@ impl App {
             }
             AppEvent::GroupsLoaded(groups) => {
                 self.groups = groups;
-                if self.groups.is_empty() {
+                // Preserve selection (and any applied filter) across refresh; clamp
+                // against the filtered count if the visible list shrank.
+                let visible_len = self.visible_groups().len();
+                if visible_len == 0 {
                     self.group_list_selected_index = 0;
                 } else {
-                    self.group_list_selected_index = self
-                        .group_list_selected_index
-                        .min(self.groups.len() - 1);
+                    self.group_list_selected_index =
+                        self.group_list_selected_index.min(visible_len - 1);
                 }
                 self.status_message = None;
                 vec![]

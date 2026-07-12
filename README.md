@@ -177,13 +177,13 @@ replay's "edit in producer"), never anything else. Export uses **x**/**X** inste
 |--------|------|
 | **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **q** quit |
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
-| **Topics** | **Enter** open topic · **r**/**R** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
-| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r**/**R** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
+| **Topics** | **Enter** open topic · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
+| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page (seek) · **/** filter · **c** clear filter · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
 | **Message view** | **j**/**k** or arrows scroll · **PgUp**/**PgDn** page · **Enter**/**Esc** close · **y** replay · **x** export this message |
-| **Groups** | **Enter** detail · **r**/**R** refresh list · **1**/**2**/**3** switch view |
-| **Group detail** | **z** reset offsets · **r**/**R** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch view |
-| **Brokers** | **Enter** view broker config · **r**/**R** refresh list · **1**/**2**/**3** switch view |
-| **Broker detail** | **r**/**R** refresh config · **Esc** back · **1**/**2**/**3** switch view |
+| **Groups** | **Enter** detail · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
+| **Group detail** | **z** reset offsets · **r** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch view |
+| **Brokers** | **Enter** view broker config · **r** refresh list · **1**/**2**/**3** switch view |
+| **Broker detail** | **r** refresh config · **Esc** back · **1**/**2**/**3** switch view |
 | **Producer** | **Tab** focus · **F3**/Ctrl-m mode (inline / file / `$EDITOR`) · **F2**/Ctrl-p send · **Esc** back |
 | **Replay** | **y**/**Enter** raw replay (byte-identical) · **e** edit in producer · **n**/**Esc** cancel |
 | **Export/import** | type path · **←**/**→**/**Home**/**End** cursor · **Delete** · **Tab** (import: path ↔ topic) · **Enter** run · **Esc** back |

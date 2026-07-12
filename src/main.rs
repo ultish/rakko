@@ -275,7 +275,8 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
     }
 
     let filter_active = app.topic_detail.as_ref().is_some_and(|detail| detail.filter_active)
-        || app.topic_list_filter_active;
+        || app.topic_list_filter_active
+        || app.group_list_filter_active;
     if filter_active {
         return match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -296,7 +297,8 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
     }
 
     let filter_applied = app.topic_detail.as_ref().is_some_and(|detail| detail.applied_filter.is_some())
-        || app.topic_list_applied_filter.is_some();
+        || app.topic_list_applied_filter.is_some()
+        || app.group_list_applied_filter.is_some();
 
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -322,9 +324,9 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('c') if filter_applied => Some(Action::ClearFilter),
         // Group detail: `z` starts offset-reset (deliberately not a common/mnemonic key —
         // reduces accidental presses of a destructive action; `x` is reserved app-wide
-        // for export); `r`/`R` refresh lag (same as other screens).
+        // for export); `r` refreshes lag (same as other screens).
         KeyCode::Char('z') if app.screen == Screen::GroupDetail => Some(Action::StartOffsetReset),
-        KeyCode::Char('R') | KeyCode::Char('r')
+        KeyCode::Char('r')
             if matches!(
                 app.screen,
                 Screen::TopicList

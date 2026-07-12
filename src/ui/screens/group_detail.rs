@@ -143,7 +143,7 @@ fn render_footer(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
     let text = if detail.reset_phase.is_some() {
         "Offset reset in progress — follow the dialog"
     } else {
-        "z: reset offsets   r/R: refresh lag (auto every 3s)   Esc: back"
+        "z: reset offsets   r: refresh lag (auto every 3s)   Esc: back"
     };
     render_keybind_footer(frame, area, text);
 }
