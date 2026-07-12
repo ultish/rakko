@@ -4,7 +4,7 @@
   <img src="assets/otter.jpg" alt="rakko — a sea otter, the project's mascot" width="480" />
 </p>
 
-**rakko** (ラッコ, Japanese for "sea otter") is a fast, keyboard-driven terminal UI for Kafka — everything you need for day-to-day cluster work without waiting on a browser tab or a bloated desktop client. Built with [ratatui](https://ratatui.rs/) and [rdkafka](https://github.com/fede1024/rust-rdkafka).
+**rakko** (ラッコ, Japanese for "sea otter" — as opposed to カワウソ, "river otter," which would arguably fit the streaming metaphor better) is a fast, keyboard-driven terminal UI for Kafka — everything you need for day-to-day cluster work without waiting on a browser tab or a bloated desktop client. Built with [ratatui](https://ratatui.rs/) and [rdkafka](https://github.com/fede1024/rust-rdkafka).
 
 Browse topics and messages (live tail + seek), inspect consumer groups and lag, reset offsets, produce/replay messages, and export/import JSONL — all from the terminal, all scriptable, all fast.
 
