@@ -19,7 +19,9 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
 
 ## Demo
 
-![rakko demo: filtering the topic list, tailing/seeking messages, opening the message inspector, and applying the advanced query filter with Tab-completion](assets/demo.gif)
+<p align="center">
+  <img src="assets/demo.gif" alt="rakko demo: filtering the topic list, tailing/seeking messages, opening the message inspector, and applying the advanced query filter with Tab-completion" width="720" />
+</p>
 
 ## Features
 
