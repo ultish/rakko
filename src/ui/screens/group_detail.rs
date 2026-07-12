@@ -1,6 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Paragraph, Sparkline, Wrap};
+use ratatui::symbols::Marker;
+use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, GroupDetailState, OffsetResetPhase};
@@ -93,19 +94,31 @@ fn render_header(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
     }
 }
 
+/// Braille-marker line plot rather than `Sparkline`'s block glyphs — a braille cell packs a
+/// 2x4 dot grid, giving noticeably finer height/width resolution than the 8-level blocks a
+/// `Sparkline` is limited to at this widget's height.
 fn render_lag_sparkline(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
-    // total_lag shouldn't go negative in practice (it's a watermark difference), but
-    // the type is i64 — clamp defensively rather than let a transient negative value
-    // panic the u64 conversion Sparkline needs.
-    let data: Vec<u64> = detail
+    // total_lag shouldn't go negative in practice (it's a watermark difference), but the
+    // type is i64 — clamp defensively rather than plot a bogus negative point.
+    let points: Vec<(f64, f64)> = detail
         .lag_history
         .iter()
-        .map(|&lag| lag.max(0) as u64)
+        .enumerate()
+        .map(|(i, &lag)| (i as f64, lag.max(0) as f64))
         .collect();
-    let sparkline = Sparkline::default()
-        .data(&data)
-        .style(Style::new().cyan());
-    frame.render_widget(sparkline, area);
+    let max_x = (points.len() - 1) as f64;
+    let max_y = points.iter().map(|(_, y)| *y).fold(0.0_f64, f64::max).max(1.0);
+
+    let dataset = Dataset::default()
+        .marker(Marker::Braille)
+        .graph_type(GraphType::Line)
+        .style(Style::new().cyan())
+        .data(&points);
+
+    let chart = Chart::new(vec![dataset])
+        .x_axis(Axis::default().bounds([0.0, max_x]))
+        .y_axis(Axis::default().bounds([0.0, max_y]));
+    frame.render_widget(chart, area);
 }
 
 fn render_members(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDetailState) {
