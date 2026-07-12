@@ -625,6 +625,8 @@ fn app_in_topic_detail(topic_name: &str, partition_count: usize) -> App {
         applied_query_filter: None,
         replay_phase: None,
         message_view: None,
+        inspector_top_split: 50,
+        inspector_bottom_split: 40,
         sort: MessageSort::default(),
     });
     app
@@ -2086,7 +2088,8 @@ fn enter_opens_message_inspector_for_selected_row() {
         String::from_utf8_lossy(view.message.key.as_deref().unwrap()),
         "k2"
     );
-    assert_eq!(view.scroll, 0);
+    assert_eq!(view.key_scroll, 0);
+    assert_eq!(view.focus, InspectorFocus::Key);
 }
 
 #[test]
@@ -2126,7 +2129,7 @@ fn j_k_scroll_message_inspector_instead_of_list() {
     app.update(Action::MoveSelectionDown);
     let detail = app.topic_detail.as_ref().unwrap();
     assert_eq!(detail.selected_index, 0, "list selection stays put");
-    assert_eq!(detail.message_view.as_ref().unwrap().scroll, 2);
+    assert_eq!(detail.message_view.as_ref().unwrap().key_scroll, 2);
     app.update(Action::MoveSelectionUp);
     assert_eq!(
         app.topic_detail
@@ -2135,8 +2138,155 @@ fn j_k_scroll_message_inspector_instead_of_list() {
             .message_view
             .as_ref()
             .unwrap()
-            .scroll,
+            .key_scroll,
         1
+    );
+}
+
+#[test]
+fn tab_cycles_inspector_focus_key_headers_value() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("k1", "v1"));
+        }
+    }
+    app.update(Action::Confirm);
+    let focus = |app: &App| app.topic_detail.as_ref().unwrap().message_view.as_ref().unwrap().focus;
+    assert_eq!(focus(&app), InspectorFocus::Key);
+
+    app.update(Action::ToggleInspectorFocus);
+    assert_eq!(focus(&app), InspectorFocus::Headers);
+    app.update(Action::ToggleInspectorFocus);
+    assert_eq!(focus(&app), InspectorFocus::Value);
+    app.update(Action::ToggleInspectorFocus);
+    assert_eq!(focus(&app), InspectorFocus::Key, "wraps back around");
+}
+
+#[test]
+fn inspector_panels_scroll_independently() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("k1", "v1"));
+        }
+    }
+    app.update(Action::Confirm);
+
+    // Scroll the key panel, then move on to headers and value — each panel's
+    // position must be untouched by scrolling done while another panel is focused.
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::ToggleInspectorFocus); // -> Headers
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::ToggleInspectorFocus); // -> Value
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::MoveSelectionDown);
+
+    let view = app.topic_detail.as_ref().unwrap().message_view.as_ref().unwrap();
+    assert_eq!(view.key_scroll, 1);
+    assert_eq!(view.headers_scroll, 2);
+    assert_eq!(view.value_scroll, 3);
+}
+
+#[test]
+fn click_sets_inspector_focus_directly() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("k1", "v1"));
+        }
+    }
+    app.update(Action::Confirm);
+    app.update(Action::SetInspectorFocus(InspectorFocus::Value));
+    assert_eq!(
+        app.topic_detail.as_ref().unwrap().message_view.as_ref().unwrap().focus,
+        InspectorFocus::Value
+    );
+    // Same click twice in a row (unlike Tab) stays on Value rather than toggling back.
+    app.update(Action::SetInspectorFocus(InspectorFocus::Value));
+    assert_eq!(
+        app.topic_detail.as_ref().unwrap().message_view.as_ref().unwrap().focus,
+        InspectorFocus::Value
+    );
+}
+
+#[test]
+fn resize_grows_and_shrinks_the_focused_panel() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("k1", "v1"));
+        }
+    }
+    app.update(Action::Confirm);
+    let split = |app: &App, top: bool| {
+        let detail = app.topic_detail.as_ref().unwrap();
+        if top { detail.inspector_top_split } else { detail.inspector_bottom_split }
+    };
+    assert_eq!(split(&app, false), 40, "default bottom split (Key 40 / Value 60)");
+
+    // Key is focused by default and is the row's *left* (stored) share: growing it
+    // increases the split; shrinking decreases it.
+    app.update(Action::GrowInspectorPanel);
+    assert_eq!(split(&app, false), 45);
+    app.update(Action::ShrinkInspectorPanel);
+    app.update(Action::ShrinkInspectorPanel);
+    assert_eq!(split(&app, false), 35);
+
+    // Value is the row's *right* panel: growing it does the opposite (decreases the
+    // stored Key share).
+    app.update(Action::SetInspectorFocus(InspectorFocus::Value));
+    app.update(Action::GrowInspectorPanel);
+    assert_eq!(split(&app, false), 30);
+
+    // Headers governs the top row (Attrs is never focused, so Headers-focused
+    // resize always means the top row); Headers is the row's *right* panel.
+    assert_eq!(split(&app, true), 50, "default top split (Attrs 50 / Headers 50)");
+    app.update(Action::SetInspectorFocus(InspectorFocus::Headers));
+    app.update(Action::GrowInspectorPanel);
+    assert_eq!(split(&app, true), 45);
+}
+
+#[test]
+fn resize_clamps_at_bounds() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("k1", "v1"));
+        }
+    }
+    app.update(Action::Confirm); // focus defaults to Key
+    for _ in 0..30 {
+        app.update(Action::ShrinkInspectorPanel);
+    }
+    assert_eq!(app.topic_detail.as_ref().unwrap().inspector_bottom_split, 10);
+    for _ in 0..30 {
+        app.update(Action::GrowInspectorPanel);
+    }
+    assert_eq!(app.topic_detail.as_ref().unwrap().inspector_bottom_split, 90);
+}
+
+#[test]
+fn resize_split_persists_across_reopening_the_inspector() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("k1", "v1"));
+            buffer.push(message("k2", "v2"));
+        }
+    }
+    app.update(Action::Confirm);
+    app.update(Action::GrowInspectorPanel);
+    assert_eq!(app.topic_detail.as_ref().unwrap().inspector_bottom_split, 45);
+
+    app.update(Action::Back); // close
+    app.update(Action::MoveSelectionDown);
+    app.update(Action::Confirm); // reopen on a different message
+    assert_eq!(
+        app.topic_detail.as_ref().unwrap().inspector_bottom_split, 45,
+        "split lives on TopicDetailState, not the per-message MessageViewState"
     );
 }
 

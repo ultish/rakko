@@ -4,7 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, BrowseMode, MessageViewState, ReplayPhase, TopicDetailState};
+use crate::app::{App, BrowseMode, InspectorFocus, MessageViewState, ReplayPhase, TopicDetailState};
+use crate::events::Action;
 use crate::kafka::schema_registry::SchemaRegistry;
 use crate::raw_message::RawMessage;
 use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
@@ -52,7 +53,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_footer(frame, *next.next().unwrap());
 
     if let Some(view) = &detail.message_view {
-        render_message_inspector(frame, area, view, app.schema_registry.as_ref());
+        render_message_inspector(
+            frame,
+            app,
+            area,
+            view,
+            app.schema_registry.as_ref(),
+            detail.inspector_top_split,
+            detail.inspector_bottom_split,
+        );
     }
 
     if let Some(phase) = &detail.replay_phase {
@@ -345,11 +354,15 @@ fn render_footer(frame: &mut Frame, area: Rect) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_message_inspector(
     frame: &mut Frame,
+    app: &App,
     area: Rect,
     view: &MessageViewState,
     registry: Option<&SchemaRegistry>,
+    top_split: u16,
+    bottom_split: u16,
 ) {
     let dialog = centered_rect(86, 78, area);
     frame.render_widget(Clear, dialog);
@@ -366,40 +379,105 @@ fn render_message_inspector(
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
 
-    let chunks = Layout::default()
+    let (key_fmt, _) = bytes_display(view.message.key.as_deref(), registry);
+    let (val_fmt, _) = bytes_display(view.message.value.as_deref(), registry);
+    let attrs = format_message_attrs(&view.message, &key_fmt, &val_fmt);
+    let attrs_lines = attrs.lines().count() as u16;
+    // Attrs is fixed/deterministic (always 6 lines) and has no scrollback, so it
+    // dictates the top row's height — headers is a scrollable panel that shares
+    // whatever room that leaves. Key/value (the actual payload — often deep, often
+    // long) get the rest of the dialog, not squeezed alongside metadata. Only an
+    // extreme case (a tiny terminal) caps the top row, leaving a guaranteed minimum
+    // for the key/value row + footer.
+    let top_height = attrs_lines.min(inner.height.saturating_sub(1 + 3)).max(1);
+
+    let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .constraints([Constraint::Length(top_height), Constraint::Min(3), Constraint::Length(1)])
         .split(inner);
 
-    let body = format_message_body(&view.message, registry);
-    // Soft-wrap to the pane width *before* scrolling. Counting only `\n` lines made
-    // max_scroll=0 for long single-line JSON (looked unscrollable even with j/k
-    // updating the offset), because Paragraph wrap was separate from our clamp.
-    let width = chunks[0].width.max(1) as usize;
-    let wrapped = wrap_lines_for_width(&body, width);
-    let line_count = wrapped.len().max(1);
-    let visible = chunks[0].height.max(1) as usize;
-    let max_scroll = line_count.saturating_sub(visible);
-    let scroll = view.scroll.min(max_scroll);
+    let top_panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(top_split), Constraint::Percentage(100 - top_split)])
+        .split(rows[0]);
+    // Key can be just as deeply nested as value, so it isn't starved — value gets
+    // the larger share by default since it's typically the bigger payload, not an
+    // exclusive one; ←/→ (while Key/Value is focused) adjusts `bottom_split`.
+    let bottom_panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(bottom_split), Constraint::Percentage(100 - bottom_split)])
+        .split(rows[1]);
 
-    let window = if scroll >= wrapped.len() {
-        String::new()
-    } else {
-        wrapped[scroll..].join("\n")
-    };
+    render_static_panel(frame, top_panels[0], "Attrs", &attrs);
 
-    frame.render_widget(
-        // No Wrap here — lines are already width-bounded; Paragraph wrap would
-        // desync scroll offsets again.
-        Paragraph::new(window).style(STATUS_STYLE),
-        chunks[0],
+    let key_body = capped_body(bytes_to_display_text(view.message.key.as_deref(), registry));
+    let headers_body = capped_body(format_message_headers(&view.message));
+    let value_body = capped_body(bytes_to_display_text(view.message.value.as_deref(), registry));
+
+    // Soft-wrap to each pane's width *before* scrolling. Counting only `\n` lines
+    // made max_scroll=0 for long single-line JSON (looked unscrollable even with
+    // j/k updating the offset), because Paragraph wrap was separate from our clamp.
+    let headers_wrapped =
+        wrap_lines_for_width(&headers_body, top_panels[1].width.saturating_sub(2).max(1) as usize);
+    let key_wrapped = wrap_lines_for_width(&key_body, bottom_panels[0].width.saturating_sub(2).max(1) as usize);
+    let value_wrapped =
+        wrap_lines_for_width(&value_body, bottom_panels[1].width.saturating_sub(2).max(1) as usize);
+
+    let headers_scroll = view
+        .headers_scroll
+        .min(headers_wrapped.len().saturating_sub(top_panels[1].height.saturating_sub(2).max(1) as usize));
+    let key_scroll = view
+        .key_scroll
+        .min(key_wrapped.len().saturating_sub(bottom_panels[0].height.saturating_sub(2).max(1) as usize));
+    let value_scroll = view
+        .value_scroll
+        .min(value_wrapped.len().saturating_sub(bottom_panels[1].height.saturating_sub(2).max(1) as usize));
+
+    render_inspector_panel(
+        frame,
+        app,
+        top_panels[1],
+        "Headers",
+        &headers_wrapped,
+        headers_scroll,
+        view.focus == InspectorFocus::Headers,
+        Action::SetInspectorFocus(InspectorFocus::Headers),
+    );
+    render_inspector_panel(
+        frame,
+        app,
+        bottom_panels[0],
+        &format!("Key ({key_fmt})"),
+        &key_wrapped,
+        key_scroll,
+        view.focus == InspectorFocus::Key,
+        Action::SetInspectorFocus(InspectorFocus::Key),
+    );
+    render_inspector_panel(
+        frame,
+        app,
+        bottom_panels[1],
+        &format!("Value ({val_fmt})"),
+        &value_wrapped,
+        value_scroll,
+        view.focus == InspectorFocus::Value,
+        Action::SetInspectorFocus(InspectorFocus::Value),
     );
 
+    let (focused_scroll, focused_line_count) = match view.focus {
+        InspectorFocus::Key => (key_scroll, key_wrapped.len().max(1)),
+        InspectorFocus::Headers => (headers_scroll, headers_wrapped.len().max(1)),
+        InspectorFocus::Value => (value_scroll, value_wrapped.len().max(1)),
+    };
     let hint = Line::from(vec![
         Span::styled(
             "j/k/PgUp/PgDn: scroll",
             Style::default().add_modifier(Modifier::BOLD),
         ),
+        Span::raw("   "),
+        Span::styled("Tab/click: switch panel", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("   "),
+        Span::styled("←/→: resize", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("   "),
         Span::styled(
             "Enter/Esc: close",
@@ -411,11 +489,67 @@ fn render_message_inspector(
         Span::styled("x: export", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(format!(
             "   line {}/{} ",
-            scroll + 1,
-            line_count
+            focused_scroll + 1,
+            focused_line_count
         )),
     ]);
-    frame.render_widget(Paragraph::new(hint), chunks[1]);
+    frame.render_widget(Paragraph::new(hint), rows[2]);
+}
+
+/// The attrs panel: plain metadata, no scrolling and no click-to-focus (there's
+/// nothing to scroll to — see `format_message_attrs`).
+fn render_static_panel(frame: &mut Frame, area: Rect, title: &str, body: &str) {
+    let block = Block::default().borders(Borders::ALL).title(title).title_style(TITLE_STYLE);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(body.to_string()).style(STATUS_STYLE), inner);
+}
+
+/// One key/headers/value panel: a bordered, titled box showing `wrapped` starting at
+/// `scroll`. `focused` gets the same bold-border/reversed-title treatment as a
+/// focused producer field; clicking anywhere in the panel dispatches `focus_action`
+/// (`Action::SetInspectorFocus`) so the mouse can pick a panel directly, same as Tab.
+#[allow(clippy::too_many_arguments)]
+fn render_inspector_panel(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    title: &str,
+    wrapped: &[String],
+    scroll: usize,
+    focused: bool,
+    focus_action: Action,
+) {
+    let border_style = if focused {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let title_style = if focused {
+        TITLE_STYLE.add_modifier(Modifier::REVERSED)
+    } else {
+        TITLE_STYLE
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title.to_string())
+        .title_style(title_style)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    app.register_click(area.x, area.y, area.width, area.height, focus_action);
+
+    let window = if scroll >= wrapped.len() {
+        String::new()
+    } else {
+        wrapped[scroll..].join("\n")
+    };
+    frame.render_widget(
+        // No Wrap here — lines are already width-bounded; Paragraph wrap would
+        // desync scroll offsets again.
+        Paragraph::new(window).style(STATUS_STYLE),
+        inner,
+    );
 }
 
 /// Break `text` into display lines of at most `width` characters (Unicode scalars).
@@ -446,47 +580,41 @@ fn wrap_lines_for_width(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn format_message_body(message: &RawMessage, registry: Option<&SchemaRegistry>) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("topic:      {}\n", message.topic));
-    out.push_str(&format!("partition:  {}\n", message.partition));
-    out.push_str(&format!("offset:     {}\n", message.offset));
-    out.push_str(&format!(
-        "timestamp:  {}\n",
-        format_timestamp(message.timestamp_millis)
-    ));
+/// Metadata banner across the top of the inspector: topic/partition/offset/timestamp,
+/// key/value formats, and headers — everything *except* the key/value bodies
+/// themselves, which get their own side-by-side panels (see `render_message_inspector`).
+/// Fixed, deterministic metadata — always exactly 6 lines, never needs scrolling
+/// (unlike headers, which can be an arbitrarily long list — see `format_message_headers`).
+fn format_message_attrs(message: &RawMessage, key_fmt: &str, val_fmt: &str) -> String {
+    format!(
+        "topic:      {}\npartition:  {}\noffset:     {}\ntimestamp:  {}\nkey format:   {key_fmt}\nvalue format: {val_fmt}",
+        message.topic,
+        message.partition,
+        message.offset,
+        format_timestamp(message.timestamp_millis),
+    )
+}
 
-    let (key_fmt, _) = bytes_display(message.key.as_deref(), registry);
-    let (val_fmt, _) = bytes_display(message.value.as_deref(), registry);
-    out.push_str(&format!("key format:   {key_fmt}\n"));
-    out.push_str(&format!("value format: {val_fmt}\n"));
-
-    out.push_str("\n── headers ──\n");
+fn format_message_headers(message: &RawMessage) -> String {
     if message.headers.is_empty() {
-        out.push_str("(none)\n");
-    } else {
-        for (key, value) in &message.headers {
-            out.push_str(&format!(
-                "{key}: {}\n",
-                bytes_to_display_text(Some(value.as_slice()), None)
-            ));
-        }
+        return "(none)".to_string();
     }
+    message
+        .headers
+        .iter()
+        .map(|(key, value)| format!("{key}: {}", bytes_to_display_text(Some(value.as_slice()), None)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
-    out.push_str(&format!("\n── key ({key_fmt}) ──\n"));
-    out.push_str(&bytes_to_display_text(message.key.as_deref(), registry));
-    out.push('\n');
-
-    out.push_str(&format!("\n── value ({val_fmt}) ──\n"));
-    out.push_str(&bytes_to_display_text(message.value.as_deref(), registry));
-    out.push('\n');
-
-    // Soft cap for pathological payloads.
-    if out.chars().count() > INSPECTOR_MAX_BODY_CHARS {
-        let truncated: String = out.chars().take(INSPECTOR_MAX_BODY_CHARS).collect();
+/// Soft cap for pathological payloads so a multi-MB key/value can't freeze the
+/// terminal redraw.
+fn capped_body(body: String) -> String {
+    if body.chars().count() > INSPECTOR_MAX_BODY_CHARS {
+        let truncated: String = body.chars().take(INSPECTOR_MAX_BODY_CHARS).collect();
         format!("{truncated}\n\n… (truncated for display)")
     } else {
-        out
+        body
     }
 }
 

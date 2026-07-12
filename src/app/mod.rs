@@ -21,7 +21,9 @@ pub use export_import::{ExportImportFocus, ExportImportMode, ExportImportState};
 pub use group_detail::{GroupDetailState, OffsetResetPhase, ResetInputKind};
 pub use producer::{ProducerFocus, ProducerInputMode, ProducerState};
 pub use profile_create::{ProfileCreateAuthChoice, ProfileCreateFocus, ProfileCreateState};
-pub use topic_detail::{BrowseMode, MessageSort, MessageViewState, ReplayPhase, TopicDetailState};
+pub use topic_detail::{
+    BrowseMode, InspectorFocus, MessageSort, MessageViewState, ReplayPhase, TopicDetailState,
+};
 
 use export_import::ExportScope;
 use group_detail::parse_reset_input;
@@ -415,6 +417,22 @@ impl App {
             }
             Action::ToggleMessageSort => {
                 self.toggle_message_sort();
+                vec![]
+            }
+            Action::ToggleInspectorFocus => {
+                self.toggle_inspector_focus();
+                vec![]
+            }
+            Action::SetInspectorFocus(focus) => {
+                self.set_inspector_focus(focus);
+                vec![]
+            }
+            Action::ShrinkInspectorPanel => {
+                self.resize_inspector_panel(false);
+                vec![]
+            }
+            Action::GrowInspectorPanel => {
+                self.resize_inspector_panel(true);
                 vec![]
             }
             Action::PageForward => {
@@ -1095,6 +1113,8 @@ impl App {
                     applied_query_filter: None,
                     replay_phase: None,
                     message_view: None,
+                    inspector_top_split: 50,
+                    inspector_bottom_split: 40,
                     sort: MessageSort::default(),
                 });
                 self.screen = Screen::TopicDetail;

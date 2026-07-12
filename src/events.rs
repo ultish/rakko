@@ -1,6 +1,6 @@
 use apache_avro::Schema;
 
-use crate::app::{ExportImportFocus, ProducerFocus};
+use crate::app::{ExportImportFocus, InspectorFocus, ProducerFocus};
 use crate::kafka::admin::{BrokerConfigEntry, BrokerSummary, ClusterHealth, TopicSummary};
 use crate::kafka::group_offsets::{GroupDetail, GroupSummary, OffsetResetTarget};
 use crate::raw_message::RawMessage;
@@ -231,6 +231,16 @@ pub enum Action {
     Refresh,
     /// Toggle message list order between newest-first and oldest-first (topic detail).
     ToggleMessageSort,
+    /// **Tab** while the message inspector is open: cycles which panel (key/headers/
+    /// value) j/k/PgUp/PgDn scroll.
+    ToggleInspectorFocus,
+    /// Mouse click on a key/headers/value panel in the message inspector: focuses it
+    /// directly.
+    SetInspectorFocus(InspectorFocus),
+    /// **←/→** while the inspector is open: shrink/grow the focused panel's share of
+    /// its row (Attrs↔Headers, or Key↔Value), at the other panel's expense.
+    ShrinkInspectorPanel,
+    GrowInspectorPanel,
     /// Periodic tick: soft-refresh consumer-group lag while on group detail.
     AutoRefreshGroupDetail,
     /// Open the create-profile form (profile picker; auto-opened when config is empty).

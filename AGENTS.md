@@ -41,6 +41,12 @@ architecture decisions change, don't let it silently drift from the code.
   build (Rocky 9 builder, vendored librdkafka + OpenSSL; needs `cmake`+`perl` beyond
   the harness reference this was adapted from). Output:
   `dist/rakko-linux-amd64.tar.gz`, `dist/rakko`, `dist/SHA256SUMS`, `dist/ldd.txt`.
+- `scripts/build-macos.sh` — native macOS release build (no container — the same
+  `cmake-build`/`ssl-vendored`/`libz-static` rdkafka features vendor librdkafka +
+  OpenSSL on any platform, so this is just `cargo build --release` plus packaging to
+  match the RHEL9 script's `dist/` conventions). Output:
+  `dist/rakko-macos-<arch>.tar.gz`, `dist/rakko-macos-<arch>`, `dist/SHA256SUMS`
+  (merged, not clobbered), `dist/otool-macos-<arch>.txt` (dynamic-link audit).
 - `scripts/produce-test-messages.sh` / `scripts/consume-test-messages.sh` —
   kcat-based dev helpers for exercising a real broker (continuous producer with
   random delay; fixed-group-id consumer for lag/resume testing).
@@ -173,8 +179,20 @@ exception.
        in (should be glibc/libgcc_s only)
      - `file dist/rakko-linux-amd64` → ELF 64-bit **x86-64** (not arm64)
    - Do **not** commit `dist/` (gitignored) — it's attached to the Release only, in
-     step 4.
-4. **Commit, tag, and cut the GitHub Release** — no CI; releases are 100% manual.
+     step 5.
+4. **macOS release asset (do not skip).** Generate it and attach it to every release,
+   same as the RHEL 9 asset.
+   ```bash
+   ./scripts/build-macos.sh
+   ```
+   Native build (no container) — runs on whatever Mac you're on, producing that
+   Mac's architecture (`arm64` or `x86_64`).
+   - Confirm artifacts exist and look right:
+     - `dist/rakko-macos-<arch>.tar.gz`
+     - `dist/SHA256SUMS` — merged with the RHEL 9 entries, not clobbered
+     - `dist/otool-macos-<arch>.txt` — sanity-check no stray dynamic OpenSSL/librdkafka
+       links crept in (should be system frameworks + libSystem/libiconv only)
+5. **Commit, tag, and cut the GitHub Release** — no CI; releases are 100% manual.
    Committing and pushing does **not** create a release; a Release only exists once
    `gh release create` runs. Every version bump gets a matching git tag *and* a
    GitHub Release.
@@ -192,6 +210,7 @@ exception.
        --title "v<X.Y.Z> — <headline>" \
        --notes "<from CHANGELOG.md [X.Y.Z] section>" \
        dist/rakko-linux-amd64.tar.gz \
+       dist/rakko-macos-<arch>.tar.gz \
        dist/SHA256SUMS
      ```
-   - Verify: `gh release view v<X.Y.Z>` shows both assets and `isDraft: false`.
+   - Verify: `gh release view v<X.Y.Z>` shows all three assets and `isDraft: false`.

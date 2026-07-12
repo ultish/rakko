@@ -11,6 +11,19 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-12
+
+### Changed
+
+- Message inspector redesigned as a 2×2 grid: fixed **Attrs** (topic/partition/offset/
+  timestamp/formats) and **Headers** on top, **Key**/**Value** below (40/60 — value
+  gets more room as the typically-larger payload, but key isn't starved since it can
+  be just as deeply nested). Key/Headers/Value each scroll independently — **Tab** or
+  a click switches which one j/k/PgUp/PgDn control. On a very small terminal, Attrs
+  keeps priority over the other panels (it has no scrollback of its own) instead of
+  getting squeezed out. **←/→** resizes the focused panel's share of its row
+  (Attrs↔Headers or Key↔Value), and the split persists while browsing a topic.
+
 ## [0.6.0] - 2026-07-12
 
 ### Added

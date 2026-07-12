@@ -71,13 +71,40 @@ pub enum ReplayPhase {
     },
 }
 
+/// Which panel of the message inspector j/k/PgUp/PgDn scroll. `Attrs` (topic/
+/// partition/offset/timestamp/formats) isn't here — it's fixed, deterministic
+/// content that never needs scrolling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InspectorFocus {
+    Key,
+    Headers,
+    Value,
+}
+
+impl InspectorFocus {
+    /// **Tab** cycles Key → Headers → Value → Key.
+    pub fn next(self) -> Self {
+        match self {
+            InspectorFocus::Key => InspectorFocus::Headers,
+            InspectorFocus::Headers => InspectorFocus::Value,
+            InspectorFocus::Value => InspectorFocus::Key,
+        }
+    }
+}
+
 /// Full-message inspector opened with Enter on the message list.
 /// Snapshots the record so a live tail refresh doesn't swap content under the cursor.
 #[derive(Debug, Clone)]
 pub struct MessageViewState {
     pub message: RawMessage,
-    /// Vertical line offset into the rendered body.
-    pub scroll: usize,
+    /// Which panel **Tab** / a click currently directs j/k/PgUp/PgDn to.
+    pub focus: InspectorFocus,
+    /// Vertical line offset into the rendered key panel.
+    pub key_scroll: usize,
+    /// Vertical line offset into the rendered headers panel.
+    pub headers_scroll: usize,
+    /// Vertical line offset into the rendered value panel.
+    pub value_scroll: usize,
 }
 
 /// Tab-completion state for the query-filter dialog: a cycle through candidate root
@@ -117,6 +144,14 @@ pub struct TopicDetailState {
     pub applied_query_filter: Option<crate::query_filter::QueryFilter>,
     pub replay_phase: Option<ReplayPhase>,
     pub message_view: Option<MessageViewState>,
+    /// Percent width the **Attrs** panel takes in the inspector's top row (Headers
+    /// gets the rest). Adjustable with ←/→ while Headers is focused; persists across
+    /// different messages opened while browsing this topic (unlike per-message
+    /// `MessageViewState` fields, which reset every time the inspector reopens).
+    pub inspector_top_split: u16,
+    /// Percent width the **Key** panel takes in the inspector's bottom row (Value
+    /// gets the rest). Adjustable with ←/→ while Key or Value is focused.
+    pub inspector_bottom_split: u16,
     /// Newest-first by default so the latest messages appear at the top of the list.
     pub sort: MessageSort,
 }
@@ -462,13 +497,16 @@ impl App {
         };
         detail.message_view = Some(MessageViewState {
             message,
-            scroll: 0,
+            focus: InspectorFocus::Key,
+            key_scroll: 0,
+            headers_scroll: 0,
+            value_scroll: 0,
         });
         vec![]
     }
 
-    /// Scroll the open message inspector. Returns true if the action was consumed
-    /// (so list navigation / page seek should not also run).
+    /// Scroll the open message inspector's focused panel. Returns true if the action
+    /// was consumed (so list navigation / page seek should not also run).
     pub(super) fn scroll_message_view(&mut self, delta: i64) -> bool {
         let Some(detail) = self.topic_detail.as_mut() else {
             return false;
@@ -476,12 +514,53 @@ impl App {
         let Some(view) = detail.message_view.as_mut() else {
             return false;
         };
+        let scroll = match view.focus {
+            InspectorFocus::Key => &mut view.key_scroll,
+            InspectorFocus::Headers => &mut view.headers_scroll,
+            InspectorFocus::Value => &mut view.value_scroll,
+        };
         if delta < 0 {
-            view.scroll = view.scroll.saturating_sub((-delta) as usize);
+            *scroll = scroll.saturating_sub((-delta) as usize);
         } else {
-            view.scroll = view.scroll.saturating_add(delta as usize);
+            *scroll = scroll.saturating_add(delta as usize);
         }
         true
+    }
+
+    /// **Tab** while the inspector is open: cycles which panel j/k/PgUp/PgDn scroll.
+    pub(super) fn toggle_inspector_focus(&mut self) {
+        if let Some(view) = self.topic_detail.as_mut().and_then(|d| d.message_view.as_mut()) {
+            view.focus = view.focus.next();
+        }
+    }
+
+    /// A click on a panel: focuses it directly (as opposed to Tab's toggle).
+    pub(super) fn set_inspector_focus(&mut self, focus: InspectorFocus) {
+        if let Some(view) = self.topic_detail.as_mut().and_then(|d| d.message_view.as_mut()) {
+            view.focus = focus;
+        }
+    }
+
+    /// **←/→** while the inspector is open: grows (`grow: true`) or shrinks the
+    /// focused panel's share of its row, at its row-mate's expense. Attrs↔Headers is
+    /// the top row; Key↔Value is the bottom row — which one moves depends on which
+    /// panel is focused (Attrs itself is never focused, so Headers always means the
+    /// top row here).
+    pub(super) fn resize_inspector_panel(&mut self, grow: bool) {
+        const STEP: i16 = 5;
+        const MIN: i16 = 10;
+        const MAX: i16 = 90;
+        let Some(detail) = self.topic_detail.as_mut() else { return };
+        let Some(focus) = detail.message_view.as_ref().map(|v| v.focus) else { return };
+        // sign: +1 if growing this panel means growing the row's *left* share
+        // (the field we store), -1 if it means shrinking it.
+        let (split, sign): (&mut u16, i16) = match focus {
+            InspectorFocus::Headers => (&mut detail.inspector_top_split, -1),
+            InspectorFocus::Key => (&mut detail.inspector_bottom_split, 1),
+            InspectorFocus::Value => (&mut detail.inspector_bottom_split, -1),
+        };
+        let delta = if grow { STEP } else { -STEP } * sign;
+        *split = (*split as i16 + delta).clamp(MIN, MAX) as u16;
     }
 
     /// Flip newest↑ / oldest↑ and keep the highlight on the same message.

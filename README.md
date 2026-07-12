@@ -213,7 +213,7 @@ replay's "edit in producer"), never anything else. Export uses **x**/**X** inste
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
 | **Topics** | **Enter** open topic · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
 | **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page (seek) · **/** filter · **?** query filter · **c** clear filter(s) · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
-| **Message view** | **j**/**k** or arrows scroll · **PgUp**/**PgDn** page · **Enter**/**Esc** close · **y** replay · **x** export this message |
+| **Message view** | **j**/**k** or **↑**/**↓** scroll the focused panel · **PgUp**/**PgDn** page · **Tab**/click switch panel (Key/Headers/Value) · **←**/**→** resize the focused panel · **Enter**/**Esc** close · **y** replay · **x** export this message |
 | **Groups** | **Enter** detail · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
 | **Group detail** | **z** reset offsets · **r** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch view |
 | **Brokers** | **Enter** view broker config · **r** refresh list · **1**/**2**/**3** switch view |

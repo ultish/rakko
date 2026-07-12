@@ -335,6 +335,8 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         || app.topic_list_applied_filter.is_some()
         || app.group_list_applied_filter.is_some();
 
+    let inspector_open = app.topic_detail.as_ref().is_some_and(|d| d.message_view.is_some());
+
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(Action::ForceQuit)
@@ -344,6 +346,12 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveSelectionDown),
         KeyCode::Enter => Some(Action::Confirm),
         KeyCode::Esc => Some(Action::Back),
+        KeyCode::Tab if inspector_open => Some(Action::ToggleInspectorFocus),
+        // ←/→ resize the inspector's focused panel — free while it's open since
+        // Left/Right are otherwise only bound inside mutually-exclusive text-entry
+        // states (producer, profile create, export/import, filter inputs).
+        KeyCode::Left if inspector_open => Some(Action::ShrinkInspectorPanel),
+        KeyCode::Right if inspector_open => Some(Action::GrowInspectorPanel),
         KeyCode::Tab | KeyCode::Char('s') => Some(Action::ToggleBrowseMode),
         // `n` is seek page-forward on topic detail only — profile picker uses `n` for new profile.
         KeyCode::PageDown => Some(Action::PageForward),
