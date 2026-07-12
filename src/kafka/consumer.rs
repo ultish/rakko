@@ -514,7 +514,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    #[ignore = "requires `docker compose up -d` (localhost:19092)"]
     async fn produce_then_seek_round_trips_raw_bytes() {
         let profile = local_profile();
         let topic = unique_name("roundtrip");
@@ -540,7 +540,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    #[ignore = "requires `docker compose up -d` (localhost:19092)"]
     async fn produce_then_seek_round_trips_a_20mib_message() {
         // Exercises the docker-compose broker's raised message.max.bytes (20 MiB =
         // 20_971_520 bytes) — the ~1 MiB default would reject both this send and the

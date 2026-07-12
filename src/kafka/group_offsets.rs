@@ -452,7 +452,7 @@ mod integration_tests {
     use crate::kafka::producer;
 
     #[tokio::test]
-    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    #[ignore = "requires `docker compose up -d` (localhost:19092)"]
     async fn describe_group_lag_and_reset_offsets_while_idle() {
         let profile = local_profile();
         let topic = unique_name("lag");
@@ -488,7 +488,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    #[ignore = "requires `docker compose up -d` (localhost:19092)"]
     async fn reset_group_offsets_rejects_while_group_has_an_active_member() {
         let profile = local_profile();
         let topic = unique_name("active-member");

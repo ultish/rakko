@@ -248,7 +248,7 @@ mod integration_tests {
     use crate::kafka::producer;
 
     #[tokio::test]
-    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    #[ignore = "requires `docker compose up -d` (localhost:19092)"]
     async fn list_topics_finds_a_freshly_produced_topic() {
         let profile = local_profile();
         let topic = unique_name("listing");
@@ -268,7 +268,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires `docker compose up -d` (localhost:9092)"]
+    #[ignore = "requires `docker compose up -d` (localhost:19092)"]
     async fn fetch_broker_message_max_bytes_reflects_the_compose_override() {
         let profile = local_profile();
 

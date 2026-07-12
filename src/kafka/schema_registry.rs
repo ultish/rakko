@@ -143,7 +143,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires `docker compose up -d` (localhost:8081)"]
+    #[ignore = "requires `docker compose up -d` (localhost:18081)"]
     async fn fetch_schema_by_id_round_trips_a_registered_schema() {
         let client = reqwest::Client::new();
         let subject = unique_name("subject");

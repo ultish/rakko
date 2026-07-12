@@ -2,7 +2,9 @@
 //!
 //! Every test that uses these lives behind `#[ignore]` in the relevant `kafka/*.rs`
 //! module (alongside that module's regular unit tests) and assumes the stack from the
-//! repo-root `docker-compose.yml` is reachable at `localhost:9092` / `localhost:8081`:
+//! repo-root `docker-compose.yml` is reachable at `localhost:19092` / `localhost:18081`
+//! (non-default host ports, deliberately chosen so this stack doesn't collide with an
+//! unrelated Kafka deployment that may already be running on the host):
 //!
 //! ```bash
 //! docker compose up -d
@@ -18,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{AuthMode, Profile};
 
-pub(crate) const BOOTSTRAP: &str = "localhost:9092";
-pub(crate) const SCHEMA_REGISTRY_URL: &str = "http://localhost:8081";
+pub(crate) const BOOTSTRAP: &str = "localhost:19092";
+pub(crate) const SCHEMA_REGISTRY_URL: &str = "http://localhost:18081";
 
 /// A PLAINTEXT profile pointed at the local docker-compose stack.
 pub(crate) fn local_profile() -> Profile {

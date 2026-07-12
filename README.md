@@ -30,7 +30,7 @@ docker compose up -d
 
 # 2a. First run with no config — the TUI opens a create-profile form
 cargo run
-#    (save a profile named "local" pointing at localhost:9092)
+#    (save a profile named "local" pointing at localhost:19092)
 
 # 2b. Or copy the example config and skip the form
 mkdir -p ~/.config/rakko
@@ -40,8 +40,12 @@ cargo run -- --profile local
 
 | Service          | Host address        |
 |------------------|---------------------|
-| Kafka            | `localhost:9092`    |
-| Schema Registry  | `http://localhost:8081` |
+| Kafka            | `localhost:19092`   |
+| Schema Registry  | `http://localhost:18081` |
+
+Non-default host ports (19092/18081, not 9092/8081), deliberately chosen so this
+stack doesn't collide with an unrelated Kafka deployment that may already be running
+on your machine.
 
 Stop the stack with `docker compose down`.
 
@@ -75,9 +79,9 @@ cargo run -- --config-dir /path/to/dir
 ```toml
 [[profiles]]
 name = "local"
-bootstrap_servers = "localhost:9092"
+bootstrap_servers = "localhost:19092"
 tls_enabled = false
-schema_registry_url = "http://localhost:8081"
+schema_registry_url = "http://localhost:18081"
 
 [profiles.auth]
 type = "none"
