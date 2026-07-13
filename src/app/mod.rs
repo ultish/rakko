@@ -277,11 +277,14 @@ impl App {
         self.click_regions.borrow_mut().clear();
     }
 
-    /// Records one render's instantaneous FPS for the banner's FPS graph/readout.
-    /// `main.rs` computes this from real `Instant`s (which don't cross into `App`)
-    /// and calls this once per actual `terminal.draw`, regardless of `banner_mode`
-    /// — so flipping to FPS mode always shows real recent history, not just
-    /// samples collected since you switched to it.
+    /// Records one render's instantaneous FPS (`1 / render_duration_secs`, timed
+    /// around the `terminal.draw` call itself — not the gap between draws, which
+    /// at idle just measures the banner tick's 200ms cadence rather than actual
+    /// render performance) for the banner's FPS graph/readout. `main.rs` computes
+    /// this from real `Instant`s (which don't cross into `App`) and calls this
+    /// once per actual `terminal.draw`, regardless of `banner_mode` — so flipping
+    /// to FPS mode always shows real recent history, not just samples collected
+    /// since you switched to it.
     pub fn push_fps_sample(&mut self, fps: f64) {
         self.fps_samples.push(fps);
     }

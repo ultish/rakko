@@ -11,6 +11,18 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-07-13
+
+### Fixed
+
+- Banner FPS readout no longer misleadingly pins at ~5 while idle. It measured
+  the gap between redraws, and rakko only redraws on an event — at idle the
+  only thing driving one is the 200ms banner tick, so the number always read
+  "~5fps" regardless of actual performance, looking like a problem when it was
+  the intended idle behavior. It now times the render call itself: idle draws
+  are fast (a high, reassuring number), and a genuinely stalled render (the
+  failure mode this exists to catch) still reads low.
+
 ## [0.10.0] - 2026-07-13
 
 ### Added

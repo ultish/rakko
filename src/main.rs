@@ -863,11 +863,6 @@ async fn run_loop(
     // state, and `Instant` can't cross the reducer boundary cleanly.
     let mut last_row_click: Option<(Instant, Action)> = None;
 
-    // Timestamp of the previous `terminal.draw` — same "not on `App`" reasoning as
-    // `last_row_click` above. Only the derived f64 FPS sample crosses into `App`
-    // (via `push_fps_sample`), for the banner's FPS mode.
-    let mut last_frame_at: Option<Instant> = None;
-
     // Soft-refresh consumer-group lag while the group-detail screen is open.
     let mut lag_refresh = tokio::time::interval(std::time::Duration::from_secs(3));
     lag_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -880,19 +875,21 @@ async fn run_loop(
     banner_tick.tick().await;
 
     loop {
+        // Timed around the draw call itself, not the gap between draws: rakko only
+        // redraws on an event (no fixed render clock), so "draws per second" is
+        // mostly a measure of how often *something happened* — at idle the only
+        // thing driving a redraw is the 200ms banner tick, so that reading pins at
+        // ~5 regardless of actual performance, which reads as "broken" when it's
+        // exactly the intended idle behavior. Render *duration* doesn't have that
+        // problem: idle draws are fast (sub-ms → a very high implied fps, correctly
+        // signaling "no bottleneck"), and a stalled render (the bug this exists to
+        // catch) shows up as a low number regardless of how rarely it's polled.
+        let t0 = Instant::now();
         terminal.draw(|f| ui::draw(f, app))?;
-
-        // Real render cadence, independent of `banner_mode` — flipping to FPS mode
-        // should show genuine recent history, not just samples collected since you
-        // switched to it.
-        let now = Instant::now();
-        if let Some(prev) = last_frame_at {
-            let dt = now.duration_since(prev).as_secs_f64();
-            if dt > 0.0 {
-                app.push_fps_sample(1.0 / dt);
-            }
+        let draw_secs = t0.elapsed().as_secs_f64();
+        if draw_secs > 0.0 {
+            app.push_fps_sample(1.0 / draw_secs);
         }
-        last_frame_at = Some(now);
 
         if app.should_quit {
             return Ok(());

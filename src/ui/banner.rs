@@ -11,10 +11,17 @@
 //! glyph range).
 //!
 //! The FPS mode reuses the exact same strip/glyph style, but each cell is a
-//! recent real render-rate sample (see `App::push_fps_sample`) instead of a
-//! decorative value — a lightweight, always-on perf diagnostic: sit on a heavy
-//! screen, flip to FPS, and a stalled render loop shows up immediately as a
-//! flatlined or dropping graph instead of needing a targeted benchmark to catch.
+//! recent real per-render sample of `1 / render_duration` (see
+//! `App::push_fps_sample`) instead of a decorative value — deliberately timed
+//! around the render call itself, not the gap between renders: rakko only
+//! redraws on an event (no fixed render clock), so at idle the gap between
+//! draws just measures the banner tick's own 200ms cadence, not actual
+//! performance — a low idle number there reads as "broken" when it's the
+//! intended idle behavior. Timing the render call directly fixes that (idle
+//! renders are fast → a high, reassuring number) while still catching the
+//! failure mode this exists for: a lightweight, always-on perf diagnostic —
+//! sit on a heavy screen, flip to FPS, and a stalled render shows up
+//! immediately as a flatlined or dropping graph, no targeted benchmark needed.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
