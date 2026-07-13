@@ -8,8 +8,9 @@ use crate::app::{App, BrowseMode, InspectorFocus, MessageViewState, ReplayPhase,
 use crate::events::Action;
 use crate::kafka::schema_registry::SchemaRegistry;
 use crate::raw_message::RawMessage;
+use crate::text_field::wrap_lines_for_width;
 use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
-use crate::ui::widgets::confirm_dialog::{centered_rect, render_confirm_dialog};
+use crate::ui::widgets::confirm_dialog::{centered_rect, centered_rect_fixed_height};
 use crate::ui::widgets::footer::render_keybind_footer;
 use crate::ui::widgets::table_nav::render_selectable_list;
 
@@ -552,34 +553,6 @@ fn render_inspector_panel(
     );
 }
 
-/// Break `text` into display lines of at most `width` characters (Unicode scalars).
-/// Hard newlines are preserved as row boundaries.
-fn wrap_lines_for_width(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut out = Vec::new();
-    for raw in text.split('\n') {
-        if raw.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-        let mut col = 0usize;
-        let mut line = String::new();
-        for ch in raw.chars() {
-            if col >= width {
-                out.push(std::mem::take(&mut line));
-                col = 0;
-            }
-            line.push(ch);
-            col += 1;
-        }
-        out.push(line);
-    }
-    if out.is_empty() {
-        out.push(String::new());
-    }
-    out
-}
-
 /// Metadata banner across the top of the inspector: topic/partition/offset/timestamp,
 /// key/value formats, and headers — everything *except* the key/value bodies
 /// themselves, which get their own side-by-side panels (see `render_message_inspector`).
@@ -646,10 +619,15 @@ fn bytes_to_display_text(
     text.to_string()
 }
 
+/// A dedicated (not `render_confirm_dialog`-based) layout: replay has three real
+/// outcomes (raw / edit / cancel), not confirm_dialog's fixed yes/no footer, and the
+/// message metadata reads better as aligned fields than one wrapped prose blob.
+/// Dialog height tracks the field count instead of a fixed percentage, so there's no
+/// leftover blank space below a handful of short lines.
 fn render_replay_overlay(frame: &mut Frame, area: Rect, phase: &ReplayPhase) {
     match phase {
         ReplayPhase::Confirm { message } => {
-            let existing = if message.headers.is_empty() {
+            let headers = if message.headers.is_empty() {
                 "(none)".to_string()
             } else {
                 message
@@ -660,17 +638,43 @@ fn render_replay_overlay(frame: &mut Frame, area: Rect, phase: &ReplayPhase) {
                     .join(", ")
             };
             let (_, key_preview) = bytes_display(message.key.as_deref(), None);
-            let body = format!(
-                "Replay onto the same topic.\n\n\
-                 partition {} · offset {}\n\
-                 key: {key_preview}\n\
-                 headers: {existing}\n\n\
-                 y/Enter: replay raw (byte-identical, keeps headers)\n\
-                 e: edit in producer (decoded text; headers not carried)\n\
-                 n/Esc: cancel",
-                message.partition, message.offset
+            let fields = format!(
+                "topic:     {}\npartition: {}\noffset:    {}\nkey:       {key_preview}\nheaders:   {headers}",
+                message.topic, message.partition, message.offset,
             );
-            render_confirm_dialog(frame, area, "Replay message", &body, None);
+            let field_lines = fields.lines().count() as u16;
+            // fields + spacer + footer, + margin(1) top/bottom, + the block's own border.
+            let dialog_height = field_lines + 2 + 2 + 2;
+
+            let dialog = centered_rect_fixed_height(64, dialog_height, area);
+            frame.render_widget(Clear, dialog);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Replay onto the same topic")
+                .title_style(TITLE_STYLE);
+            let inner = block.inner(dialog);
+            frame.render_widget(block, dialog);
+
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(field_lines),
+                    Constraint::Length(1), // spacer
+                    Constraint::Length(1), // footer
+                ])
+                .margin(1)
+                .split(inner);
+
+            frame.render_widget(Paragraph::new(fields).style(STATUS_STYLE), rows[0]);
+            let footer = Line::from(vec![
+                Span::styled("y/Enter", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(": replay raw (byte-identical)   "),
+                Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(": edit in producer   "),
+                Span::styled("n/Esc", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(": cancel"),
+            ]);
+            frame.render_widget(Paragraph::new(footer), rows[2]);
         }
     }
 }
@@ -714,25 +718,5 @@ fn soft_cap_preview(text: &str, max: usize) -> String {
         format!("{truncated}…")
     } else {
         text.to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::wrap_lines_for_width;
-
-    #[test]
-    fn wrap_splits_long_line_so_scroll_has_room() {
-        let long = "x".repeat(100);
-        let lines = wrap_lines_for_width(&long, 40);
-        assert_eq!(lines.len(), 3); // 40 + 40 + 20
-        assert_eq!(lines[0].chars().count(), 40);
-        assert_eq!(lines[2].chars().count(), 20);
-    }
-
-    #[test]
-    fn wrap_keeps_hard_newlines() {
-        let lines = wrap_lines_for_width("a\n\nbcdef", 3);
-        assert_eq!(lines, vec!["a", "", "bcd", "ef"]);
     }
 }

@@ -65,3 +65,23 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         ])
         .split(vertical[1])[1]
 }
+
+/// Center a dialog of exact row `height` (clamped to `area`) and percentage width —
+/// for content-sized dialogs (a handful of fields + a footer) that would otherwise
+/// float in a sea of blank space under `centered_rect`'s screen-percentage height.
+pub fn centered_rect_fixed_height(percent_x: u16, height: u16, area: Rect) -> Rect {
+    let height = height.min(area.height);
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(height), Constraint::Min(0)])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1])[1]
+}

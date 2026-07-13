@@ -11,6 +11,25 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-13
+
+### Changed
+
+- Producer screen now shows Key and Value as side-by-side columns, matching the
+  message inspector's layout.
+- Replay confirmation dialog is now sized to its content (no more floating in a
+  block of blank space), with the message's topic/partition/offset/key/headers
+  shown as aligned fields and a single accurate footer for its three actions
+  (replay raw / edit in producer / cancel) — previously a duplicate, and for this
+  dialog inaccurate, "y: confirm  n/Esc: cancel" line was tacked on underneath.
+
+### Fixed
+
+- Producer screen: ↑/↓ and mouse wheel now move the cursor within multi-line
+  Key/Value fields (previously did nothing), and PageUp/PageDown/mouse wheel now
+  scroll the read-only value preview in file-path and external-editor mode
+  (previously stuck showing only the top of a loaded file).
+
 ## [0.8.0] - 2026-07-13
 
 ### Added

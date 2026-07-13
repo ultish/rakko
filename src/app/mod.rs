@@ -439,10 +439,16 @@ impl App {
                 if self.scroll_message_view(10) {
                     return vec![];
                 }
+                if self.scroll_producer_preview(10) {
+                    return vec![];
+                }
                 self.request_seek_page(PageDirection::Forward)
             }
             Action::PageBackward => {
                 if self.scroll_message_view(-10) {
+                    return vec![];
+                }
+                if self.scroll_producer_preview(-10) {
                     return vec![];
                 }
                 self.request_seek_page(PageDirection::Backward)
@@ -706,6 +712,18 @@ impl App {
                 }
                 vec![]
             }
+            Action::ProducerCursorUp => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.cursor_up();
+                }
+                vec![]
+            }
+            Action::ProducerCursorDown => {
+                if let Some(state) = self.producer.as_mut() {
+                    state.cursor_down();
+                }
+                vec![]
+            }
             Action::ProducerCursorHome => {
                 if let Some(state) = self.producer.as_mut() {
                     state.cursor_home();
@@ -934,6 +952,10 @@ impl App {
         }
         // Message inspector owns j/k for scrolling while open.
         if self.scroll_message_view(delta) {
+            return;
+        }
+        // Mouse wheel over the producer's read-only value preview scrolls it.
+        if self.scroll_producer_preview(delta) {
             return;
         }
         self.with_current_selection(|index, len| Self::clamp_index(index, len, delta));
@@ -1821,6 +1843,7 @@ impl App {
             AppEvent::FileLoaded { content } => {
                 if let Some(state) = self.producer.as_mut() {
                     state.value_input = content;
+                    state.value_preview_scroll = 0;
                     self.status_message = Some("file loaded into value".into());
                 }
                 vec![]
@@ -1832,6 +1855,7 @@ impl App {
             AppEvent::ExternalEditorDone { content } => {
                 if let Some(state) = self.producer.as_mut() {
                     state.value_input = content;
+                    state.value_preview_scroll = 0;
                     self.status_message = Some("editor closed — value updated".into());
                 }
                 vec![]

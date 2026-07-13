@@ -38,6 +38,10 @@ pub struct ProducerState {
     pub file_path_input: String,
     /// Char index into the focused text field.
     pub cursor: usize,
+    /// Scroll offset (wrapped display lines) for the read-only value preview shown
+    /// in file-path / external-editor mode — those bodies aren't edited in place, so
+    /// they don't get cursor-follow autoscroll like the inline editors do.
+    pub value_preview_scroll: usize,
 }
 
 impl ProducerState {
@@ -50,6 +54,7 @@ impl ProducerState {
             focus: ProducerFocus::Key,
             file_path_input: String::new(),
             cursor: 0,
+            value_preview_scroll: 0,
         }
     }
 
@@ -143,6 +148,18 @@ impl ProducerState {
         crate::text_field::cursor_left(&mut self.cursor);
     }
 
+    pub fn cursor_up(&mut self) {
+        let mut cursor = self.cursor;
+        crate::text_field::cursor_up(self.active_text(), &mut cursor);
+        self.cursor = cursor;
+    }
+
+    pub fn cursor_down(&mut self) {
+        let mut cursor = self.cursor;
+        crate::text_field::cursor_down(self.active_text(), &mut cursor);
+        self.cursor = cursor;
+    }
+
     pub fn cursor_right(&mut self) {
         let len = self.active_text().chars().count();
         if self.cursor < len {
@@ -156,6 +173,31 @@ impl ProducerState {
 
     pub fn cursor_end(&mut self) {
         self.snap_cursor_to_end();
+    }
+
+    /// Mouse wheel / PageUp/PageDown over the producer screen. In file-path /
+    /// external-editor mode this scrolls the read-only value preview (there's no
+    /// cursor there to drive an autoscroll). In inline mode there's no separate
+    /// view-scroll state — the focused field's own cursor moves instead (same as
+    /// Up/Down), which drags its cursor-follow autoscroll along with it.
+    pub fn scroll_value_preview(&mut self, delta: i64) -> bool {
+        if self.mode == ProducerInputMode::Inline {
+            let steps = delta.unsigned_abs();
+            for _ in 0..steps {
+                if delta < 0 {
+                    self.cursor_up();
+                } else {
+                    self.cursor_down();
+                }
+            }
+            return true;
+        }
+        if delta < 0 {
+            self.value_preview_scroll = self.value_preview_scroll.saturating_sub((-delta) as usize);
+        } else {
+            self.value_preview_scroll = self.value_preview_scroll.saturating_add(delta as usize);
+        }
+        true
     }
 
     pub fn display_field(&self, field: ProducerFocus) -> String {
@@ -173,6 +215,20 @@ impl ProducerState {
 }
 
 impl App {
+    /// Mouse-wheel / PageUp/PageDown scroll while the producer screen is open —
+    /// see `ProducerState::scroll_value_preview` for what "scroll" means per mode.
+    /// Returns true if consumed (so mouse-wheel/PageUp/PageDown don't also fall
+    /// through to list navigation / seek paging).
+    pub(super) fn scroll_producer_preview(&mut self, delta: i64) -> bool {
+        if self.screen != Screen::Producer {
+            return false;
+        }
+        let Some(state) = self.producer.as_mut() else {
+            return false;
+        };
+        state.scroll_value_preview(delta)
+    }
+
     pub(super) fn open_producer(&mut self) -> Vec<Command> {
         if self.screen != Screen::TopicDetail {
             return vec![];

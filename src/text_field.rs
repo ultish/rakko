@@ -67,6 +67,89 @@ pub fn clamp_cursor(text: &str, cursor: &mut usize) {
     }
 }
 
+/// (start, end) char-offsets of each hard-newline-delimited line in `chars`, `end`
+/// excluding the newline itself.
+fn line_bounds(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut bounds = Vec::new();
+    let mut start = 0;
+    for (i, ch) in chars.iter().enumerate() {
+        if *ch == '\n' {
+            bounds.push((start, i));
+            start = i + 1;
+        }
+    }
+    bounds.push((start, chars.len()));
+    bounds
+}
+
+/// Index into `bounds` of the line containing char offset `cursor`.
+fn line_index_at(bounds: &[(usize, usize)], cursor: usize) -> usize {
+    bounds
+        .iter()
+        .position(|(start, end)| cursor >= *start && cursor <= *end)
+        .unwrap_or_else(|| bounds.len().saturating_sub(1))
+}
+
+/// Move the cursor up one hard-newline-delimited line, preserving column where
+/// possible (clamped to the shorter line's length). No-op on the first line.
+pub fn cursor_up(text: &str, cursor: &mut usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let bounds = line_bounds(&chars);
+    let idx = line_index_at(&bounds, *cursor);
+    if idx == 0 {
+        return;
+    }
+    let (cur_start, _) = bounds[idx];
+    let col = *cursor - cur_start;
+    let (prev_start, prev_end) = bounds[idx - 1];
+    *cursor = prev_start + col.min(prev_end - prev_start);
+}
+
+/// Move the cursor down one hard-newline-delimited line, preserving column where
+/// possible (clamped to the shorter line's length). No-op on the last line.
+pub fn cursor_down(text: &str, cursor: &mut usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let bounds = line_bounds(&chars);
+    let idx = line_index_at(&bounds, *cursor);
+    if idx + 1 >= bounds.len() {
+        return;
+    }
+    let (cur_start, _) = bounds[idx];
+    let col = *cursor - cur_start;
+    let (next_start, next_end) = bounds[idx + 1];
+    *cursor = next_start + col.min(next_end - next_start);
+}
+
+/// Break `text` into display lines of at most `width` characters (Unicode scalars).
+/// Hard newlines are preserved as row boundaries. Shared by any panel that needs to
+/// pre-wrap text so a scroll offset can window into it (see
+/// `ui::screens::topic_detail::render_message_inspector`).
+pub fn wrap_lines_for_width(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for raw in text.split('\n') {
+        if raw.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut col = 0usize;
+        let mut line = String::new();
+        for ch in raw.chars() {
+            if col >= width {
+                out.push(std::mem::take(&mut line));
+                col = 0;
+            }
+            line.push(ch);
+            col += 1;
+        }
+        out.push(line);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
 /// High-contrast block cursor style (black on white) — stays visible on yellow/status text.
 pub fn cursor_style() -> Style {
     Style::default()
@@ -159,5 +242,33 @@ mod tests {
     fn text_with_cursor_preserves_lines() {
         let t = text_with_cursor("a\nb", 2, Style::default());
         assert_eq!(t.lines.len(), 2);
+    }
+
+    #[test]
+    fn cursor_vertical_movement_preserves_column() {
+        let text = "abc\nde\nfghij";
+        let mut c = 1; // 'b' on line 0
+        cursor_up(text, &mut c);
+        assert_eq!(c, 1, "no-op on first line");
+        cursor_down(text, &mut c);
+        assert_eq!(c, 5, "line 1 col 1 -> 'e'");
+        cursor_down(text, &mut c);
+        assert_eq!(c, 8, "line 2 col 1 -> 'g'");
+        cursor_down(text, &mut c);
+        assert_eq!(c, 8, "no-op on last line");
+    }
+
+    #[test]
+    fn cursor_vertical_movement_clamps_to_shorter_line() {
+        let text = "abcdef\nxy";
+        let mut c = 6; // end of line 0
+        cursor_down(text, &mut c);
+        assert_eq!(c, 9, "clamped to end of shorter line 1");
+    }
+
+    #[test]
+    fn wrap_lines_for_width_splits_long_lines_and_keeps_newlines() {
+        let wrapped = wrap_lines_for_width("abcdef\nxy", 3);
+        assert_eq!(wrapped, vec!["abc", "def", "xy"]);
     }
 }

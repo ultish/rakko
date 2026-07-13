@@ -190,6 +190,8 @@ pub enum Action {
     ProducerDelete,
     ProducerCursorLeft,
     ProducerCursorRight,
+    ProducerCursorUp,
+    ProducerCursorDown,
     ProducerCursorHome,
     ProducerCursorEnd,
     /// Insert a newline into the multi-line value field (inline mode).

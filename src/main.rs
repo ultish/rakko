@@ -113,6 +113,14 @@ fn producer_key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Delete => Some(Action::ProducerDelete),
         KeyCode::Left => Some(Action::ProducerCursorLeft),
         KeyCode::Right => Some(Action::ProducerCursorRight),
+        // Up/Down move the cursor within the focused multi-line field (autoscrolling
+        // it into view); PageUp/PageDown scroll the read-only value preview shown in
+        // file-path / external-editor mode (a no-op in inline mode, where there's no
+        // separate preview to scroll — see `App::scroll_producer_preview`).
+        KeyCode::Up => Some(Action::ProducerCursorUp),
+        KeyCode::Down => Some(Action::ProducerCursorDown),
+        KeyCode::PageUp => Some(Action::PageBackward),
+        KeyCode::PageDown => Some(Action::PageForward),
         KeyCode::Home => Some(Action::ProducerCursorHome),
         KeyCode::End => Some(Action::ProducerCursorEnd),
         KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
