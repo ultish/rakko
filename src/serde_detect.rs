@@ -101,46 +101,75 @@ fn avro_payload_to_json(payload: &[u8], schema: &Schema) -> Option<String> {
     avro_payload_to_json_value(payload, schema).map(|v| v.to_string())
 }
 
-/// Recursively caps string/bytes leaves to `max_chars` — for
-/// [`avro_value_preview`], where converting an untruncated multi-MB field to
-/// `serde_json::Value` and serializing it back to a string is the actual cost (not
-/// the binary decode itself, which stays fast regardless of field size); truncating
-/// first keeps that conversion+serialize proportional to the preview size instead
-/// of the record size. Arrays/maps are also capped by element count so a huge
-/// collection can't reintroduce the same cost via many small elements.
-fn truncate_avro_value(value: apache_avro::types::Value, max_chars: usize) -> apache_avro::types::Value {
+/// Element-count ceiling per array/map, on top of the shared content `budget`
+/// below — belt-and-suspenders against a huge collection of budget-free scalars
+/// (e.g. an array of a million `null`s), which a pure content budget wouldn't stop
+/// since scalars don't consume it.
+const MAX_COLLECTION_ELEMENTS: usize = 64;
+
+/// Recursively truncates string/bytes/fixed content against a shared, shrinking
+/// `budget` (in chars, threaded through the *whole* tree) — not an independent cap
+/// per leaf. A per-leaf-only cap still lets total output scale with schema shape: a
+/// record with hundreds of small string fields, several nested sub-records, or
+/// arrays of records, can each stay under a per-leaf cap individually while their
+/// *sum* across the whole tree is still large enough to make the JSON conversion +
+/// serialization slow again — the actual cost driver
+/// ([`avro_value_preview`]) is total text volume, not any one field's length.
+/// Recursion into further record fields / array·map elements stops once the
+/// budget hits zero, so total work is bounded by the target preview size
+/// regardless of nesting depth or field count.
+fn truncate_avro_value_bounded(value: apache_avro::types::Value, budget: &mut usize) -> apache_avro::types::Value {
     use apache_avro::types::Value as AvroValue;
-    const MAX_ELEMENTS: usize = 64;
     match value {
         AvroValue::String(s) => {
-            if s.chars().count() > max_chars {
-                AvroValue::String(s.chars().take(max_chars).collect())
-            } else {
-                AvroValue::String(s)
-            }
+            let take = s.chars().count().min(*budget);
+            let truncated: String = s.chars().take(take).collect();
+            *budget = budget.saturating_sub(truncated.chars().count());
+            AvroValue::String(truncated)
         }
-        AvroValue::Bytes(b) => AvroValue::Bytes(b.into_iter().take(max_chars).collect()),
-        AvroValue::Fixed(size, b) => AvroValue::Fixed(size, b.into_iter().take(max_chars).collect()),
-        AvroValue::Record(fields) => AvroValue::Record(
-            fields
-                .into_iter()
-                .map(|(k, v)| (k, truncate_avro_value(v, max_chars)))
-                .collect(),
-        ),
-        AvroValue::Array(items) => AvroValue::Array(
-            items
-                .into_iter()
-                .take(MAX_ELEMENTS)
-                .map(|v| truncate_avro_value(v, max_chars))
-                .collect(),
-        ),
-        AvroValue::Map(map) => AvroValue::Map(
-            map.into_iter()
-                .take(MAX_ELEMENTS)
-                .map(|(k, v)| (k, truncate_avro_value(v, max_chars)))
-                .collect(),
-        ),
-        AvroValue::Union(idx, inner) => AvroValue::Union(idx, Box::new(truncate_avro_value(*inner, max_chars))),
+        AvroValue::Bytes(b) => {
+            let take = b.len().min(*budget);
+            *budget = budget.saturating_sub(take);
+            AvroValue::Bytes(b.into_iter().take(take).collect())
+        }
+        AvroValue::Fixed(size, b) => {
+            let take = b.len().min(*budget);
+            *budget = budget.saturating_sub(take);
+            AvroValue::Fixed(size, b.into_iter().take(take).collect())
+        }
+        AvroValue::Record(fields) => {
+            let mut out = Vec::with_capacity(fields.len());
+            for (k, v) in fields {
+                if *budget == 0 {
+                    break;
+                }
+                out.push((k, truncate_avro_value_bounded(v, budget)));
+            }
+            AvroValue::Record(out)
+        }
+        AvroValue::Array(items) => {
+            let mut out = Vec::new();
+            for v in items.into_iter().take(MAX_COLLECTION_ELEMENTS) {
+                if *budget == 0 {
+                    break;
+                }
+                out.push(truncate_avro_value_bounded(v, budget));
+            }
+            AvroValue::Array(out)
+        }
+        AvroValue::Map(map) => {
+            let mut out = Vec::new();
+            for (k, v) in map.into_iter().take(MAX_COLLECTION_ELEMENTS) {
+                if *budget == 0 {
+                    break;
+                }
+                out.push((k, truncate_avro_value_bounded(v, budget)));
+            }
+            AvroValue::Map(out.into_iter().collect())
+        }
+        AvroValue::Union(idx, inner) => {
+            AvroValue::Union(idx, Box::new(truncate_avro_value_bounded(*inner, budget)))
+        }
         other => other,
     }
 }
@@ -149,17 +178,20 @@ fn truncate_avro_value(value: apache_avro::types::Value, max_chars: usize) -> ap
 /// decode-and-serialize on every call — see
 /// `ui::screens::topic_detail::bytes_display`'s list-row preview, which runs for
 /// every visible row on every render. The binary decode itself is cheap regardless
-/// of record size; what isn't is `serde_json`-serializing an untruncated multi-MB
-/// string field, so fields are truncated *before* the JSON conversion rather than
-/// after (bounding only the output writer doesn't help — the serializer still scans
-/// the whole untruncated string first).
+/// of record size or shape; what isn't is `serde_json`-serializing an untruncated
+/// record back to text, so content is truncated against a shared `max_chars`
+/// budget *before* the JSON conversion rather than after (bounding only the output
+/// writer doesn't help — the serializer still scans each untruncated string first,
+/// and a per-leaf-only cap doesn't bound a wide/deeply-nested schema's *total*
+/// content — see `truncate_avro_value_bounded`).
 pub fn avro_value_preview(value: &[u8], registry: Option<&SchemaRegistry>, max_chars: usize) -> Option<String> {
     let schema_id = confluent_schema_id(value)?;
     let registry = registry?;
     let schema = registry.cached_schema(schema_id)?;
     let mut cursor = &value[5..];
     let avro_value = apache_avro::from_avro_datum(schema, &mut cursor, None).ok()?;
-    let truncated = truncate_avro_value(avro_value, max_chars);
+    let mut budget = max_chars;
+    let truncated = truncate_avro_value_bounded(avro_value, &mut budget);
     let json_value: serde_json::Value = truncated.try_into().ok()?;
     Some(json_value.to_string())
 }
@@ -299,6 +331,69 @@ mod tests {
     fn avro_value_preview_falls_through_without_cached_schema() {
         let wire = confluent_frame(9999, b"whatever");
         assert!(avro_value_preview(&wire, None, 2048).is_none());
+    }
+
+    #[test]
+    fn truncate_avro_value_bounded_caps_total_output_for_a_wide_schema() {
+        // A schema with many small fields (no single huge field) is the case a
+        // per-leaf-only cap misses: each field individually stays under any
+        // reasonable per-leaf cap, but the *sum* across thousands of fields does
+        // not — the shared budget must stop once *total* content is spent, not
+        // once any one field is.
+        let n = 3000;
+        let record = AvroValue::Record(
+            (0..n)
+                .map(|i| (format!("f{i}"), AvroValue::String(format!("value-{i}-short"))))
+                .collect(),
+        );
+        let mut budget = 512usize;
+        let truncated = truncate_avro_value_bounded(record, &mut budget);
+        let AvroValue::Record(fields) = &truncated else {
+            panic!("expected a record");
+        };
+        assert!(
+            fields.len() < n,
+            "budget should stop recursion well before all {n} fields are visited, got {}",
+            fields.len()
+        );
+        let json_value: serde_json::Value = truncated.try_into().unwrap();
+        let preview = json_value.to_string();
+        assert!(preview.len() < 1024, "preview should stay near the budget, got {} bytes", preview.len());
+    }
+
+    #[test]
+    fn truncate_avro_value_bounded_caps_total_output_for_deep_nesting_with_arrays() {
+        // 6 levels of nested records, each wrapping an array of sub-records with a
+        // large string field — matches a schema that's deeply nested with arrays
+        // in between, not just one big flat field. 4 items/level x 6 levels ≈
+        // 4,096 leaf paths if fully walked — enough branching to be a real stress
+        // case without taking forever just to construct the input tree.
+        fn build_level(depth: usize) -> AvroValue {
+            if depth == 0 {
+                AvroValue::String("x".repeat(5000))
+            } else {
+                let items: Vec<AvroValue> = (0..4)
+                    .map(|i| {
+                        AvroValue::Record(vec![
+                            ("tag".into(), AvroValue::String(format!("tag-{depth}-{i}"))),
+                            ("child".into(), build_level(depth - 1)),
+                        ])
+                    })
+                    .collect();
+                AvroValue::Record(vec![("items".into(), AvroValue::Array(items))])
+            }
+        }
+        let tree = AvroValue::Record(vec![("root".into(), build_level(6))]);
+
+        let t0 = std::time::Instant::now();
+        let mut budget = 2048usize;
+        let truncated = truncate_avro_value_bounded(tree, &mut budget);
+        let json_value: serde_json::Value = truncated.try_into().unwrap();
+        let preview = json_value.to_string();
+        // Generous ceiling (not a tight timing assertion) — catches a regression
+        // back to unbounded-by-shape walking, not meant to flake on a loaded box.
+        assert!(t0.elapsed().as_millis() < 200, "elapsed: {:?}", t0.elapsed());
+        assert!(preview.len() < 4096, "preview should stay near the budget, got {} bytes", preview.len());
     }
 
     const USER_SCHEMA: &str = r#"{

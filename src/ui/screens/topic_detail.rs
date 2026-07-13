@@ -720,12 +720,25 @@ fn bytes_display(
             } else {
                 format!("avro:{schema_id}?")
             };
-            // A per-field cap well under LIST_PREVIEW_SAFETY_CAP: `serde_json::Value`
-            // serializes object fields in key-sorted order, so a single huge field
-            // capped at the *full* preview budget can by itself fill it and crowd
-            // out every other field before the final soft-cap below ever runs.
+            // `max_chars` here is a total content budget shared across the whole
+            // record (see `truncate_avro_value_bounded`), not a per-field cap — a
+            // single huge field and a record with many small fields both stay
+            // within it. Fields are visited (and the budget spent) in schema
+            // declaration order, not serde_json's key-sorted output order, so a
+            // schema with identifying fields (id, type, ...) declared before a
+            // large payload field shows those first rather than having them
+            // crowded out by whichever field name sorts alphabetically first.
+            // Budget is a fraction of the final display cap, not the cap itself:
+            // JSON syntax (quotes/colons/commas/key names) adds overhead on top of
+            // the raw content the budget counts, so passing the full cap can push
+            // the serialized size just over it — leaving the *outer* soft-cap
+            // below to trim the tail, which (since output is key-sorted) can cut
+            // off a small field like `id` after a big one, undoing the ordering
+            // guarantee above. This margin keeps normal-sized records comfortably
+            // under the outer cap so it stays a no-op safety net, not a second
+            // truncation pass.
             let preview =
-                crate::serde_detect::avro_value_preview(bytes, registry, LIST_PREVIEW_SAFETY_CAP / 4)
+                crate::serde_detect::avro_value_preview(bytes, registry, LIST_PREVIEW_SAFETY_CAP * 3 / 4)
                     .unwrap_or_else(|| format!("<{} bytes — Enter to view>", bytes.len()));
             return (label, soft_cap_preview(&preview, LIST_PREVIEW_SAFETY_CAP));
         }

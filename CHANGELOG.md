@@ -11,6 +11,19 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-07-13
+
+### Fixed
+
+- Avro list-row preview is now bounded by total content, not per-field: a schema
+  with many fields, or several nested levels of sub-records/arrays, could each
+  individually stay under the previous per-field cap while summing to enough
+  work to slow rendering again. Truncation now stops as soon as a shared preview
+  budget is spent, however wide or deeply nested the schema, so it stays fast
+  regardless of schema shape rather than just single-field size. Query filter
+  autocomplete is unaffected — it always decodes full, untruncated messages, on
+  a separate path from the list preview.
+
 ## [0.9.1] - 2026-07-13
 
 ### Fixed
