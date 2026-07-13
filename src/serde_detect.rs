@@ -101,6 +101,69 @@ fn avro_payload_to_json(payload: &[u8], schema: &Schema) -> Option<String> {
     avro_payload_to_json_value(payload, schema).map(|v| v.to_string())
 }
 
+/// Recursively caps string/bytes leaves to `max_chars` — for
+/// [`avro_value_preview`], where converting an untruncated multi-MB field to
+/// `serde_json::Value` and serializing it back to a string is the actual cost (not
+/// the binary decode itself, which stays fast regardless of field size); truncating
+/// first keeps that conversion+serialize proportional to the preview size instead
+/// of the record size. Arrays/maps are also capped by element count so a huge
+/// collection can't reintroduce the same cost via many small elements.
+fn truncate_avro_value(value: apache_avro::types::Value, max_chars: usize) -> apache_avro::types::Value {
+    use apache_avro::types::Value as AvroValue;
+    const MAX_ELEMENTS: usize = 64;
+    match value {
+        AvroValue::String(s) => {
+            if s.chars().count() > max_chars {
+                AvroValue::String(s.chars().take(max_chars).collect())
+            } else {
+                AvroValue::String(s)
+            }
+        }
+        AvroValue::Bytes(b) => AvroValue::Bytes(b.into_iter().take(max_chars).collect()),
+        AvroValue::Fixed(size, b) => AvroValue::Fixed(size, b.into_iter().take(max_chars).collect()),
+        AvroValue::Record(fields) => AvroValue::Record(
+            fields
+                .into_iter()
+                .map(|(k, v)| (k, truncate_avro_value(v, max_chars)))
+                .collect(),
+        ),
+        AvroValue::Array(items) => AvroValue::Array(
+            items
+                .into_iter()
+                .take(MAX_ELEMENTS)
+                .map(|v| truncate_avro_value(v, max_chars))
+                .collect(),
+        ),
+        AvroValue::Map(map) => AvroValue::Map(
+            map.into_iter()
+                .take(MAX_ELEMENTS)
+                .map(|(k, v)| (k, truncate_avro_value(v, max_chars)))
+                .collect(),
+        ),
+        AvroValue::Union(idx, inner) => AvroValue::Union(idx, Box::new(truncate_avro_value(*inner, max_chars))),
+        other => other,
+    }
+}
+
+/// Bounded preview of an Avro record for contexts that can't afford a full
+/// decode-and-serialize on every call — see
+/// `ui::screens::topic_detail::bytes_display`'s list-row preview, which runs for
+/// every visible row on every render. The binary decode itself is cheap regardless
+/// of record size; what isn't is `serde_json`-serializing an untruncated multi-MB
+/// string field, so fields are truncated *before* the JSON conversion rather than
+/// after (bounding only the output writer doesn't help — the serializer still scans
+/// the whole untruncated string first).
+pub fn avro_value_preview(value: &[u8], registry: Option<&SchemaRegistry>, max_chars: usize) -> Option<String> {
+    let schema_id = confluent_schema_id(value)?;
+    let registry = registry?;
+    let schema = registry.cached_schema(schema_id)?;
+    let mut cursor = &value[5..];
+    let avro_value = apache_avro::from_avro_datum(schema, &mut cursor, None).ok()?;
+    let truncated = truncate_avro_value(avro_value, max_chars);
+    let json_value: serde_json::Value = truncated.try_into().ok()?;
+    Some(json_value.to_string())
+}
+
 /// Structured JSON view of `value`, for the advanced query filter
 /// (`query_filter::QueryFilter`) to walk field paths directly rather than re-parsing
 /// display text. Same decode boundary as [`decode_value`] — Avro needs a schema already
@@ -131,6 +194,22 @@ fn is_json_object_or_array(value: &[u8]) -> bool {
         Ok(v) => v.is_object() || v.is_array(),
         Err(_) => false,
     }
+}
+
+/// Cheap JSON-shape probe: UTF-8 and opens with `{`/`[`, but — unlike
+/// [`detect_format`] — does **not** fully parse to confirm the document is well
+/// formed. For a truncated prefix of a large message (see
+/// `ui::screens::topic_detail::bytes_display`), a full parse always fails (the
+/// document is incomplete by construction), so this is what a size-bounded preview
+/// has to fall back to for its format badge; anywhere accuracy matters more than
+/// bounded cost (filtering, export, the message inspector) should keep using
+/// `detect_format` on the untruncated bytes instead.
+pub fn looks_json_shaped(value: &[u8]) -> bool {
+    let Ok(s) = std::str::from_utf8(value) else {
+        return false;
+    };
+    let trimmed = s.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
 }
 
 fn decode_json_or_raw(value: &[u8]) -> DecodedValue {
@@ -168,6 +247,59 @@ mod tests {
     use super::*;
     use apache_avro::types::Value as AvroValue;
     use crate::kafka::schema_registry::SchemaRegistry;
+
+    #[test]
+    fn looks_json_shaped_accepts_truncated_object_or_array_prefix() {
+        // A prefix of a large document can never itself parse — the whole point of
+        // the shape probe is to not require that.
+        assert!(looks_json_shaped(br#"{"a":"xxxxxxxxxxxxxxxxxxxxxxxx"#));
+        assert!(looks_json_shaped(br#"[1,2,3,4,5,6,7,8,9,1"#));
+        assert!(!looks_json_shaped(b"plain text"));
+        assert!(!looks_json_shaped(&[0xff, 0xfe, 0x00]));
+    }
+
+    #[test]
+    fn avro_value_preview_truncates_large_fields_and_stays_cheap() {
+        let schema = Schema::parse_str(
+            r#"{
+            "type":"record","name":"RakkoPerfTest",
+            "fields":[
+                {"name":"id","type":"int"},
+                {"name":"kind","type":"string"},
+                {"name":"blob","type":"string"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let blob: String = "x".repeat(2_000_000);
+        let value = AvroValue::Record(vec![
+            ("id".into(), AvroValue::Int(1)),
+            ("kind".into(), AvroValue::String("perf".into())),
+            ("blob".into(), AvroValue::String(blob)),
+        ]);
+        let payload = apache_avro::to_avro_datum(&schema, value).unwrap();
+        let mut registry = SchemaRegistry::new("http://localhost:8081").unwrap();
+        registry.insert_schema(9, schema);
+        let wire = confluent_frame(9, &payload);
+
+        let t0 = std::time::Instant::now();
+        let preview = avro_value_preview(&wire, Some(&registry), 2048).unwrap();
+        // The whole point: bounding the field before conversion+serialize, not
+        // after, keeps this proportional to the preview size, not the 2MB field —
+        // generous ceiling (not a tight timing assertion) so this doesn't flake on
+        // a loaded CI box while still catching a regression back to the ~50ms/record
+        // (~5s+ for a 100-row page) unbounded-serialize cost.
+        assert!(t0.elapsed().as_millis() < 50, "elapsed: {:?}", t0.elapsed());
+        assert!(preview.contains("\"id\":1"));
+        assert!(preview.contains("perf"));
+        assert!(preview.len() < 4096, "preview should be bounded, got {} bytes", preview.len());
+    }
+
+    #[test]
+    fn avro_value_preview_falls_through_without_cached_schema() {
+        let wire = confluent_frame(9999, b"whatever");
+        assert!(avro_value_preview(&wire, None, 2048).is_none());
+    }
 
     const USER_SCHEMA: &str = r#"{
         "type": "record",

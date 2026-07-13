@@ -11,6 +11,20 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-13
+
+### Fixed
+
+- Topic detail message list is now fast and stays responsive on topics with
+  large (1-3MB+) messages — the row preview no longer fully decodes every
+  visible message's key/value on every render (the list redraws continuously,
+  e.g. every ~200ms for the banner animation, not just when data changes). Large
+  Avro records previously made the whole UI grind to a halt (multi-second
+  redraws blocking keyboard/mouse input); they now show a real, bounded preview
+  of the decoded record instead of paying full decode-and-serialize cost per
+  render. Large JSON/text messages are similarly bounded. Opening a single
+  message (Enter) still shows its full, untruncated decoded content.
+
 ## [0.9.0] - 2026-07-13
 
 ### Changed
