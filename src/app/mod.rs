@@ -44,6 +44,36 @@ use crate::serde_detect::{detect_format, DetectedFormat};
 
 const TAIL_BUFFER_CAPACITY: usize = 500;
 const SEEK_PAGE_SIZE: usize = 100;
+/// How many recent per-frame FPS samples the banner's FPS graph/readout keeps —
+/// also the graph's effective time window at typical interaction rates.
+const FPS_SAMPLE_CAPACITY: usize = 30;
+
+/// Cycles the top banner's animated content (`A` key): the decorative wave, a
+/// live FPS graph + numeric readout (see `App::push_fps_sample`), or off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BannerMode {
+    Wave,
+    Fps,
+    Off,
+}
+
+impl BannerMode {
+    fn next(self) -> Self {
+        match self {
+            BannerMode::Wave => BannerMode::Fps,
+            BannerMode::Fps => BannerMode::Off,
+            BannerMode::Off => BannerMode::Wave,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BannerMode::Wave => "wave",
+            BannerMode::Fps => "fps",
+            BannerMode::Off => "off",
+        }
+    }
+}
 
 /// A clickable region of the last-rendered frame, in terminal cell coordinates.
 /// `ui::draw` clears these at the start of every frame; screens re-register them
@@ -120,8 +150,14 @@ pub struct App {
     pub active_profile: Option<Profile>,
     /// Braille stream banner animation frame index.
     pub banner_frame: usize,
-    /// When false, stream glyph is static (`A` toggles).
-    pub banner_animation: bool,
+    /// Cycles wave → fps → off (`A`). `Off` freezes `banner_frame` and stops the
+    /// periodic tick redraw.
+    pub banner_mode: BannerMode,
+    /// Recent per-frame FPS samples (oldest first), for the banner's FPS graph +
+    /// numeric readout. Raw `Instant`s are deliberately kept out of `App` — see
+    /// `last_row_click` in main.rs — so `main.rs` computes each sample from real
+    /// timestamps and hands in only the derived `f64` via `push_fps_sample`.
+    pub fps_samples: RingBuffer<f64>,
     /// Full-screen detailed otter splash — shown once at startup until dismissed.
     pub show_splash: bool,
     /// Clickable regions registered by the most recent `ui::draw` call. Interior
@@ -177,7 +213,8 @@ impl App {
             quit_confirm: false,
             active_profile: None,
             banner_frame: 0,
-            banner_animation: true,
+            banner_mode: BannerMode::Wave,
+            fps_samples: RingBuffer::new(FPS_SAMPLE_CAPACITY),
             show_splash: true,
             click_regions: RefCell::new(Vec::new()),
             mouse_pos: Cell::new(None),
@@ -238,6 +275,15 @@ impl App {
     /// before screens re-register theirs.
     pub fn clear_click_regions(&self) {
         self.click_regions.borrow_mut().clear();
+    }
+
+    /// Records one render's instantaneous FPS for the banner's FPS graph/readout.
+    /// `main.rs` computes this from real `Instant`s (which don't cross into `App`)
+    /// and calls this once per actual `terminal.draw`, regardless of `banner_mode`
+    /// — so flipping to FPS mode always shows real recent history, not just
+    /// samples collected since you switched to it.
+    pub fn push_fps_sample(&mut self, fps: f64) {
+        self.fps_samples.push(fps);
     }
 
     /// Registers a clickable region for the frame currently being drawn.
@@ -907,21 +953,17 @@ impl App {
                 vec![]
             }
             Action::BannerTick => {
-                if self.banner_animation {
+                if self.banner_mode != BannerMode::Off {
                     self.banner_frame = self.banner_frame.wrapping_add(1);
                 }
                 vec![]
             }
-            Action::ToggleBannerAnimation => {
-                self.banner_animation = !self.banner_animation;
-                if !self.banner_animation {
+            Action::CycleBannerMode => {
+                self.banner_mode = self.banner_mode.next();
+                if self.banner_mode == BannerMode::Off {
                     self.banner_frame = 0;
                 }
-                self.status_message = Some(if self.banner_animation {
-                    "banner animation on".into()
-                } else {
-                    "banner animation off".into()
-                });
+                self.status_message = Some(format!("banner: {}", self.banner_mode.label()));
                 vec![]
             }
             Action::DismissSplash => {

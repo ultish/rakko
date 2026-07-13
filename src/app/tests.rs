@@ -526,17 +526,24 @@ fn create_profile_with_mtls_missing_cert_path_shows_error_and_keeps_wizard_open(
 }
 
 #[test]
-fn toggle_banner_animation() {
+fn cycle_banner_mode_goes_wave_fps_off_and_back() {
     let mut app = App::new(Config::default(), test_config_path());
-    assert!(app.banner_animation);
-    app.update(Action::ToggleBannerAnimation);
-    assert!(!app.banner_animation);
+    assert_eq!(app.banner_mode, BannerMode::Wave);
     app.update(Action::BannerTick);
-    assert_eq!(app.banner_frame, 0); // frozen
-    app.update(Action::ToggleBannerAnimation);
-    assert!(app.banner_animation);
+    assert_eq!(app.banner_frame, 1); // ticks while not Off
+
+    app.update(Action::CycleBannerMode);
+    assert_eq!(app.banner_mode, BannerMode::Fps);
     app.update(Action::BannerTick);
-    assert_eq!(app.banner_frame, 1);
+    assert_eq!(app.banner_frame, 2); // still ticks — Fps mode also animates
+
+    app.update(Action::CycleBannerMode);
+    assert_eq!(app.banner_mode, BannerMode::Off);
+    app.update(Action::BannerTick);
+    assert_eq!(app.banner_frame, 0); // Off freezes and resets
+
+    app.update(Action::CycleBannerMode);
+    assert_eq!(app.banner_mode, BannerMode::Wave); // cycles back around
 }
 
 #[test]

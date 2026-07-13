@@ -29,7 +29,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::{mpsc, watch};
 
-use app::{App, OffsetResetPhase, ProducerFocus, ProducerInputMode, ReplayPhase, Screen};
+use app::{App, BannerMode, OffsetResetPhase, ProducerFocus, ProducerInputMode, ReplayPhase, Screen};
 use cli::Cli;
 use error::AppResult;
 use events::{Action, AppEvent, Command};
@@ -428,9 +428,9 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('i') if app.screen == Screen::TopicDetail => Some(Action::OpenImport),
         // `o` = order: toggle newest↑ / oldest↑ (offset-reset wizard hijacks keys when open).
         KeyCode::Char('o') if app.screen == Screen::TopicDetail => Some(Action::ToggleMessageSort),
-        // Banner animation toggle — capital A avoids clashing with typed text on other screens
-        // (producer / filter already capture keys before this match).
-        KeyCode::Char('A') => Some(Action::ToggleBannerAnimation),
+        // Banner mode cycle (wave → fps → off) — capital A avoids clashing with typed
+        // text on other screens (producer / filter already capture keys before this match).
+        KeyCode::Char('A') => Some(Action::CycleBannerMode),
         _ => None,
     }
 }
@@ -863,6 +863,11 @@ async fn run_loop(
     // state, and `Instant` can't cross the reducer boundary cleanly.
     let mut last_row_click: Option<(Instant, Action)> = None;
 
+    // Timestamp of the previous `terminal.draw` — same "not on `App`" reasoning as
+    // `last_row_click` above. Only the derived f64 FPS sample crosses into `App`
+    // (via `push_fps_sample`), for the banner's FPS mode.
+    let mut last_frame_at: Option<Instant> = None;
+
     // Soft-refresh consumer-group lag while the group-detail screen is open.
     let mut lag_refresh = tokio::time::interval(std::time::Duration::from_secs(3));
     lag_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -876,6 +881,18 @@ async fn run_loop(
 
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
+
+        // Real render cadence, independent of `banner_mode` — flipping to FPS mode
+        // should show genuine recent history, not just samples collected since you
+        // switched to it.
+        let now = Instant::now();
+        if let Some(prev) = last_frame_at {
+            let dt = now.duration_since(prev).as_secs_f64();
+            if dt > 0.0 {
+                app.push_fps_sample(1.0 / dt);
+            }
+        }
+        last_frame_at = Some(now);
 
         if app.should_quit {
             return Ok(());
@@ -921,7 +938,7 @@ async fn run_loop(
                     handle_command(command, tx, &mut tail_stop);
                 }
             }
-            _ = banner_tick.tick(), if app.banner_animation => {
+            _ = banner_tick.tick(), if app.banner_mode != BannerMode::Off => {
                 let _ = app.update(Action::BannerTick);
             }
         }

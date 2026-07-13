@@ -11,6 +11,23 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-13
+
+### Added
+
+- Top banner's `A` key now cycles wave → FPS → off (previously animation on/off
+  only). FPS mode shows a live braille graph plus numeric readout of actual
+  render cadence — a built-in, always-on perf diagnostic: sit on a heavy
+  screen and a stalled render loop shows up immediately as a flatlined or
+  dropping graph, no targeted benchmark needed to notice.
+
+### Changed
+
+- Banner wave animation now flows as a real wave — peaks and troughs are
+  interpolated between sparse random keyframes with a smoothstep ease, instead
+  of each column being an independent random height lightly blended with just
+  its next neighbor (which read as texture/noise rather than motion).
+
 ## [0.9.2] - 2026-07-13
 
 ### Fixed

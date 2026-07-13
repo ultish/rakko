@@ -266,8 +266,8 @@ pub enum Action {
     ProfileCreateCancel,
     /// Advance braille banner animation frame (timer-driven).
     BannerTick,
-    /// Toggle banner animation on/off (`A` key).
-    ToggleBannerAnimation,
+    /// Cycles the top banner's animated content: wave → FPS graph → off (`A` key).
+    CycleBannerMode,
     /// Dismiss the startup splash (detailed otter).
     DismissSplash,
 }

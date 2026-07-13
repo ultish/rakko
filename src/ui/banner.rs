@@ -1,10 +1,20 @@
-//! Slim top banner: app name + braille stream animation.
-//! Toggle with `A`. Detailed otter is splash-only.
+//! Slim top banner: app name + a braille strip that's either a decorative wave, a
+//! live FPS graph, or off (`A` cycles wave → fps → off). Detailed otter is
+//! splash-only.
 //!
-//! The stream is a short strip of block braille whose **height (density) is
-//! random** per cell, scrolling continuously so new random heights enter from
-//! the right. Heights are lightly smoothed so it still reads as a wave, not
-//! pure static.
+//! The wave is a short strip of block braille whose height (density) at each
+//! column is interpolated between sparse random "keyframe" heights a few columns
+//! apart, easing in/out with a smoothstep curve — real peaks and troughs that
+//! flow continuously as the strip scrolls, not independent random noise per
+//! column (which is what an earlier version of this did: light 2:1 smoothing
+//! with only the *next* cell doesn't stop adjacent columns from jumping the full
+//! glyph range).
+//!
+//! The FPS mode reuses the exact same strip/glyph style, but each cell is a
+//! recent real render-rate sample (see `App::push_fps_sample`) instead of a
+//! decorative value — a lightweight, always-on perf diagnostic: sit on a heavy
+//! screen, flip to FPS, and a stalled render loop shows up immediately as a
+//! flatlined or dropping graph instead of needing a targeted benchmark to catch.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -12,7 +22,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, BannerMode};
+use crate::ring_buffer::RingBuffer;
 use crate::ui::theme::TITLE_STYLE;
 
 /// One content line + bottom border.
@@ -24,21 +35,41 @@ const WAVE_WIDTH: usize = 9;
 /// Density ladder (height): empty-ish → full.
 const LEVELS: &[char] = &['⡀', '⣀', '⣄', '⣤', '⣦', '⣶', '⣷', '⣿'];
 
-/// Deterministic “random” height at absolute stream position `x` (0..7).
-fn raw_height(x: usize) -> usize {
-    // cheap mix — stable for a given x so scrolling looks continuous
-    let mut h = x.wrapping_mul(0x9E37_79B9);
+/// Columns between wave peak/trough keyframes — between them, height is
+/// interpolated rather than independently random, so motion reads as one
+/// continuous flowing wave with real peaks and troughs.
+const WAVE_PERIOD: usize = 6;
+
+/// Deterministic pseudo-random keyframe height (as a float in `[0, LEVELS.len() -
+/// 1]`) at keyframe index `k` — the "random" choice now happens once per
+/// keyframe, not once per column; columns between keyframes interpolate.
+fn keyframe_height(k: usize) -> f64 {
+    let mut h = k.wrapping_mul(0x9E37_79B9);
     h ^= h >> 16;
     h = h.wrapping_mul(0x85EB_CA6B);
     h ^= h >> 13;
-    h % LEVELS.len()
+    (h % 1000) as f64 / 999.0 * (LEVELS.len() - 1) as f64
 }
 
-/// Light smoothing (2:1 with next cell) so it still feels wavy, but peaks vary.
+/// Smoothstep ease (3t² − 2t³): an S-curve between two keyframes, so the wave
+/// eases in/out of each peak/trough instead of moving at a constant linear rate
+/// (which would put a visible kink exactly at each keyframe).
+fn smoothstep(t: f64) -> f64 {
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Interpolated height (glyph index) at absolute stream position `x`, between the
+/// two keyframes surrounding it. Continuous at keyframe boundaries by
+/// construction: column `x` at `t≈1` in one interval and column `x+1` at `t=0` in
+/// the next both resolve to the same `keyframe_height`.
 fn height_at(x: usize) -> usize {
-    let a = raw_height(x);
-    let b = raw_height(x.wrapping_add(1));
-    (a * 2 + b) / 3
+    let k0 = x / WAVE_PERIOD;
+    let k1 = k0 + 1;
+    let t = (x % WAVE_PERIOD) as f64 / WAVE_PERIOD as f64;
+    let h0 = keyframe_height(k0);
+    let h1 = keyframe_height(k1);
+    let h = h0 + (h1 - h0) * smoothstep(t);
+    (h.round() as usize).min(LEVELS.len() - 1)
 }
 
 /// Visible strip at scroll phase `phase` (cells `phase .. phase+WAVE_WIDTH`).
@@ -50,20 +81,66 @@ pub fn stream_wave(phase: usize) -> String {
     s
 }
 
+/// Braille-density strip in the same style/scale as `stream_wave`, driven by
+/// recent real per-frame FPS samples instead of decorative motion. Newest sample
+/// is the rightmost cell (matches the wave's left-to-right scroll direction);
+/// height is normalized against the current window's own max so the shape stays
+/// legible whether the app is rendering at 5fps (idle, banner-tick-driven) or
+/// bursting much higher (rapid input).
+fn fps_graph(samples: &RingBuffer<f64>) -> String {
+    let values: Vec<f64> = samples.iter().copied().collect();
+    if values.is_empty() {
+        return " ".repeat(WAVE_WIDTH);
+    }
+    let max = values.iter().cloned().fold(0.0_f64, f64::max).max(1.0);
+    let recent = &values[values.len().saturating_sub(WAVE_WIDTH)..];
+    let pad = WAVE_WIDTH.saturating_sub(recent.len());
+
+    let mut s = String::with_capacity(WAVE_WIDTH);
+    s.extend(std::iter::repeat_n(' ', pad));
+    for &v in recent {
+        let level = ((v / max) * (LEVELS.len() - 1) as f64).round() as usize;
+        s.push(LEVELS[level.min(LEVELS.len() - 1)]);
+    }
+    s
+}
+
+/// Short rolling average (last few samples) for the numeric FPS readout —
+/// smooths single-sample jitter without lagging so much it feels unresponsive.
+fn recent_fps(samples: &RingBuffer<f64>) -> f64 {
+    let values: Vec<f64> = samples.iter().copied().collect();
+    let recent = &values[values.len().saturating_sub(5)..];
+    if recent.is_empty() {
+        return 0.0;
+    }
+    recent.iter().sum::<f64>() / recent.len() as f64
+}
+
 /// Renders the top banner into `area` (should be `BANNER_HEIGHT` tall).
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let _ = area;
-    let stream = if app.banner_animation {
-        stream_wave(app.banner_frame)
-    } else {
-        stream_wave(0)
+
+    let (glyphs, glyph_style, mode_label, next_hint) = match app.banner_mode {
+        BannerMode::Wave => (
+            stream_wave(app.banner_frame),
+            Style::default().fg(Color::Yellow),
+            "stream".to_string(),
+            "A: fps",
+        ),
+        BannerMode::Fps => (
+            fps_graph(&app.fps_samples),
+            Style::default().fg(Color::Green),
+            format!("{:.0} fps", recent_fps(&app.fps_samples)),
+            "A: off",
+        ),
+        BannerMode::Off => (
+            stream_wave(0),
+            Style::default().fg(Color::DarkGray),
+            "paused".to_string(),
+            "A: wave",
+        ),
     };
 
-    let anim_hint = if app.banner_animation {
-        "A: pause"
-    } else {
-        "A: animate"
-    };
     let profile = app
         .active_profile
         .as_ref()
@@ -72,15 +149,14 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
 
     let cyan = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(Color::DarkGray);
-    let stream_style = Style::default().fg(Color::Yellow);
     let katakana = Style::default().fg(Color::Cyan);
 
     let line = Line::from(vec![
         Span::styled(" rakko ", cyan),
-        Span::styled(stream, stream_style),
+        Span::styled(glyphs, glyph_style),
         Span::styled(" ラッコ", katakana),
-        Span::styled(format!("  stream{profile}"), dim),
-        Span::styled(format!("  [{anim_hint}]"), dim),
+        Span::styled(format!("  {mode_label}{profile}"), dim),
+        Span::styled(format!("  [{next_hint}]"), dim),
     ]);
 
     frame.render_widget(
@@ -117,5 +193,72 @@ mod tests {
     fn heights_use_level_glyphs() {
         let s = stream_wave(42);
         assert!(s.chars().all(|c| LEVELS.contains(&c)));
+    }
+
+    #[test]
+    fn adjacent_columns_never_jump_more_than_a_couple_levels() {
+        // The whole point of keyframe interpolation: no more full-range jumps
+        // between neighboring columns (the old per-column-random-plus-light-
+        // smoothing approach could jump from level 0 to level 7 between adjacent
+        // cells — that reads as noise, not a wave).
+        for x in 0..200 {
+            let a = height_at(x) as i64;
+            let b = height_at(x + 1) as i64;
+            assert!(
+                (a - b).abs() <= 2,
+                "adjacent columns at x={x} jumped from level {a} to {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn interpolation_is_continuous_at_keyframe_boundaries() {
+        // No seam exactly at a keyframe: the column just before a keyframe and
+        // the keyframe column itself should be at most one level apart, same as
+        // any other adjacent pair (covered above, but explicit here since this is
+        // the exact spot a boundary bug would show up).
+        for k in 1..20 {
+            let x = k * WAVE_PERIOD;
+            let before = height_at(x - 1) as i64;
+            let at = height_at(x) as i64;
+            assert!((before - at).abs() <= 2, "seam at keyframe boundary x={x}");
+        }
+    }
+
+    #[test]
+    fn fps_graph_is_blank_when_no_samples_yet() {
+        let samples = RingBuffer::new(30);
+        let s = fps_graph(&samples);
+        assert_eq!(s.chars().count(), WAVE_WIDTH);
+        assert!(s.chars().all(|c| c == ' '));
+    }
+
+    #[test]
+    fn fps_graph_uses_level_glyphs_once_samples_exist() {
+        let mut samples = RingBuffer::new(30);
+        for v in [10.0, 20.0, 5.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0] {
+            samples.push(v);
+        }
+        let s = fps_graph(&samples);
+        assert_eq!(s.chars().count(), WAVE_WIDTH);
+        assert!(s.chars().all(|c| LEVELS.contains(&c)));
+        // The max sample in the window should render as the tallest glyph.
+        assert!(s.ends_with('⣿'));
+    }
+
+    #[test]
+    fn recent_fps_averages_the_last_few_samples() {
+        let mut samples = RingBuffer::new(30);
+        for v in [1.0, 2.0, 3.0, 10.0, 20.0, 30.0] {
+            samples.push(v);
+        }
+        // Last 5: 2,3,10,20,30 → avg 13.
+        assert_eq!(recent_fps(&samples), 13.0);
+    }
+
+    #[test]
+    fn recent_fps_is_zero_with_no_samples() {
+        let samples: RingBuffer<f64> = RingBuffer::new(30);
+        assert_eq!(recent_fps(&samples), 0.0);
     }
 }
