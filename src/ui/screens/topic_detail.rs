@@ -4,7 +4,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, BrowseMode, InspectorFocus, MessageViewState, ReplayPhase, TopicDetailState};
+use crate::app::{
+    capped_body, App, BrowseMode, InspectorFocus, MessageViewState, ReplayPhase, TopicDetailState,
+};
 use crate::events::Action;
 use crate::kafka::schema_registry::SchemaRegistry;
 use crate::raw_message::RawMessage;
@@ -18,9 +20,6 @@ use crate::ui::widgets::table_nav::render_selectable_list;
 /// **terminal-allocated** column width). Prevents multi‑MB payloads from being
 /// held in every visible row; the table still clips to remaining width.
 const LIST_PREVIEW_SAFETY_CAP: usize = 2_048;
-
-/// Cap full-body display so a multi‑MB payload can't freeze the terminal redraw.
-const INSPECTOR_MAX_BODY_CHARS: usize = 200_000;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(detail) = app.topic_detail.as_ref() else {
@@ -411,9 +410,8 @@ fn render_message_inspector(
 
     render_static_panel(frame, top_panels[0], "Attrs", &attrs);
 
-    let key_body = capped_body(bytes_to_display_text(view.message.key.as_deref(), registry));
+    let (key_body, value_body) = view.decoded_bodies(registry);
     let headers_body = capped_body(format_message_headers(&view.message));
-    let value_body = capped_body(bytes_to_display_text(view.message.value.as_deref(), registry));
 
     // Soft-wrap to each pane's width *before* scrolling. Counting only `\n` lines
     // made max_scroll=0 for long single-line JSON (looked unscrollable even with
@@ -578,17 +576,6 @@ fn format_message_headers(message: &RawMessage) -> String {
         .map(|(key, value)| format!("{key}: {}", bytes_to_display_text(Some(value.as_slice()), None)))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Soft cap for pathological payloads so a multi-MB key/value can't freeze the
-/// terminal redraw.
-fn capped_body(body: String) -> String {
-    if body.chars().count() > INSPECTOR_MAX_BODY_CHARS {
-        let truncated: String = body.chars().take(INSPECTOR_MAX_BODY_CHARS).collect();
-        format!("{truncated}\n\n… (truncated for display)")
-    } else {
-        body
-    }
 }
 
 fn format_timestamp(millis: Option<i64>) -> String {

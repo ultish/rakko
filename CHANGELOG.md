@@ -11,6 +11,18 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-07-14
+
+### Fixed
+
+- Message browsing no longer redoes expensive decode work on every redraw. The
+  message inspector re-decoded and pretty-printed the full key/value from scratch
+  on every render (the banner animation redraws every ~200ms even at idle), and a
+  filtered message list re-scanned and re-decoded the whole buffer (up to 500
+  messages) the same way — both are now cached and only recomputed when something
+  that actually changes the result does (a new message, a filter/query-filter
+  apply or clear, a mode switch, or a schema finishing its background load).
+
 ## [0.10.1] - 2026-07-13
 
 ### Fixed

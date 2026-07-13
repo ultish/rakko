@@ -195,7 +195,7 @@ key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
 
 ## Keybinds
 
-Global: **`q`** quit (confirms) · **Ctrl-c** force quit · **Esc** back · **j/k** or arrows move · **Enter** confirm · **`A`** toggle banner braille-stream animation.
+Global: **`q`** quit (confirms) · **Ctrl-c** force quit · **Esc** back · **j/k** or arrows move · **Enter** confirm · **`A`** cycle banner mode (flowing wave → FPS diagnostic → off) — FPS mode shows a live braille graph plus numeric render-cadence readout, handy for spotting a stalled render loop.
 
 On any of the list-level screens (Topics, Messages, Groups, Group detail, Brokers,
 Broker detail) a **switcher bar** sits under the banner: `1 Topics   2 Groups   3

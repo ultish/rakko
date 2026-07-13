@@ -1,6 +1,7 @@
 //! Message browser: tail/seek browsing modes, filter, sort, the message inspector, and
 //! the single-message replay wizard.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 
 use serde_json::Value;
@@ -105,6 +106,85 @@ pub struct MessageViewState {
     pub headers_scroll: usize,
     /// Vertical line offset into the rendered value panel.
     pub value_scroll: usize,
+    /// Memoized decoded+pretty-printed key/value bodies — see `decoded_bodies`.
+    decoded_cache: RefCell<Option<DecodedBodyCache>>,
+}
+
+/// Cap full-body display so a multi-MB payload can't freeze the terminal redraw.
+const INSPECTOR_MAX_BODY_CHARS: usize = 200_000;
+
+#[derive(Debug, Clone)]
+struct DecodedBodyCache {
+    schema_cache_len: usize,
+    key_body: String,
+    value_body: String,
+}
+
+impl MessageViewState {
+    pub fn new(message: RawMessage) -> Self {
+        Self {
+            message,
+            focus: InspectorFocus::Key,
+            key_scroll: 0,
+            headers_scroll: 0,
+            value_scroll: 0,
+            decoded_cache: RefCell::new(None),
+        }
+    }
+
+    /// Decoded+pretty-printed (but not yet width-wrapped) key/value bodies, capped at
+    /// `INSPECTOR_MAX_BODY_CHARS`. Decoding a large Avro/JSON message (schema lookup,
+    /// deserialize, `serde_json::to_string_pretty`) is expensive, and this screen
+    /// redraws on every banner tick (~200ms) even at idle — recomputing it on every
+    /// render was the same "decode-on-every-frame" cost 0.9.1/0.9.2 fixed for the
+    /// list-row preview, just not applied to the single-message inspector. Cached
+    /// bodies are invalidated when the schema-registry cache grows (a schema this
+    /// message was waiting on may have just loaded, changing the decoded output),
+    /// not on every call.
+    pub fn decoded_bodies(&self, registry: Option<&SchemaRegistry>) -> (String, String) {
+        let schema_cache_len = registry.map_or(0, SchemaRegistry::cache_len);
+        let stale = self
+            .decoded_cache
+            .borrow()
+            .as_ref()
+            .is_none_or(|c| c.schema_cache_len != schema_cache_len);
+        if stale {
+            let key_body = capped_body(bytes_to_display_text(self.message.key.as_deref(), registry));
+            let value_body = capped_body(bytes_to_display_text(self.message.value.as_deref(), registry));
+            *self.decoded_cache.borrow_mut() =
+                Some(DecodedBodyCache { schema_cache_len, key_body, value_body });
+        }
+        let cache = self.decoded_cache.borrow();
+        let cache = cache.as_ref().expect("just populated above");
+        (cache.key_body.clone(), cache.value_body.clone())
+    }
+}
+
+pub(crate) fn capped_body(body: String) -> String {
+    if body.chars().count() > INSPECTOR_MAX_BODY_CHARS {
+        let truncated: String = body.chars().take(INSPECTOR_MAX_BODY_CHARS).collect();
+        format!("{truncated}\n\n… (truncated for display)")
+    } else {
+        body
+    }
+}
+
+/// Full decoded body for the inspector: pretty-print JSON when possible.
+fn bytes_to_display_text(bytes: Option<&[u8]>, registry: Option<&SchemaRegistry>) -> String {
+    let Some(bytes) = bytes else {
+        return "<null>".into();
+    };
+    if bytes.is_empty() {
+        return "<empty>".into();
+    }
+    let decoded = crate::serde_detect::decode_value(bytes, registry);
+    let text = decoded.as_str();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Ok(pretty) = serde_json::to_string_pretty(&value) {
+            return pretty;
+        }
+    }
+    text.to_string()
 }
 
 /// Tab-completion state for the query-filter dialog: a cycle through candidate root
@@ -154,6 +234,25 @@ pub struct TopicDetailState {
     pub inspector_bottom_split: u16,
     /// Newest-first by default so the latest messages appear at the top of the list.
     pub sort: MessageSort,
+    /// Bumped at every site that can change what `visible_messages_with_registry`
+    /// returns (new tail message, seek page reload, filter/query-filter apply or
+    /// clear, mode switch) — invalidates `visible_cache` below. Sort is deliberately
+    /// excluded: the cache stores filter-matched indices in storage order and the
+    /// newest-first reversal is applied on every call regardless of cache freshness,
+    /// so toggling sort doesn't need to bust it.
+    pub visible_revision: u64,
+    /// Memoized filter result — see `visible_messages_with_registry`.
+    pub(super) visible_cache: RefCell<Option<VisibleCache>>,
+}
+
+/// Cached output of the filter pass in `visible_messages_with_registry`: which
+/// positions (into the mode's current message list, in storage/oldest-first order)
+/// passed the filter. Indices rather than `&RawMessage`s, since the latter would
+/// self-borrow from the state that owns this cache.
+pub(super) struct VisibleCache {
+    revision: u64,
+    schema_cache_len: usize,
+    indices: Vec<usize>,
 }
 
 impl TopicDetailState {
@@ -167,25 +266,55 @@ impl TopicDetailState {
     /// schema-registry cache when filtering so field-level search works after schemas load.
     /// The substring filter and the advanced query filter are independent — when both are
     /// applied, a message must satisfy both.
+    ///
+    /// Filtering can fully decode every message (Avro/JSON) to test the predicate —
+    /// recomputing on every render (the banner tick redraws every ~200ms even at
+    /// idle) would repeat that decode continuously while a filter is applied on a
+    /// full tail buffer. The filtered-index result is cached, keyed by
+    /// `visible_revision` (bumped wherever content/filters actually change) and the
+    /// schema-registry cache size (grows monotonically as schemas load, which can
+    /// change decode results without any of those actions firing).
     pub fn visible_messages_with_registry(
         &self,
         registry: Option<&SchemaRegistry>,
     ) -> Vec<&RawMessage> {
-        let all: Box<dyn Iterator<Item = &RawMessage> + '_> = match &self.mode {
-            BrowseMode::Tail(buffer) => Box::new(buffer.iter()),
-            BrowseMode::Seek(state) => Box::new(state.messages.iter()),
+        let all: Vec<&RawMessage> = match &self.mode {
+            BrowseMode::Tail(buffer) => buffer.iter().collect(),
+            BrowseMode::Seek(state) => state.messages.iter().collect(),
         };
-        let needle = self.applied_filter.as_ref().map(|f| f.to_lowercase());
-        let mut msgs: Vec<&RawMessage> = all
-            .filter(|message| {
-                needle
-                    .as_deref()
-                    .is_none_or(|n| message_matches_filter(message, n, registry))
-                    && self
-                        .applied_query_filter
-                        .as_ref()
-                        .is_none_or(|q| query_filter_matches(message, q, registry))
-            })
+
+        let schema_cache_len = registry.map_or(0, SchemaRegistry::cache_len);
+        let stale = self.visible_cache.borrow().as_ref().is_none_or(|c| {
+            c.revision != self.visible_revision || c.schema_cache_len != schema_cache_len
+        });
+        if stale {
+            let needle = self.applied_filter.as_ref().map(|f| f.to_lowercase());
+            let indices: Vec<usize> = all
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| {
+                    needle
+                        .as_deref()
+                        .is_none_or(|n| message_matches_filter(message, n, registry))
+                        && self
+                            .applied_query_filter
+                            .as_ref()
+                            .is_none_or(|q| query_filter_matches(message, q, registry))
+                })
+                .map(|(i, _)| i)
+                .collect();
+            *self.visible_cache.borrow_mut() =
+                Some(VisibleCache { revision: self.visible_revision, schema_cache_len, indices });
+        }
+
+        let mut msgs: Vec<&RawMessage> = self
+            .visible_cache
+            .borrow()
+            .as_ref()
+            .expect("just populated above")
+            .indices
+            .iter()
+            .map(|&i| all[i])
             .collect();
         // Storage order is oldest→newest (ring buffer / seek poll). Reverse for newest↑.
         if self.sort == MessageSort::NewestFirst {
@@ -495,13 +624,7 @@ impl App {
             self.status_message = Some("no message selected".into());
             return vec![];
         };
-        detail.message_view = Some(MessageViewState {
-            message,
-            focus: InspectorFocus::Key,
-            key_scroll: 0,
-            headers_scroll: 0,
-            value_scroll: 0,
-        });
+        detail.message_view = Some(MessageViewState::new(message));
         vec![]
     }
 
@@ -708,6 +831,7 @@ impl App {
                     high_watermark: 0,
                 });
                 detail.selected_index = 0;
+                detail.visible_revision = detail.visible_revision.wrapping_add(1);
                 vec![
                     Command::StopTail,
                     Command::LoadSeekPage {
@@ -721,6 +845,7 @@ impl App {
             BrowseMode::Seek(_) => {
                 detail.mode = BrowseMode::Tail(RingBuffer::new(TAIL_BUFFER_CAPACITY));
                 detail.selected_index = 0;
+                detail.visible_revision = detail.visible_revision.wrapping_add(1);
                 vec![Command::StartTail { profile, topic: detail.topic.clone() }]
             }
         }

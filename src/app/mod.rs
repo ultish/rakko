@@ -24,6 +24,7 @@ pub use profile_create::{ProfileCreateAuthChoice, ProfileCreateFocus, ProfileCre
 pub use topic_detail::{
     BrowseMode, InspectorFocus, MessageSort, MessageViewState, ReplayPhase, TopicDetailState,
 };
+pub(crate) use topic_detail::capped_body;
 
 use export_import::ExportScope;
 use group_detail::parse_reset_input;
@@ -598,6 +599,7 @@ impl App {
                         };
                         detail.filter_active = false;
                         detail.selected_index = 0;
+                        detail.visible_revision = detail.visible_revision.wrapping_add(1);
                     }
                 }
                 if self.topic_list_filter_active {
@@ -627,12 +629,14 @@ impl App {
                             detail.applied_query_filter = None;
                             detail.query_filter_active = false;
                             detail.selected_index = 0;
+                            detail.visible_revision = detail.visible_revision.wrapping_add(1);
                         } else {
                             match crate::query_filter::parse(&detail.query_filter_input) {
                                 Ok(query) => {
                                     detail.applied_query_filter = Some(query);
                                     detail.query_filter_active = false;
                                     detail.selected_index = 0;
+                                    detail.visible_revision = detail.visible_revision.wrapping_add(1);
                                 }
                                 Err(err) => {
                                     // Stay open so the user can fix it, same pattern as
@@ -671,6 +675,7 @@ impl App {
                     detail.applied_query_filter = None;
                     detail.query_filter_input.clear();
                     detail.selected_index = 0;
+                    detail.visible_revision = detail.visible_revision.wrapping_add(1);
                 }
                 vec![]
             }
@@ -1183,6 +1188,8 @@ impl App {
                     inspector_top_split: 50,
                     inspector_bottom_split: 40,
                     sort: MessageSort::default(),
+                    visible_revision: 0,
+                    visible_cache: RefCell::new(None),
                 });
                 self.screen = Screen::TopicDetail;
                 vec![Command::StartTail { profile, topic: topic.name }]
@@ -1720,6 +1727,7 @@ impl App {
                             let mut message = message;
                             message.partition = partition;
                             buffer.push(message);
+                            detail.visible_revision = detail.visible_revision.wrapping_add(1);
                         }
                         // else: stale arrival from a just-aborted tail task racing the
                         // switch to seek mode - silently dropped.
@@ -1748,6 +1756,7 @@ impl App {
                                 state.low_watermark = meta.low_watermark;
                                 state.high_watermark = meta.high_watermark;
                                 detail.selected_index = 0;
+                                detail.visible_revision = detail.visible_revision.wrapping_add(1);
                                 // Clear stale "refreshing page..." once data lands.
                                 if self
                                     .status_message

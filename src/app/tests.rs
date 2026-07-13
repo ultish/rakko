@@ -635,6 +635,8 @@ fn app_in_topic_detail(topic_name: &str, partition_count: usize) -> App {
         inspector_top_split: 50,
         inspector_bottom_split: 40,
         sort: MessageSort::default(),
+        visible_revision: 0,
+        visible_cache: RefCell::new(None),
     });
     app
 }
@@ -691,6 +693,41 @@ fn message_arrived_pushes_into_tail_ring_buffer() {
 }
 
 #[test]
+fn visible_messages_cache_reflects_a_tail_message_arriving_after_the_first_read() {
+    let mut app = app_in_topic_detail("orders", 1);
+    // Populate the filtered-view cache before anything has arrived.
+    assert_eq!(app.topic_detail.as_ref().unwrap().visible_messages().len(), 0);
+    app.apply_event(AppEvent::MessageArrived {
+        topic: "orders".into(),
+        partition: 0,
+        message: message("k1", "v1"),
+    });
+    // A second read must see the new message, not a stale cached empty result.
+    assert_eq!(app.topic_detail.as_ref().unwrap().visible_messages().len(), 1);
+}
+
+#[test]
+fn visible_messages_cache_updates_when_a_filter_is_applied_after_the_first_read() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("a", "apple"));
+            buffer.push(message("b", "banana"));
+        }
+    }
+    // First read (unfiltered) populates the cache.
+    assert_eq!(app.topic_detail.as_ref().unwrap().visible_messages().len(), 2);
+    app.update(Action::StartFilterInput);
+    for c in "apple".chars() {
+        app.update(Action::FilterChar(c));
+    }
+    app.update(Action::ApplyFilter);
+    // A second read must reflect the newly-applied filter, not the cached
+    // unfiltered result from before ApplyFilter bumped the cache's revision.
+    assert_eq!(app.topic_detail.as_ref().unwrap().visible_messages().len(), 1);
+}
+
+#[test]
 fn message_arrived_for_a_different_topic_is_ignored() {
     let mut app = app_in_topic_detail("orders", 1);
     app.apply_event(AppEvent::MessageArrived {
@@ -734,6 +771,24 @@ fn toggle_browse_mode_switches_tail_to_seek_and_requests_latest_page() {
     let detail = app.topic_detail.as_ref().unwrap();
     assert!(matches!(detail.mode, BrowseMode::Seek(_)));
     assert!(matches!(commands.as_slice(), [Command::StopTail, Command::LoadSeekPage { .. }]));
+}
+
+#[test]
+fn visible_messages_cache_does_not_carry_stale_indices_across_a_mode_switch() {
+    let mut app = app_in_topic_detail("orders", 3);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("a", "apple"));
+            buffer.push(message("b", "banana"));
+            buffer.push(message("c", "apricot"));
+        }
+    }
+    // Populates the cache with 3 matched indices into the (3-message) tail buffer.
+    assert_eq!(app.topic_detail.as_ref().unwrap().visible_messages().len(), 3);
+    // Switching to seek mode starts with an empty page — a stale cache pointing at
+    // indices 0..3 would index out of bounds against it instead of recomputing.
+    app.update(Action::ToggleBrowseMode);
+    assert_eq!(app.topic_detail.as_ref().unwrap().visible_messages().len(), 0);
 }
 
 #[test]
