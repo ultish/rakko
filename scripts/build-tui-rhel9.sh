@@ -41,6 +41,17 @@ BIN_NAME="rakko"
 BIN_LINUX_NAME="${BIN_NAME}-linux-amd64"
 ARCHIVE_NAME="${BIN_LINUX_NAME}.tar.gz"
 
+# The container build also writes its own /out/SHA256SUMS (linux entries only),
+# and extracting /out → $DIST further down overwrites dist/SHA256SUMS with it —
+# clobbering any macOS entries build-macos.sh already left there. Snapshot
+# whatever's there now, before extraction can destroy it, so the merge step
+# near the end of this script has the real pre-extraction baseline instead of
+# whatever the extraction just clobbered the live file with.
+EXISTING_SUMS="$(mktemp)"
+if [[ -f "$DIST/SHA256SUMS" ]]; then
+  cp "$DIST/SHA256SUMS" "$EXISTING_SUMS"
+fi
+
 for arg in "$@"; do
   case "$arg" in
     --no-cache) NO_CACHE=1 ;;
@@ -318,11 +329,21 @@ fi
 tar -C "$STAGE" -czf "$ARCHIVE" "$INNER"
 rm -rf "$STAGE"
 
-if command -v sha256sum >/dev/null 2>&1; then
-  (cd "$DIST" && sha256sum "$BIN_NAME" "$BIN_LINUX_NAME" "$ARCHIVE_NAME" > SHA256SUMS)
-elif command -v shasum >/dev/null 2>&1; then
-  (cd "$DIST" && shasum -a 256 "$BIN_NAME" "$BIN_LINUX_NAME" "$ARCHIVE_NAME" > SHA256SUMS)
+# Merge into dist/SHA256SUMS rather than clobbering (build-macos.sh may have
+# already written macOS entries there). Filter from the pre-extraction snapshot
+# taken at the top of this script, not the live file — extraction above already
+# overwrote the live file with the container's own linux-only SHA256SUMS.
+SUMS_TMP="$(mktemp)"
+if [[ -s "$EXISTING_SUMS" ]]; then
+  grep -v -E "$BIN_NAME$|$BIN_LINUX_NAME$|$ARCHIVE_NAME$" "$EXISTING_SUMS" > "$SUMS_TMP" || true
 fi
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$DIST" && sha256sum "$BIN_NAME" "$BIN_LINUX_NAME" "$ARCHIVE_NAME" >> "$SUMS_TMP")
+elif command -v shasum >/dev/null 2>&1; then
+  (cd "$DIST" && shasum -a 256 "$BIN_NAME" "$BIN_LINUX_NAME" "$ARCHIVE_NAME" >> "$SUMS_TMP")
+fi
+mv "$SUMS_TMP" "$DIST/SHA256SUMS"
+rm -f "$EXISTING_SUMS"
 
 echo
 echo "==> artifacts"

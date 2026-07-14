@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use super::producer::{ProducerFocus, ProducerState};
-use super::{App, Screen, SEEK_PAGE_SIZE, TAIL_BUFFER_CAPACITY};
+use super::{App, Screen, TAIL_BUFFER_CAPACITY};
 use crate::events::{Command, SeekPageRequest};
 use crate::kafka::schema_registry::SchemaRegistry;
 use crate::raw_message::RawMessage;
@@ -797,7 +797,7 @@ impl App {
                     partition: state.partition,
                     request: SeekPageRequest::Forward {
                         from_offset: state.page_start_offset,
-                        page_size: SEEK_PAGE_SIZE,
+                        page_size: self.seek_page_size(),
                     },
                 }]
             }
@@ -815,6 +815,7 @@ impl App {
         let Some(profile) = self.active_profile.clone() else {
             return vec![];
         };
+        let page_size = self.seek_page_size();
         let Some(detail) = self.topic_detail.as_mut() else {
             return vec![];
         };
@@ -838,7 +839,7 @@ impl App {
                         profile,
                         topic: detail.topic.clone(),
                         partition,
-                        request: SeekPageRequest::Latest { page_size: SEEK_PAGE_SIZE },
+                        request: SeekPageRequest::Latest { page_size },
                     },
                 ]
             }
@@ -871,7 +872,7 @@ impl App {
                     profile,
                     topic: detail.topic.clone(),
                     partition: state.partition,
-                    request: SeekPageRequest::Forward { from_offset, page_size: SEEK_PAGE_SIZE },
+                    request: SeekPageRequest::Forward { from_offset, page_size: self.seek_page_size() },
                 }]
             }
             PageDirection::Backward => {
@@ -884,7 +885,7 @@ impl App {
                     partition: state.partition,
                     request: SeekPageRequest::Backward {
                         before_offset: state.page_start_offset,
-                        page_size: SEEK_PAGE_SIZE,
+                        page_size: self.seek_page_size(),
                     },
                 }]
             }

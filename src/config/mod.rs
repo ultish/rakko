@@ -15,6 +15,13 @@ use crate::error::{AppError, AppResult};
 pub struct Config {
     #[serde(default)]
     pub profiles: Vec<Profile>,
+    /// How many messages a seek-mode page request loads at a time (n/p paging,
+    /// the initial page on switching into seek mode, and mode-switch-to-latest).
+    /// Not per-profile — this is a browsing preference, unrelated to any one
+    /// cluster's connection details. `None` (the field is absent from the TOML)
+    /// falls back to `crate::app::DEFAULT_SEEK_PAGE_SIZE`.
+    #[serde(default)]
+    pub seek_page_size: Option<usize>,
 }
 
 impl Config {
@@ -57,6 +64,7 @@ mod tests {
 
     fn sample_config() -> Config {
         Config {
+            seek_page_size: Some(25),
             profiles: vec![
                 Profile {
                     name: "local".into(),
@@ -113,6 +121,23 @@ mod tests {
         assert!(serialized.contains("type = \"mtls\""));
         assert!(serialized.contains("type = \"tls\""));
         assert!(serialized.contains("type = \"none\""));
+    }
+
+    #[test]
+    fn seek_page_size_is_none_when_absent_from_toml() {
+        let config: Config = toml::from_str(
+            r#"
+            [[profiles]]
+            name = "local"
+            bootstrap_servers = "localhost:9092"
+            tls_enabled = false
+
+            [profiles.auth]
+            type = "none"
+            "#,
+        )
+        .expect("deserialize");
+        assert_eq!(config.seek_page_size, None);
     }
 
     #[test]

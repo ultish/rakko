@@ -3,6 +3,14 @@
 #
 # Matches the docker-compose.yml local stack (PLAINTEXT Kafka + Schema Registry).
 
+# How many messages a seek-mode page request loads at a time (n/p paging, the
+# initial page on switching into seek mode, and mode-switch-to-latest). Not
+# per-profile - a browsing preference, unrelated to any one cluster. Defaults
+# to 50 if unset. Must appear before the first [[profiles]] table below (TOML
+# array-of-tables rule - a bare key after [[profiles]] would attach to the
+# last profile instead of the top level).
+# seek_page_size = 50
+
 [[profiles]]
 name = "local"
 bootstrap_servers = "localhost:19092"

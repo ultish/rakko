@@ -147,6 +147,23 @@ Optional per-profile producer knobs:
 "compression.type" = "zstd"
 ```
 
+### Seek page size
+
+`seek_page_size` (top-level, not per-profile — a browsing preference, not a
+cluster setting) controls how many messages a seek-mode page request loads at a
+time: n/p paging, the initial page on switching into seek mode, and
+mode-switch-to-latest. Defaults to 50 if unset. Must come before the first
+`[[profiles]]` table (TOML array-of-tables rule — after `[[profiles]]`, a bare
+key attaches to that profile instead of the top level):
+
+```toml
+seek_page_size = 50
+
+[[profiles]]
+name = "local"
+# ...
+```
+
 ## Message browsing
 
 ### Schema Registry (Avro)

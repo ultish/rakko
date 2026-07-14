@@ -99,6 +99,7 @@ fn selection_clamps_at_zero_on_empty_profile_list() {
 fn selection_clamps_at_bounds_on_populated_profile_list() {
     let config = Config {
         profiles: vec![profile("a"), profile("b")],
+        ..Default::default()
     };
     let mut app = App::new(config, test_config_path());
 
@@ -166,6 +167,7 @@ fn auto_message_max_bytes_saved_when_profile_unset() {
     let mut app = App::new(
         Config {
             profiles: vec![profile("local")],
+            ..Default::default()
         },
         path.clone(),
     );
@@ -199,6 +201,7 @@ fn auto_message_max_bytes_does_not_override_explicit() {
     let mut app = App::new(
         Config {
             profiles: vec![explicit.clone()],
+            ..Default::default()
         },
         path.clone(),
     );
@@ -229,6 +232,7 @@ fn start_edit_profile_prefills_form() {
                     "zstd".into(),
                 )]),
             }],
+            ..Default::default()
         },
         test_config_path(),
     );
@@ -262,6 +266,7 @@ fn submit_profile_edit_preserves_advanced_fields() {
                     "zstd".into(),
                 )]),
             }],
+            ..Default::default()
         },
         path.clone(),
     );
@@ -309,6 +314,7 @@ fn edit_rename_conflict_rejected() {
     let mut app = App::new(
         Config {
             profiles: vec![profile("a"), profile("b")],
+            ..Default::default()
         },
         test_config_path(),
     );
@@ -340,6 +346,7 @@ fn cancel_create_with_existing_profiles_returns_to_picker() {
     let mut app = App::new(
         Config {
             profiles: vec![profile("a")],
+            ..Default::default()
         },
         test_config_path(),
     );
@@ -558,6 +565,7 @@ fn dismiss_splash() {
 fn confirm_on_profile_picker_transitions_to_topic_list_and_returns_load_command() {
     let config = Config {
         profiles: vec![profile("a")],
+        ..Default::default()
     };
     let mut app = App::new(config, test_config_path());
     let commands = app.update(Action::Confirm);
@@ -612,6 +620,7 @@ fn message(key: &str, value: &str) -> RawMessage {
 fn app_in_topic_detail(topic_name: &str, partition_count: usize) -> App {
     let mut app = App::new(Config {
         profiles: vec![profile("a")],
+        ..Default::default()
     }, test_config_path());
     app.active_profile = Some(profile("a"));
     app.screen = Screen::TopicDetail;
@@ -662,6 +671,7 @@ fn seek_state(
 fn confirm_on_topic_list_enters_topic_detail_in_tail_mode_and_starts_tail() {
     let config = Config {
         profiles: vec![profile("a")],
+        ..Default::default()
     };
     let mut app = App::new(config, test_config_path());
     app.active_profile = Some(profile("a"));
@@ -771,6 +781,32 @@ fn toggle_browse_mode_switches_tail_to_seek_and_requests_latest_page() {
     let detail = app.topic_detail.as_ref().unwrap();
     assert!(matches!(detail.mode, BrowseMode::Seek(_)));
     assert!(matches!(commands.as_slice(), [Command::StopTail, Command::LoadSeekPage { .. }]));
+}
+
+#[test]
+fn seek_page_size_defaults_when_unset_in_config() {
+    let mut app = app_in_topic_detail("orders", 3);
+    assert_eq!(app.config.seek_page_size, None);
+    let commands = app.update(Action::ToggleBrowseMode);
+    match commands.as_slice() {
+        [_, Command::LoadSeekPage { request: SeekPageRequest::Latest { page_size }, .. }] => {
+            assert_eq!(*page_size, DEFAULT_SEEK_PAGE_SIZE);
+        }
+        other => panic!("expected StopTail + LoadSeekPage Latest, got {other:?}"),
+    }
+}
+
+#[test]
+fn seek_page_size_honors_config_override() {
+    let mut app = app_in_topic_detail("orders", 3);
+    app.config.seek_page_size = Some(7);
+    let commands = app.update(Action::ToggleBrowseMode);
+    match commands.as_slice() {
+        [_, Command::LoadSeekPage { request: SeekPageRequest::Latest { page_size }, .. }] => {
+            assert_eq!(*page_size, 7);
+        }
+        other => panic!("expected StopTail + LoadSeekPage Latest, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1213,6 +1249,7 @@ fn back_on_topic_detail_returns_to_topic_list_and_stops_tail() {
 fn app_on_topic_list() -> App {
     let mut app = App::new(Config {
         profiles: vec![profile("a")],
+        ..Default::default()
     }, test_config_path());
     app.active_profile = Some(profile("a"));
     app.screen = Screen::TopicList;
@@ -1223,6 +1260,7 @@ fn app_on_topic_list() -> App {
 fn app_on_group_list() -> App {
     let mut app = App::new(Config {
         profiles: vec![profile("a")],
+        ..Default::default()
     }, test_config_path());
     app.active_profile = Some(profile("a"));
     app.screen = Screen::GroupList;
@@ -2386,7 +2424,7 @@ fn refresh_on_seek_reloads_current_page() {
             assert_eq!(topic, "orders");
             assert_eq!(*partition, 0);
             assert_eq!(*from_offset, 10);
-            assert_eq!(*page_size, SEEK_PAGE_SIZE);
+            assert_eq!(*page_size, DEFAULT_SEEK_PAGE_SIZE);
         }
         other => panic!("expected LoadSeekPage Forward from page_start, got {other:?}"),
     }

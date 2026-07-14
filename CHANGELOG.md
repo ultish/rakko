@@ -11,6 +11,15 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-14
+
+### Added
+
+- `seek_page_size` config setting (top-level, not per-profile) controls how many
+  messages a seek-mode page request loads at a time (n/p paging, the initial page
+  on switching into seek mode, and mode-switch-to-latest). Defaults to 50 (was a
+  fixed 100) if unset.
+
 ## [0.10.2] - 2026-07-14
 
 ### Fixed

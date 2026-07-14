@@ -44,7 +44,8 @@ use crate::ring_buffer::RingBuffer;
 use crate::serde_detect::{detect_format, DetectedFormat};
 
 const TAIL_BUFFER_CAPACITY: usize = 500;
-const SEEK_PAGE_SIZE: usize = 100;
+/// Fallback for `Config::seek_page_size` when not set in `config.toml`.
+pub const DEFAULT_SEEK_PAGE_SIZE: usize = 50;
 /// How many recent per-frame FPS samples the banner's FPS graph/readout keeps —
 /// also the graph's effective time window at typical interaction rates.
 const FPS_SAMPLE_CAPACITY: usize = 30;
@@ -240,6 +241,11 @@ impl App {
             }
         }
         app
+    }
+
+    /// Seek-mode page size: `Config::seek_page_size` if set, else `DEFAULT_SEEK_PAGE_SIZE`.
+    fn seek_page_size(&self) -> usize {
+        self.config.seek_page_size.unwrap_or(DEFAULT_SEEK_PAGE_SIZE)
     }
 
     /// Topics for the list / selection, filtered by name when a filter is applied.
