@@ -144,6 +144,9 @@ pub struct App {
     pub config_path: PathBuf,
     /// First-run / "n" create-profile form (overlays the profile picker).
     pub profile_create: Option<ProfileCreateState>,
+    /// Index into `config.profiles` pending deletion (`z` on the profile picker) —
+    /// a centered confirm dialog is open; y/Enter deletes, n/Esc cancels.
+    pub profile_delete_confirm: Option<usize>,
     /// Transient status text: connect errors, load errors, "loading..." etc.
     pub status_message: Option<String>,
     pub should_quit: bool,
@@ -210,6 +213,7 @@ impl App {
             } else {
                 None
             },
+            profile_delete_confirm: None,
             status_message: None,
             should_quit: false,
             quit_confirm: false,
@@ -891,6 +895,21 @@ impl App {
                         self.status_message = Some("no profile selected to edit".into());
                     }
                 }
+                vec![]
+            }
+            Action::StartDeleteProfile => {
+                if self.screen == Screen::ProfilePicker && self.profile_create.is_none() {
+                    if self.selected_profile_index < self.config.profiles.len() {
+                        self.profile_delete_confirm = Some(self.selected_profile_index);
+                    } else {
+                        self.status_message = Some("no profile selected to delete".into());
+                    }
+                }
+                vec![]
+            }
+            Action::ConfirmDeleteProfile => self.confirm_delete_profile(),
+            Action::CancelDeleteProfile => {
+                self.profile_delete_confirm = None;
                 vec![]
             }
             Action::ProfileCreateChar(c) => {

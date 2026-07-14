@@ -249,6 +249,12 @@ pub enum Action {
     StartCreateProfile,
     /// Open the profile form prefilled for the selected picker row (edit in place).
     StartEditProfile,
+    /// Open the delete-confirm dialog for the selected picker row.
+    StartDeleteProfile,
+    /// y/Enter on the delete-confirm dialog: actually remove the profile.
+    ConfirmDeleteProfile,
+    /// n/Esc on the delete-confirm dialog: close it without deleting.
+    CancelDeleteProfile,
     ProfileCreateChar(char),
     ProfileCreateBackspace,
     /// Forward-delete character under the cursor.

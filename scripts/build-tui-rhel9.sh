@@ -41,17 +41,6 @@ BIN_NAME="rakko"
 BIN_LINUX_NAME="${BIN_NAME}-linux-amd64"
 ARCHIVE_NAME="${BIN_LINUX_NAME}.tar.gz"
 
-# The container build also writes its own /out/SHA256SUMS (linux entries only),
-# and extracting /out → $DIST further down overwrites dist/SHA256SUMS with it —
-# clobbering any macOS entries build-macos.sh already left there. Snapshot
-# whatever's there now, before extraction can destroy it, so the merge step
-# near the end of this script has the real pre-extraction baseline instead of
-# whatever the extraction just clobbered the live file with.
-EXISTING_SUMS="$(mktemp)"
-if [[ -f "$DIST/SHA256SUMS" ]]; then
-  cp "$DIST/SHA256SUMS" "$EXISTING_SUMS"
-fi
-
 for arg in "$@"; do
   case "$arg" in
     --no-cache) NO_CACHE=1 ;;
@@ -196,6 +185,19 @@ if ! "$DOCKER" "${BUILD_ARGS[@]}"; then
   echo "    4) If dist/ already has a good binary from an earlier successful build," >&2
   echo "       you can skip rebuild and attach that tarball." >&2
   exit 2
+fi
+
+# The container build also writes its own /out/SHA256SUMS (linux entries only),
+# and the extraction below overwrites dist/SHA256SUMS with it — clobbering any
+# macOS entries build-macos.sh already left there. Snapshot whatever's there
+# right now (not earlier in this script — the docker build above can take
+# minutes, and a concurrent build-macos.sh run could write fresh entries
+# during that window; snapshotting late keeps the race window to the width of
+# this one extraction step instead) so the merge step near the end of this
+# script has the real pre-extraction baseline.
+EXISTING_SUMS="$(mktemp)"
+if [[ -f "$DIST/SHA256SUMS" ]]; then
+  cp "$DIST/SHA256SUMS" "$EXISTING_SUMS"
 fi
 
 echo "==> extracting /out → $DIST …"

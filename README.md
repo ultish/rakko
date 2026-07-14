@@ -85,7 +85,7 @@ If the config file is missing or has **no profiles**, rakko opens a **create-pro
 - Saves to `~/.config/rakko/config.toml` (creates the directory if needed)
 - Editing an existing profile (**e**) prefills its current auth mode and cert/key/CA paths, and saving changes them
 
-On the **profile picker** (after you have at least one profile): **n** opens the same form to add another. **Esc** from the topic list returns to the picker.
+On the **profile picker** (after you have at least one profile): **n** opens the same form to add another. **z** opens a confirm dialog to delete the selected profile — removes it from `config.toml` immediately on confirm, no undo. Deleting the last remaining profile reopens the create-profile form, same as first run. **Esc** from the topic list returns to the picker.
 
 You can still hand-edit the TOML anytime and restart (or re-select the profile).
 
@@ -223,10 +223,13 @@ don't show it — a stray digit there would clobber an in-progress draft.
 
 Shortcuts are kept consistent app-wide: **e** always means *edit* (profile picker,
 replay's "edit in producer"), never anything else. Export uses **x**/**X** instead.
+**z** always means a destructive action gated by a confirm dialog (profile
+deletion, group offset reset) — deliberately not a common/mnemonic key, to
+reduce accidental presses.
 
 | Screen | Keys |
 |--------|------|
-| **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **q** quit |
+| **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **z** delete profile (confirm) · **q** quit |
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
 | **Topics** | **Enter** open topic · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
 | **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page (seek) · **/** filter · **?** query filter · **c** clear filter(s) · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |

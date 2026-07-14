@@ -201,6 +201,20 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         };
     }
 
+    // Delete-profile confirm dialog owns the keyboard while open (profile picker
+    // overlay, mutually exclusive with profile_create's own hijack above).
+    if app.profile_delete_confirm.is_some() {
+        return match key.code {
+            KeyCode::Char('q') => Some(Action::Quit),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            KeyCode::Char('y') | KeyCode::Enter => Some(Action::ConfirmDeleteProfile),
+            KeyCode::Char('n') | KeyCode::Esc => Some(Action::CancelDeleteProfile),
+            _ => None,
+        };
+    }
+
     if app.screen == Screen::ExportImport {
         return match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -369,6 +383,12 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         }
         KeyCode::Char('e') if app.screen == Screen::ProfilePicker => {
             Some(Action::StartEditProfile)
+        }
+        // `z` deliberately mirrors group detail's offset-reset binding: a non-mnemonic
+        // key for a destructive action, reducing accidental presses. Followed by a
+        // confirm dialog either way.
+        KeyCode::Char('z') if app.screen == Screen::ProfilePicker => {
+            Some(Action::StartDeleteProfile)
         }
         KeyCode::PageUp | KeyCode::Char('p') => Some(Action::PageBackward),
         KeyCode::Char('/') => Some(Action::StartFilterInput),

@@ -447,4 +447,41 @@ impl App {
         ));
         vec![]
     }
+
+    /// Removes the profile pending deletion (`profile_delete_confirm`) and saves.
+    /// No-op if the confirm dialog isn't open or the index has since gone stale.
+    pub(super) fn confirm_delete_profile(&mut self) -> Vec<Command> {
+        let Some(index) = self.profile_delete_confirm.take() else {
+            return vec![];
+        };
+        let Some(removed) = self.config.profiles.get(index).cloned() else {
+            return vec![];
+        };
+
+        let backup = self.config.profiles.clone();
+        self.config.profiles.remove(index);
+        let new_selected = self
+            .selected_profile_index
+            .min(self.config.profiles.len().saturating_sub(1));
+
+        if let Err(err) = config::save(&self.config_path, &self.config) {
+            self.config.profiles = backup;
+            self.status_message = Some(format!("failed to delete profile: {err}"));
+            return vec![];
+        }
+
+        self.selected_profile_index = new_selected;
+        // Deleted profile was the one this session connected with — clear it so
+        // later commands don't act on a profile that no longer exists in config.
+        if self.active_profile.as_ref().is_some_and(|p| p.name == removed.name) {
+            self.active_profile = None;
+        }
+        self.status_message = Some(format!("deleted profile '{}'", removed.name));
+        // Mirror the "no profiles configured" first-run UX rather than leaving the
+        // picker on an empty list with no obvious way to add one back.
+        if self.config.profiles.is_empty() {
+            self.profile_create = Some(ProfileCreateState::new());
+        }
+        vec![]
+    }
 }

@@ -334,6 +334,169 @@ fn edit_rename_conflict_rejected() {
 }
 
 #[test]
+fn start_delete_profile_opens_confirm_dialog() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a"), profile("b")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.selected_profile_index = 1;
+    app.update(Action::StartDeleteProfile);
+    assert_eq!(app.profile_delete_confirm, Some(1));
+}
+
+#[test]
+fn start_delete_profile_noop_when_no_profile_selected() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.selected_profile_index = 5; // out of range
+    app.update(Action::StartDeleteProfile);
+    assert_eq!(app.profile_delete_confirm, None);
+    assert!(app
+        .status_message
+        .as_deref()
+        .is_some_and(|s| s.contains("no profile selected")));
+}
+
+#[test]
+fn start_delete_profile_noop_outside_profile_picker() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.screen = Screen::TopicList;
+    app.update(Action::StartDeleteProfile);
+    assert_eq!(app.profile_delete_confirm, None);
+}
+
+#[test]
+fn cancel_delete_profile_closes_dialog_without_deleting() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.update(Action::StartDeleteProfile);
+    app.update(Action::CancelDeleteProfile);
+    assert_eq!(app.profile_delete_confirm, None);
+    assert_eq!(app.config.profiles.len(), 1);
+}
+
+#[test]
+fn confirm_delete_profile_removes_it_and_persists_to_disk() {
+    let path = test_config_path();
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a"), profile("b")],
+            ..Default::default()
+        },
+        path.clone(),
+    );
+    app.selected_profile_index = 0;
+    app.update(Action::StartDeleteProfile);
+    app.update(Action::ConfirmDeleteProfile);
+
+    assert_eq!(app.profile_delete_confirm, None);
+    assert_eq!(app.config.profiles.len(), 1);
+    assert_eq!(app.config.profiles[0].name, "b");
+    assert!(app.status_message.as_deref().is_some_and(|s| s.contains("deleted profile 'a'")));
+
+    let loaded = config::load(&path).unwrap();
+    assert_eq!(loaded.profiles.len(), 1);
+    assert_eq!(loaded.profiles[0].name, "b");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn confirm_delete_profile_clamps_selection_past_the_end() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a"), profile("b")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.selected_profile_index = 1;
+    app.update(Action::StartDeleteProfile);
+    app.update(Action::ConfirmDeleteProfile);
+    assert_eq!(app.config.profiles.len(), 1);
+    assert_eq!(app.selected_profile_index, 0);
+}
+
+#[test]
+fn confirm_delete_profile_clears_active_profile_if_it_was_the_deleted_one() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a"), profile("b")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.active_profile = Some(profile("a"));
+    app.selected_profile_index = 0;
+    app.update(Action::StartDeleteProfile);
+    app.update(Action::ConfirmDeleteProfile);
+    assert!(app.active_profile.is_none());
+}
+
+#[test]
+fn confirm_delete_profile_keeps_active_profile_if_a_different_one_was_deleted() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a"), profile("b")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.active_profile = Some(profile("b"));
+    app.selected_profile_index = 0; // deleting "a", not the active "b"
+    app.update(Action::StartDeleteProfile);
+    app.update(Action::ConfirmDeleteProfile);
+    assert_eq!(app.active_profile.as_ref().map(|p| p.name.as_str()), Some("b"));
+}
+
+#[test]
+fn confirm_delete_profile_reopens_create_form_when_last_profile_removed() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.selected_profile_index = 0;
+    app.update(Action::StartDeleteProfile);
+    app.update(Action::ConfirmDeleteProfile);
+    assert!(app.config.profiles.is_empty());
+    assert!(app.profile_create.is_some());
+}
+
+#[test]
+fn confirm_delete_profile_is_noop_when_dialog_not_open() {
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            ..Default::default()
+        },
+        test_config_path(),
+    );
+    app.update(Action::ConfirmDeleteProfile);
+    assert_eq!(app.config.profiles.len(), 1);
+}
+
+#[test]
 fn cancel_create_with_no_profiles_quits() {
     let mut app = App::new(Config::default(), test_config_path());
     app.update(Action::ProfileCreateCancel);

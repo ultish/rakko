@@ -5,7 +5,7 @@ use ratatui::Frame;
 
 use crate::app::{App, ProfileCreateAuthChoice, ProfileCreateFocus, ProfileCreateState};
 use crate::ui::theme::{ERROR_STYLE, STATUS_STYLE, TITLE_STYLE};
-use crate::ui::widgets::confirm_dialog::centered_rect;
+use crate::ui::widgets::confirm_dialog::{centered_rect, render_confirm_dialog};
 use crate::ui::widgets::footer::{render_keybind_footer, split_with_footer};
 use crate::ui::widgets::table_nav::render_selectable_list;
 
@@ -59,7 +59,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         render_keybind_footer(
             frame,
             footer,
-            "Enter: connect   n: new   e: edit   q: quit",
+            "Enter: connect   n: new   e: edit   z: delete   q: quit",
         );
     } else {
         // Empty + wizard open: dim background under the dialog.
@@ -83,6 +83,18 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         // Dialog draws over main+footer; its own footer is inside the modal.
         render_create_dialog(frame, area, state, app.config.profiles.is_empty());
     }
+
+    if let Some(index) = app.profile_delete_confirm {
+        render_delete_confirm(frame, area, app.config.profiles.get(index).map(|p| p.name.as_str()));
+    }
+}
+
+fn render_delete_confirm(frame: &mut Frame, area: Rect, profile_name: Option<&str>) {
+    let name = profile_name.unwrap_or("(unknown)");
+    let body = format!(
+        "Delete profile '{name}'?\n\nThis removes it from config.toml and cannot be undone."
+    );
+    render_confirm_dialog(frame, area, "Delete profile?", &body, None);
 }
 
 fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateState, first_run: bool) {

@@ -11,6 +11,14 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-14
+
+### Added
+
+- Profile deletion: **z** on the profile picker opens a confirm dialog, then
+  removes the profile from `config.toml`. Deleting the last remaining profile
+  reopens the create-profile form, same as first run.
+
 ## [0.11.0] - 2026-07-14
 
 ### Added
