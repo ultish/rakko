@@ -101,7 +101,7 @@ cargo run -- --config-dir /path/to/dir
 ```toml
 [ui]
 theme = "dark"          # dark | light  (cycle with T in the TUI)
-banner_mode = "wave"    # wave | fps | off  (cycle with A)
+banner_mode = "wave"    # wave | ms | fps | off  (cycle with A)
 ```
 
 Both keys are optional (defaults: dark theme, wave banner). Changing them with **`T`** / **`A`** in the TUI writes back to `config.toml`.
@@ -222,7 +222,7 @@ key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
 
 ## Keybinds
 
-Global: **`q`** quit (confirms) · **Ctrl-c** force quit · **Esc** back · **j/k** or arrows move · **Enter** confirm · **`?`** help overlay (keybinds for the current screen) · **`A`** cycle banner mode (flowing wave → FPS diagnostic → off; saved to config) · **`T`** cycle theme (dark ↔ light; saved to config).
+Global: **`q`** quit (confirms) · **Ctrl-c** force quit · **Esc** back · **j/k** or arrows move · **Enter** confirm · **`?`** help overlay (keybinds for the current screen) · **`A`** cycle banner mode (wave → ms/frame → paint-capacity fps → off; saved to config) · **`T`** cycle theme (dark ↔ light; saved to config).
 
 On any of the list-level screens (Topics, Messages, Groups, Group detail, Brokers,
 Broker detail) a **switcher bar** sits under the banner: `1 Topics   2 Groups   3

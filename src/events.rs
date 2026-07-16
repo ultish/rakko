@@ -272,7 +272,7 @@ pub enum Action {
     ProfileCreateCancel,
     /// Advance braille banner animation frame (timer-driven).
     BannerTick,
-    /// Cycles the top banner's animated content: wave → FPS graph → off (`A` key).
+    /// Cycles the top banner: wave → `ms/frame` → paint-capacity `fps` → off (`A` key).
     CycleBannerMode,
     /// Cycles the color theme (`T` key); persisted to `[ui].theme`.
     CycleTheme,

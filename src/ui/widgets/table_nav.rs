@@ -10,6 +10,30 @@ const COLUMN_SPACING: u16 = 1;
 /// Matches our highlight symbol (`"> "`).
 const HIGHLIGHT_SYMBOL: &str = "> ";
 
+/// How many data rows fit in `area` for a table built by [`render_selectable_list`]
+/// (borders + optional header). Used by the message browser to fill list-row
+/// previews only for the viewport (+ overscan), not the entire buffer.
+pub fn selectable_list_viewport_rows(area: Rect, has_header: bool) -> usize {
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let header_h = u16::from(has_header);
+    inner.height.saturating_sub(header_h) as usize
+}
+
+/// Scroll offset ratatui's `Table` derives when `TableState` starts at offset 0
+/// and then keeps `selected` in view — matching [`render_selectable_list`], which
+/// constructs a fresh `TableState` every frame.
+pub fn selectable_list_offset(selected: usize, item_count: usize, viewport_rows: usize) -> usize {
+    if viewport_rows == 0 || item_count == 0 {
+        return 0;
+    }
+    let max_offset = item_count.saturating_sub(viewport_rows);
+    if selected < viewport_rows {
+        0
+    } else {
+        (selected + 1).saturating_sub(viewport_rows).min(max_offset)
+    }
+}
+
 /// Renders `items` as a selectable table with the row at `selected` highlighted.
 /// Shared by the profile picker, topic list, groups, and message browser.
 ///
@@ -279,6 +303,27 @@ fn column_cap(index: usize, header: Option<&[&str]>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selectable_list_offset_stays_zero_while_selection_fits() {
+        assert_eq!(selectable_list_offset(0, 100, 20), 0);
+        assert_eq!(selectable_list_offset(19, 100, 20), 0);
+    }
+
+    #[test]
+    fn selectable_list_offset_scrolls_to_keep_selection_visible() {
+        // Fresh TableState offset=0 → selected past the bottom → offset grows.
+        assert_eq!(selectable_list_offset(20, 100, 20), 1);
+        assert_eq!(selectable_list_offset(50, 100, 20), 31);
+        assert_eq!(selectable_list_offset(99, 100, 20), 80);
+    }
+
+    #[test]
+    fn selectable_list_offset_handles_empty_and_short_lists() {
+        assert_eq!(selectable_list_offset(0, 0, 20), 0);
+        assert_eq!(selectable_list_offset(3, 5, 20), 0);
+        assert_eq!(selectable_list_offset(0, 10, 0), 0);
+    }
 
     #[test]
     fn message_list_widths_keep_value_as_fill() {

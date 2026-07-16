@@ -1,11 +1,12 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{
-    capped_body, App, BrowseMode, InspectorFocus, MessageViewState, ReplayPhase, TopicDetailState,
+    capped_body, App, BrowseMode, InspectorFocus, MessageListRowPreview, MessageViewState,
+    ReplayPhase, TopicDetailState,
 };
 use crate::events::Action;
 use crate::kafka::schema_registry::SchemaRegistry;
@@ -13,12 +14,18 @@ use crate::raw_message::RawMessage;
 use crate::text_field::wrap_lines_for_width;
 use crate::ui::widgets::confirm_dialog::{centered_rect, centered_rect_fixed_height};
 use crate::ui::widgets::footer::render_keybind_footer;
-use crate::ui::widgets::table_nav::render_selectable_list;
+use crate::ui::widgets::table_nav::{
+    render_selectable_list, selectable_list_offset, selectable_list_viewport_rows,
+};
 
 /// Safety cap when building list-row text (before the table truncates to the
 /// **terminal-allocated** column width). Prevents multi‑MB payloads from being
 /// held in every visible row; the table still clips to remaining width.
 const LIST_PREVIEW_SAFETY_CAP: usize = 2_048;
+
+/// Extra rows above/below the table viewport to pre-decode so j/k and small
+/// scrolls don't flash empty key/value cells for one frame.
+const LIST_PREVIEW_OVERSCAN: usize = 8;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(detail) = app.topic_detail.as_ref() else {
@@ -75,6 +82,69 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     if detail.query_filter_active {
         render_query_filter_dialog(frame, app, area, detail);
     }
+
+    // Transient feedback (copy, errors, …). Drawn last so it sits above the
+    // inspector. A quiet footer line was easy to miss — use a top-centered
+    // toast with strong styling instead.
+    if let Some(status) = &app.status_message {
+        render_status_toast(frame, app, area, status);
+    }
+}
+
+/// Compact top-centered toast for `status_message` (e.g. `copied key! (12 bytes)`).
+fn render_status_toast(frame: &mut Frame, app: &App, area: Rect, status: &str) {
+    let lower = status.to_ascii_lowercase();
+    // Copy success uses the same greenish-yellow as the banner ms/frame braille
+    // (`theme.success` / #9ece6a) — solid fill so it reads as that color, not a
+    // quiet cyan line or a washed reverse on the panel background.
+    let (text_style, border_style, surface) = if lower.starts_with("copied") {
+        let green = app.theme.success.fg.unwrap_or(Color::Green);
+        (
+            Style::new()
+                .fg(app.theme.bg)
+                .bg(green)
+                .add_modifier(Modifier::BOLD),
+            Style::new().fg(green).add_modifier(Modifier::BOLD),
+            Style::new().bg(green).fg(app.theme.bg),
+        )
+    } else if lower.contains("fail") || lower.contains("error") {
+        (
+            app.theme.error.add_modifier(Modifier::BOLD),
+            app.theme.error,
+            app.theme.panel_style(),
+        )
+    } else {
+        (
+            app.theme.status.add_modifier(Modifier::BOLD),
+            app.theme.secondary,
+            app.theme.panel_style(),
+        )
+    };
+
+    let pad = 4u16; // " │ " sides inside the border
+    let text_w = (status.chars().count() as u16).saturating_add(pad).max(16);
+    let width = text_w.min(area.width.saturating_sub(2)).max(12);
+    let height = 3u16.min(area.height);
+    let toast = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y.saturating_add(1).min(area.y + area.height.saturating_sub(height)),
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, toast);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .style(surface);
+    let inner = block.inner(toast);
+    frame.render_widget(block, toast);
+    frame.render_widget(
+        Paragraph::new(status)
+            .style(text_style)
+            .alignment(Alignment::Center),
+        inner,
+    );
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect, detail: &TopicDetailState) {
@@ -247,19 +317,32 @@ fn render_message_list(frame: &mut Frame, area: Rect, app: &App, detail: &TopicD
         return;
     }
 
+    // Decode/format only the rows that can actually paint this frame (viewport +
+    // overscan). Results live on TopicDetailState so the ~200ms banner tick reuses
+    // them instead of redoing Avro/JSON preview for the whole buffer every redraw.
+    let header = ["P", "Offset", "KFmt", "Key", "VFmt", "Value"];
+    let schema_cache_len = registry.map_or(0, SchemaRegistry::cache_len);
+    let viewport_rows = selectable_list_viewport_rows(area, true);
+    let offset = selectable_list_offset(detail.selected_index, visible.len(), viewport_rows);
+    let fill_start = offset.saturating_sub(LIST_PREVIEW_OVERSCAN);
+    let fill_end = (offset + viewport_rows + LIST_PREVIEW_OVERSCAN).min(visible.len());
+    detail.ensure_list_row_previews(&visible, fill_start..fill_end, schema_cache_len, |message| {
+        message_list_row_preview(message, registry)
+    });
+
     let items: Vec<Vec<String>> = visible
         .iter()
-        .map(|message| {
-            let (key_fmt, key_preview) = bytes_display(message.key.as_deref(), registry);
-            let (val_fmt, value_preview) = bytes_display(message.value.as_deref(), registry);
-            vec![
-                message.partition.to_string(),
-                message.offset.to_string(),
-                key_fmt,
-                key_preview,
-                val_fmt,
-                value_preview,
-            ]
+        .enumerate()
+        .map(|(i, message)| {
+            // Off-viewport rows only need cheap identity cells for Table's full
+            // row list (selection/scroll math). Skip cloning multi-KB preview
+            // strings for hundreds of off-screen rows every frame.
+            if i >= fill_start && i < fill_end {
+                if let Some(preview) = detail.list_row_preview(message, schema_cache_len) {
+                    return list_row_cells(message, Some(&preview));
+                }
+            }
+            list_row_cells(message, None)
         })
         .collect();
 
@@ -269,10 +352,45 @@ fn render_message_list(frame: &mut Frame, area: Rect, app: &App, detail: &TopicD
         area,
         &list_title(detail),
         &items,
-        Some(&["P", "Offset", "KFmt", "Key", "VFmt", "Value"]),
+        Some(&header),
         detail.selected_index,
         true,
     );
+}
+
+fn message_list_row_preview(
+    message: &RawMessage,
+    registry: Option<&SchemaRegistry>,
+) -> MessageListRowPreview {
+    let (key_fmt, key_preview) = bytes_display(message.key.as_deref(), registry);
+    let (val_fmt, value_preview) = bytes_display(message.value.as_deref(), registry);
+    MessageListRowPreview {
+        key_fmt,
+        key_preview,
+        val_fmt,
+        value_preview,
+    }
+}
+
+fn list_row_cells(message: &RawMessage, preview: Option<&MessageListRowPreview>) -> Vec<String> {
+    match preview {
+        Some(p) => vec![
+            message.partition.to_string(),
+            message.offset.to_string(),
+            p.key_fmt.clone(),
+            p.key_preview.clone(),
+            p.val_fmt.clone(),
+            p.value_preview.clone(),
+        ],
+        None => vec![
+            message.partition.to_string(),
+            message.offset.to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ],
+    }
 }
 
 /// Distinguishes "nothing has arrived yet" (tail, no filter) from "the filter excludes

@@ -15,7 +15,7 @@
 # Must appear before the first [[profiles]] table for the same TOML reason.
 # [ui]
 # theme = "dark"          # dark | light
-# banner_mode = "wave"    # wave | fps | off
+# banner_mode = "wave"    # wave | ms (ms/frame) | fps (paint capacity) | off
 
 [[profiles]]
 name = "local"

@@ -2,7 +2,8 @@
 //! the single-message replay wizard.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::ops::Range;
 
 use serde_json::Value;
 
@@ -243,6 +244,10 @@ pub struct TopicDetailState {
     pub visible_revision: u64,
     /// Memoized filter result — see `visible_messages_with_registry`.
     pub(super) visible_cache: RefCell<Option<VisibleCache>>,
+    /// Memoized list-row key/value previews — see `ensure_list_row_previews`.
+    /// Invalidated per-entry when the schema-registry cache grows; pruned when
+    /// `visible_revision` advances (messages leave the buffer / page changes).
+    pub(super) list_row_preview_cache: RefCell<ListRowPreviewCache>,
 }
 
 /// Cached output of the filter pass in `visible_messages_with_registry`: which
@@ -253,6 +258,39 @@ pub(super) struct VisibleCache {
     revision: u64,
     schema_cache_len: usize,
     indices: Vec<usize>,
+}
+
+/// Soft-capped key/value format labels + preview text for one message list row.
+/// Produced by the UI's `bytes_display` path and reused across redraws so the
+/// banner tick doesn't re-decode every visible row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageListRowPreview {
+    pub key_fmt: String,
+    pub key_preview: String,
+    pub val_fmt: String,
+    pub value_preview: String,
+}
+
+struct ListRowPreviewEntry {
+    schema_cache_len: usize,
+    preview: MessageListRowPreview,
+}
+
+/// Per-message list-row preview cache keyed by `(partition, offset)`.
+pub(super) struct ListRowPreviewCache {
+    /// `visible_revision` as of the last prune pass (`u64::MAX` forces a prune
+    /// on first use).
+    revision: u64,
+    entries: HashMap<(i32, i64), ListRowPreviewEntry>,
+}
+
+impl Default for ListRowPreviewCache {
+    fn default() -> Self {
+        Self {
+            revision: u64::MAX,
+            entries: HashMap::new(),
+        }
+    }
 }
 
 impl TopicDetailState {
@@ -321,6 +359,71 @@ impl TopicDetailState {
             msgs.reverse();
         }
         msgs
+    }
+
+    /// Ensure list-row previews exist for display-order indices in `fill` (typically
+    /// the table viewport plus a small overscan). `compute` runs only on cache miss
+    /// or when `schema_cache_len` has grown since that entry was stored — so the
+    /// banner-tick redraw path reuses prior decode work instead of redoing Avro/JSON
+    /// preview for every row every frame.
+    ///
+    /// Entries for messages no longer present in `messages` are pruned when
+    /// `visible_revision` advances (tail ring eviction, seek page reload, filter
+    /// change that drops rows is *not* a prune of the underlying messages — only
+    /// the fill range changes; stale partition/offset keys for messages still in
+    /// the buffer are harmless and get reused if the filter re-includes them).
+    pub fn ensure_list_row_previews(
+        &self,
+        messages: &[&RawMessage],
+        fill: Range<usize>,
+        schema_cache_len: usize,
+        mut compute: impl FnMut(&RawMessage) -> MessageListRowPreview,
+    ) {
+        let mut cache = self.list_row_preview_cache.borrow_mut();
+        if cache.revision != self.visible_revision {
+            let live: std::collections::HashSet<(i32, i64)> = messages
+                .iter()
+                .map(|m| (m.partition, m.offset))
+                .collect();
+            cache.entries.retain(|k, _| live.contains(k));
+            cache.revision = self.visible_revision;
+        }
+
+        let start = fill.start.min(messages.len());
+        let end = fill.end.min(messages.len());
+        for message in &messages[start..end] {
+            let key = (message.partition, message.offset);
+            let stale = cache
+                .entries
+                .get(&key)
+                .is_none_or(|e| e.schema_cache_len != schema_cache_len);
+            if stale {
+                let preview = compute(message);
+                cache.entries.insert(
+                    key,
+                    ListRowPreviewEntry {
+                        schema_cache_len,
+                        preview,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Cached list-row preview for `message` when present and still valid for
+    /// `schema_cache_len`. Call after [`Self::ensure_list_row_previews`] for the
+    /// rows you intend to paint with full key/value text.
+    pub fn list_row_preview(
+        &self,
+        message: &RawMessage,
+        schema_cache_len: usize,
+    ) -> Option<MessageListRowPreview> {
+        self.list_row_preview_cache
+            .borrow()
+            .entries
+            .get(&(message.partition, message.offset))
+            .filter(|e| e.schema_cache_len == schema_cache_len)
+            .map(|e| e.preview.clone())
     }
 }
 

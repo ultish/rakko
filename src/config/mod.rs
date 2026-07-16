@@ -13,11 +13,18 @@ use crate::error::{AppError, AppResult};
 use crate::ui::theme::ThemeName;
 
 /// Top banner animation mode — stored under `[ui].banner_mode` and cycled with `A`.
+///
+/// Diagnostic modes share the same paint samples: **`Ms`** shows wall time per
+/// draw; **`Fps`** shows the inverse capacity (`1000 / ms`) — useful when you
+/// want the familiar high number rather than milliseconds.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BannerMode {
     #[default]
     Wave,
+    /// Paint cost in milliseconds per `terminal.draw`.
+    Ms,
+    /// Instantaneous paint capacity (`1000 / ms`), not screen refresh rate.
     Fps,
     Off,
 }
@@ -25,7 +32,8 @@ pub enum BannerMode {
 impl BannerMode {
     pub fn next(self) -> Self {
         match self {
-            BannerMode::Wave => BannerMode::Fps,
+            BannerMode::Wave => BannerMode::Ms,
+            BannerMode::Ms => BannerMode::Fps,
             BannerMode::Fps => BannerMode::Off,
             BannerMode::Off => BannerMode::Wave,
         }
@@ -34,6 +42,7 @@ impl BannerMode {
     pub fn label(self) -> &'static str {
         match self {
             BannerMode::Wave => "wave",
+            BannerMode::Ms => "ms",
             BannerMode::Fps => "fps",
             BannerMode::Off => "off",
         }
@@ -46,7 +55,7 @@ pub struct UiConfig {
     /// Color theme (`dark` | `light`). Default `dark`.
     #[serde(default)]
     pub theme: ThemeName,
-    /// Top banner animation (`wave` | `fps` | `off`). Default `wave`.
+    /// Top banner animation (`wave` | `ms` | `fps` | `off`). Default `wave`.
     #[serde(default)]
     pub banner_mode: BannerMode,
 }

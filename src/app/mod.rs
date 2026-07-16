@@ -22,7 +22,8 @@ pub use group_detail::{GroupDetailState, OffsetResetPhase, ResetInputKind};
 pub use producer::{ProducerFocus, ProducerInputMode, ProducerState};
 pub use profile_create::{ProfileCreateAuthChoice, ProfileCreateFocus, ProfileCreateState};
 pub use topic_detail::{
-    BrowseMode, InspectorFocus, MessageSort, MessageViewState, ReplayPhase, TopicDetailState,
+    BrowseMode, InspectorFocus, MessageListRowPreview, MessageSort, MessageViewState, ReplayPhase,
+    TopicDetailState,
 };
 pub(crate) use topic_detail::capped_body;
 
@@ -32,8 +33,8 @@ use topic_detail::{PageDirection, SeekState};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::config::{self, Config, Profile};
 use crate::events::{Action, AppEvent, Command, SeekPageRequest};
@@ -48,12 +49,30 @@ use crate::ui::theme::Theme;
 // Re-export so existing `crate::app::BannerMode` call sites stay stable.
 pub use crate::config::BannerMode;
 
+/// True for toast-style statuses scheduled via [`App::set_ephemeral_status`].
+/// Used so a late timer cannot clear a sticky message that replaced the toast.
+fn is_ephemeral_status_text(s: &str) -> bool {
+    let s = s.to_ascii_lowercase();
+    s.starts_with("copied")
+        || s.starts_with("pasted")
+        || s.starts_with("copy ")
+        || s.starts_with("paste ")
+        || s.starts_with("message has no ")
+        || s.contains("no message selected to copy")
+        || s.starts_with("clipboard is empty")
+        || s.starts_with("nothing to paste")
+}
+
 const TAIL_BUFFER_CAPACITY: usize = 500;
 /// Fallback for `Config::seek_page_size` when not set in `config.toml`.
 pub const DEFAULT_SEEK_PAGE_SIZE: usize = 50;
-/// How many recent per-frame FPS samples the banner's FPS graph/readout keeps —
-/// also the graph's effective time window at typical interaction rates.
-const FPS_SAMPLE_CAPACITY: usize = 30;
+/// How many recent per-paint duration samples the banner's frame-cost graph keeps
+/// — also the graph's effective time window at typical interaction rates.
+const FRAME_MS_SAMPLE_CAPACITY: usize = 30;
+
+/// How long toast-style status (copy/paste feedback) stays on screen before
+/// auto-clear. Long enough to read, short enough not to linger.
+const EPHEMERAL_STATUS_TTL: Duration = Duration::from_millis(2_500);
 
 /// A clickable region of the last-rendered frame, in terminal cell coordinates.
 /// `ui::draw` clears these at the start of every frame; screens re-register them
@@ -127,24 +146,29 @@ pub struct App {
     pub profile_delete_confirm: Option<usize>,
     /// Transient status text: connect errors, load errors, "loading..." etc.
     pub status_message: Option<String>,
+    /// When set, [`Self::expire_status_if_due`] clears `status_message` after this
+    /// instant — used for toast feedback (copy/paste) so it doesn't stick forever.
+    /// Sticky statuses ("loading…", failures that stay until the next event) leave
+    /// this `None`.
+    pub(crate) status_clear_at: Option<Instant>,
     pub should_quit: bool,
     /// When true, a centered "quit?" dialog is open (`q`); y/Enter exits, n/Esc cancels.
     pub quit_confirm: bool,
     pub active_profile: Option<Profile>,
     /// Braille stream banner animation frame index.
     pub banner_frame: usize,
-    /// Cycles wave → fps → off (`A`). `Off` freezes `banner_frame` and stops the
-    /// periodic tick redraw. Loaded from / saved to `[ui].banner_mode`.
+    /// Cycles wave → ms/frame → paint-capacity fps → off (`A`). `Off` freezes
+    /// `banner_frame` and stops the periodic tick redraw. Loaded from / saved to
+    /// `[ui].banner_mode`.
     pub banner_mode: BannerMode,
     /// Active color theme (from `[ui].theme`); cycled with `T` and persisted.
     pub theme: Theme,
     /// Global help overlay (`?`).
     pub help_visible: bool,
-    /// Recent per-frame FPS samples (oldest first), for the banner's FPS graph +
-    /// numeric readout. Raw `Instant`s are deliberately kept out of `App` — see
-    /// `last_row_click` in main.rs — so `main.rs` computes each sample from real
-    /// timestamps and hands in only the derived `f64` via `push_fps_sample`.
-    pub fps_samples: RingBuffer<f64>,
+    /// Recent per-paint durations in milliseconds (oldest first), for the
+    /// banner's frame-cost graph + `ms/frame` readout. Recorded on every
+    /// `terminal.draw` via [`Self::push_frame_ms_sample`] regardless of mode.
+    pub frame_ms_samples: RingBuffer<f64>,
     /// Full-screen detailed otter splash — shown once at startup until dismissed.
     pub show_splash: bool,
     /// Clickable regions registered by the most recent `ui::draw` call. Interior
@@ -199,6 +223,7 @@ impl App {
             },
             profile_delete_confirm: None,
             status_message: None,
+            status_clear_at: None,
             should_quit: false,
             quit_confirm: false,
             active_profile: None,
@@ -206,7 +231,7 @@ impl App {
             banner_mode,
             theme,
             help_visible: false,
-            fps_samples: RingBuffer::new(FPS_SAMPLE_CAPACITY),
+            frame_ms_samples: RingBuffer::new(FRAME_MS_SAMPLE_CAPACITY),
             show_splash: true,
             click_regions: RefCell::new(Vec::new()),
             mouse_pos: Cell::new(None),
@@ -235,11 +260,11 @@ impl App {
 
     fn copy_selected_value(&mut self) {
         let Some(msg) = self.selected_browse_message().cloned() else {
-            self.status_message = Some("no message selected to copy.".into());
+            self.set_ephemeral_status("no message selected to copy.");
             return;
         };
         let Some(bytes) = msg.value.as_deref() else {
-            self.status_message = Some("message has no value.".into());
+            self.set_ephemeral_status("message has no value.");
             return;
         };
         let text = topic_detail::bytes_to_display_text(Some(bytes), self.schema_registry.as_ref());
@@ -248,11 +273,11 @@ impl App {
 
     fn copy_selected_key(&mut self) {
         let Some(msg) = self.selected_browse_message().cloned() else {
-            self.status_message = Some("no message selected to copy.".into());
+            self.set_ephemeral_status("no message selected to copy.");
             return;
         };
         let Some(bytes) = msg.key.as_deref() else {
-            self.status_message = Some("message has no key.".into());
+            self.set_ephemeral_status("message has no key.");
             return;
         };
         let text = topic_detail::bytes_to_display_text(Some(bytes), self.schema_registry.as_ref());
@@ -261,7 +286,7 @@ impl App {
 
     fn copy_selected_offset(&mut self) {
         let Some(msg) = self.selected_browse_message() else {
-            self.status_message = Some("no message selected to copy.".into());
+            self.set_ephemeral_status("no message selected to copy.");
             return;
         };
         let text = format!("{}:{}@{}", msg.topic, msg.partition, msg.offset);
@@ -273,11 +298,46 @@ impl App {
             Ok(()) => {
                 let n = text.len();
                 let unit = if n == 1 { "byte" } else { "bytes" };
-                self.status_message = Some(format!("copied {what} ({n} {unit})."));
+                // Toast — topic detail surfaces this as a top-centered banner and
+                // auto-clears after [`EPHEMERAL_STATUS_TTL`].
+                self.set_ephemeral_status(format!("copied {what}! ({n} {unit})"));
             }
             Err(err) => {
-                self.status_message = Some(format!("copy {what} failed: {err}"));
+                self.set_ephemeral_status(format!("copy {what} failed: {err}"));
             }
+        }
+    }
+
+    /// Flash a short-lived status toast (copy/paste feedback). Cleared by
+    /// [`Self::expire_status_if_due`] after [`EPHEMERAL_STATUS_TTL`].
+    pub fn set_ephemeral_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+        self.status_clear_at = Some(Instant::now() + EPHEMERAL_STATUS_TTL);
+    }
+
+    /// Clears an ephemeral status once its deadline has passed. Returns `true`
+    /// when the message was removed (so the event loop knows a redraw matters).
+    /// Sticky statuses (`status_clear_at == None`, or a non-toast message that
+    /// replaced a toast before the deadline) are left alone.
+    pub fn expire_status_if_due(&mut self) -> bool {
+        let Some(at) = self.status_clear_at else {
+            return false;
+        };
+        if Instant::now() < at {
+            return false;
+        }
+        self.status_clear_at = None;
+        // Guard against wiping a sticky "loading…" etc. that replaced the toast
+        // while the timer was still running.
+        if self
+            .status_message
+            .as_deref()
+            .is_some_and(is_ephemeral_status_text)
+        {
+            self.status_message = None;
+            true
+        } else {
+            false
         }
     }
 
@@ -342,16 +402,12 @@ impl App {
         self.click_regions.borrow_mut().clear();
     }
 
-    /// Records one render's instantaneous FPS (`1 / render_duration_secs`, timed
-    /// around the `terminal.draw` call itself — not the gap between draws, which
-    /// at idle just measures the banner tick's 200ms cadence rather than actual
-    /// render performance) for the banner's FPS graph/readout. `main.rs` computes
-    /// this from real `Instant`s (which don't cross into `App`) and calls this
-    /// once per actual `terminal.draw`, regardless of `banner_mode` — so flipping
-    /// to FPS mode always shows real recent history, not just samples collected
-    /// since you switched to it.
-    pub fn push_fps_sample(&mut self, fps: f64) {
-        self.fps_samples.push(fps);
+    /// Records one paint's wall duration in milliseconds (timed around
+    /// `terminal.draw` — not the gap between draws). Called once per actual
+    /// draw regardless of `banner_mode` so the diagnostic has recent history
+    /// even before you cycle into it.
+    pub fn push_frame_ms_sample(&mut self, frame_ms: f64) {
+        self.frame_ms_samples.push(frame_ms);
     }
 
     /// Registers a clickable region for the frame currently being drawn.
@@ -1097,23 +1153,23 @@ impl App {
     fn paste_from_clipboard(&mut self) {
         match crate::clipboard::read_text() {
             Ok(None) => {
-                self.status_message = Some("clipboard is empty.".into());
+                self.set_ephemeral_status("clipboard is empty.");
             }
             Ok(Some(text)) => {
                 if text.trim().is_empty() {
-                    self.status_message = Some("clipboard is empty.".into());
+                    self.set_ephemeral_status("clipboard is empty.");
                     return;
                 }
                 if !self.paste_into_active_field(&text) {
-                    self.status_message = Some("nothing to paste into.".into());
+                    self.set_ephemeral_status("nothing to paste into.");
                     return;
                 }
                 let n = text.len();
                 let unit = if n == 1 { "byte" } else { "bytes" };
-                self.status_message = Some(format!("pasted ({n} {unit})."));
+                self.set_ephemeral_status(format!("pasted ({n} {unit})."));
             }
             Err(err) => {
-                self.status_message = Some(format!("paste failed: {err}"));
+                self.set_ephemeral_status(format!("paste failed: {err}"));
             }
         }
     }
@@ -1370,6 +1426,7 @@ impl App {
                     sort: MessageSort::default(),
                     visible_revision: 0,
                     visible_cache: RefCell::new(None),
+                    list_row_preview_cache: RefCell::new(Default::default()),
                 });
                 self.screen = Screen::TopicDetail;
                 vec![Command::LoadSeekPage {

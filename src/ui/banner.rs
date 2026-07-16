@@ -1,6 +1,6 @@
 //! Slim top banner: app name + a braille strip that's either a decorative wave, a
-//! live FPS graph, or off (`A` cycles wave → fps → off). Detailed otter is
-//! splash-only.
+//! live frame-cost graph (`ms/frame`), or off (`A` cycles wave → fps → off).
+//! Detailed otter is splash-only.
 //!
 //! The wave is a short strip of block braille whose height (density) at each
 //! column is interpolated between sparse random "keyframe" heights a few columns
@@ -10,18 +10,14 @@
 //! with only the *next* cell doesn't stop adjacent columns from jumping the full
 //! glyph range).
 //!
-//! The FPS mode reuses the exact same strip/glyph style, but each cell is a
-//! recent real per-render sample of `1 / render_duration` (see
-//! `App::push_fps_sample`) instead of a decorative value — deliberately timed
-//! around the render call itself, not the gap between renders: rakko only
-//! redraws on an event (no fixed render clock), so at idle the gap between
-//! draws just measures the banner tick's own 200ms cadence, not actual
-//! performance — a low idle number there reads as "broken" when it's the
-//! intended idle behavior. Timing the render call directly fixes that (idle
-//! renders are fast → a high, reassuring number) while still catching the
-//! failure mode this exists for: a lightweight, always-on perf diagnostic —
-//! sit on a heavy screen, flip to FPS, and a stalled render shows up
-//! immediately as a flatlined or dropping graph, no targeted benchmark needed.
+//! The frame-cost mode reuses the same strip/glyph style, but each cell is a
+//! recent real per-paint sample of wall milliseconds for `terminal.draw` (see
+//! `App::push_frame_ms_sample`) — deliberately timed around the render call
+//! itself, not the gap between renders. rakko only redraws on an event (no fixed
+//! render clock), so at idle the gap between draws just measures the banner
+//! tick's 200ms cadence, not paint cost. Reporting **ms/frame** matches what we
+//! measure and stays honest whether samples arrive at ~5 Hz (idle) or much
+//! faster (mouse/key). Taller glyphs = slower paints.
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -86,14 +82,32 @@ pub fn stream_wave(phase: usize) -> String {
     s
 }
 
-/// Braille-density strip in the same style/scale as `stream_wave`, driven by
-/// recent real per-frame FPS samples instead of decorative motion. Newest sample
-/// is the rightmost cell (matches the wave's left-to-right scroll direction);
-/// height is normalized against the current window's own max so the shape stays
-/// legible whether the app is rendering at 5fps (idle, banner-tick-driven) or
-/// bursting much higher (rapid input).
-fn fps_graph(samples: &RingBuffer<f64>) -> String {
-    let values: Vec<f64> = samples.iter().copied().collect();
+/// Braille-density strip driven by recent per-paint durations (milliseconds).
+/// Newest sample is the rightmost cell; height is normalized against the current
+/// window's own max so the shape stays legible for both sub-ms paints and
+/// multi-tens-of-ms stalls. Taller = slower.
+fn frame_ms_graph(samples: &RingBuffer<f64>) -> String {
+    density_graph(samples.iter().copied())
+}
+
+/// Same samples as [`frame_ms_graph`], plotted as paint capacity (`1000 / ms`).
+/// Taller = faster paints (the familiar high number from the old FPS readout).
+fn frame_fps_graph(samples: &RingBuffer<f64>) -> String {
+    density_graph(samples.iter().copied().map(ms_to_fps))
+}
+
+fn ms_to_fps(ms: f64) -> f64 {
+    if ms > 0.0 {
+        1000.0 / ms
+    } else {
+        0.0
+    }
+}
+
+/// Shared braille strip: newest value rightmost, height normalized to the
+/// window max. `values` is already in display units (ms or fps).
+fn density_graph(values: impl IntoIterator<Item = f64>) -> String {
+    let values: Vec<f64> = values.into_iter().collect();
     if values.is_empty() {
         return " ".repeat(WAVE_WIDTH);
     }
@@ -110,15 +124,20 @@ fn fps_graph(samples: &RingBuffer<f64>) -> String {
     s
 }
 
-/// Short rolling average (last few samples) for the numeric FPS readout —
-/// smooths single-sample jitter without lagging so much it feels unresponsive.
-fn recent_fps(samples: &RingBuffer<f64>) -> f64 {
+/// Short rolling average (last few samples) for the numeric `ms/frame` readout.
+fn recent_frame_ms(samples: &RingBuffer<f64>) -> f64 {
     let values: Vec<f64> = samples.iter().copied().collect();
     let recent = &values[values.len().saturating_sub(5)..];
     if recent.is_empty() {
         return 0.0;
     }
     recent.iter().sum::<f64>() / recent.len() as f64
+}
+
+/// Rolling average of `1000 / ms` over the last few paint samples.
+fn recent_frame_fps(samples: &RingBuffer<f64>) -> f64 {
+    let ms = recent_frame_ms(samples);
+    ms_to_fps(ms)
 }
 
 /// Renders the top banner into `area` (should be `BANNER_HEIGHT` tall).
@@ -131,12 +150,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             // Wave is secondary cyan — purple reserved for brand + selection.
             app.theme.secondary,
             "stream".to_string(),
+            "A: ms",
+        ),
+        BannerMode::Ms => (
+            frame_ms_graph(&app.frame_ms_samples),
+            app.theme.success,
+            format!("{:.0} ms/frame", recent_frame_ms(&app.frame_ms_samples)),
             "A: fps",
         ),
         BannerMode::Fps => (
-            fps_graph(&app.fps_samples),
+            frame_fps_graph(&app.frame_ms_samples),
             app.theme.success,
-            format!("{:.0} fps", recent_fps(&app.fps_samples)),
+            // Capacity from paint duration — not how often the screen actually
+            // redraws (idle is still ~5 Hz from the banner tick).
+            format!("{:.0} fps", recent_frame_fps(&app.frame_ms_samples)),
             "A: off",
         ),
         BannerMode::Off => (
@@ -230,39 +257,60 @@ mod tests {
     }
 
     #[test]
-    fn fps_graph_is_blank_when_no_samples_yet() {
+    fn frame_ms_graph_is_blank_when_no_samples_yet() {
         let samples = RingBuffer::new(30);
-        let s = fps_graph(&samples);
+        let s = frame_ms_graph(&samples);
         assert_eq!(s.chars().count(), WAVE_WIDTH);
         assert!(s.chars().all(|c| c == ' '));
     }
 
     #[test]
-    fn fps_graph_uses_level_glyphs_once_samples_exist() {
+    fn frame_ms_graph_uses_level_glyphs_once_samples_exist() {
         let mut samples = RingBuffer::new(30);
+        // ms/frame samples — tallest glyph tracks the slowest paint in-window.
         for v in [10.0, 20.0, 5.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0, 60.0] {
             samples.push(v);
         }
-        let s = fps_graph(&samples);
+        let s = frame_ms_graph(&samples);
         assert_eq!(s.chars().count(), WAVE_WIDTH);
         assert!(s.chars().all(|c| LEVELS.contains(&c)));
-        // The max sample in the window should render as the tallest glyph.
         assert!(s.ends_with('⣿'));
     }
 
     #[test]
-    fn recent_fps_averages_the_last_few_samples() {
+    fn recent_frame_ms_averages_the_last_few_samples() {
         let mut samples = RingBuffer::new(30);
         for v in [1.0, 2.0, 3.0, 10.0, 20.0, 30.0] {
             samples.push(v);
         }
         // Last 5: 2,3,10,20,30 → avg 13.
-        assert_eq!(recent_fps(&samples), 13.0);
+        assert_eq!(recent_frame_ms(&samples), 13.0);
     }
 
     #[test]
-    fn recent_fps_is_zero_with_no_samples() {
+    fn recent_frame_ms_is_zero_with_no_samples() {
         let samples: RingBuffer<f64> = RingBuffer::new(30);
-        assert_eq!(recent_fps(&samples), 0.0);
+        assert_eq!(recent_frame_ms(&samples), 0.0);
+    }
+
+    #[test]
+    fn recent_frame_fps_is_inverse_of_ms() {
+        let mut samples = RingBuffer::new(30);
+        // Steady 10 ms paints → 100 fps capacity.
+        for _ in 0..5 {
+            samples.push(10.0);
+        }
+        assert!((recent_frame_fps(&samples) - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn frame_fps_graph_tallest_when_paint_is_fastest() {
+        let mut samples = RingBuffer::new(30);
+        // 50ms, 25ms, then many 5ms (200 fps) — rightmost cells are the max.
+        for v in [50.0, 25.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0] {
+            samples.push(v);
+        }
+        let s = frame_fps_graph(&samples);
+        assert!(s.ends_with('⣿'), "fast paints should be tall in fps mode: {s}");
     }
 }

@@ -696,16 +696,21 @@ fn create_profile_with_mtls_missing_cert_path_shows_error_and_keeps_wizard_open(
 }
 
 #[test]
-fn cycle_banner_mode_goes_wave_fps_off_and_back() {
+fn cycle_banner_mode_goes_wave_ms_fps_off_and_back() {
     let mut app = App::new(Config::default(), test_config_path());
     assert_eq!(app.banner_mode, BannerMode::Wave);
     app.update(Action::BannerTick);
     assert_eq!(app.banner_frame, 1); // ticks while not Off
 
     app.update(Action::CycleBannerMode);
+    assert_eq!(app.banner_mode, BannerMode::Ms);
+    app.update(Action::BannerTick);
+    assert_eq!(app.banner_frame, 2); // still ticks — diagnostic modes animate
+
+    app.update(Action::CycleBannerMode);
     assert_eq!(app.banner_mode, BannerMode::Fps);
     app.update(Action::BannerTick);
-    assert_eq!(app.banner_frame, 2); // still ticks — Fps mode also animates
+    assert_eq!(app.banner_frame, 3);
 
     app.update(Action::CycleBannerMode);
     assert_eq!(app.banner_mode, BannerMode::Off);
@@ -763,6 +768,74 @@ fn copy_without_selection_sets_status() {
         "{:?}",
         app.status_message
     );
+}
+
+#[test]
+fn copy_key_and_value_set_friendly_status_on_success() {
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("my-key", r#"{"ok":true}"#));
+        }
+        detail.selected_index = 0;
+    }
+    // Clipboard may fail in headless CI — either path must set a status line
+    // the topic-detail UI can surface (success "copied key!" or a failure).
+    app.update(Action::CopyMessageKey);
+    let key_status = app.status_message.clone().expect("key copy sets status");
+    assert!(
+        key_status.contains("copied key") || key_status.contains("copy key failed"),
+        "{key_status}"
+    );
+    assert!(
+        app.status_clear_at.is_some(),
+        "copy feedback should be ephemeral"
+    );
+    app.update(Action::CopyMessageValue);
+    let val_status = app.status_message.clone().expect("value copy sets status");
+    assert!(
+        val_status.contains("copied value") || val_status.contains("copy value failed"),
+        "{val_status}"
+    );
+    app.update(Action::CopyMessageOffset);
+    let off_status = app.status_message.clone().expect("offset copy sets status");
+    assert!(
+        off_status.contains("copied offset") || off_status.contains("copy offset failed"),
+        "{off_status}"
+    );
+}
+
+#[test]
+fn ephemeral_status_expires_after_deadline() {
+    let mut app = App::new(Config::default(), test_config_path());
+    app.set_ephemeral_status("copied key! (3 bytes)");
+    assert!(app.status_message.is_some());
+    assert!(app.status_clear_at.is_some());
+    // Force the deadline into the past.
+    app.status_clear_at = Some(
+        std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("instant allows 1s back"),
+    );
+    assert!(app.expire_status_if_due());
+    assert!(app.status_message.is_none());
+    assert!(app.status_clear_at.is_none());
+}
+
+#[test]
+fn ephemeral_deadline_does_not_wipe_sticky_status() {
+    let mut app = App::new(Config::default(), test_config_path());
+    app.set_ephemeral_status("copied key! (3 bytes)");
+    // Sticky load status replaces the toast text without clearing the timer.
+    app.status_message = Some("loading topics...".into());
+    app.status_clear_at = Some(
+        std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .expect("instant allows 1s back"),
+    );
+    assert!(!app.expire_status_if_due());
+    assert_eq!(app.status_message.as_deref(), Some("loading topics..."));
+    assert!(app.status_clear_at.is_none());
 }
 
 #[test]
@@ -888,6 +961,7 @@ fn app_in_topic_detail(topic_name: &str, partition_count: usize) -> App {
         sort: MessageSort::default(),
         visible_revision: 0,
         visible_cache: RefCell::new(None),
+        list_row_preview_cache: RefCell::new(Default::default()),
     });
     app
 }
@@ -963,6 +1037,87 @@ fn visible_messages_cache_reflects_a_tail_message_arriving_after_the_first_read(
     });
     // A second read must see the new message, not a stale cached empty result.
     assert_eq!(app.topic_detail.as_ref().unwrap().visible_messages().len(), 1);
+}
+
+#[test]
+fn list_row_preview_cache_computes_once_per_message_until_schema_grows() {
+    use crate::app::MessageListRowPreview;
+    use std::cell::Cell;
+
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            buffer.push(message("k", "v"));
+        }
+        detail.visible_revision = 1;
+    }
+    let detail = app.topic_detail.as_ref().unwrap();
+    let msgs = detail.visible_messages();
+    let calls = Cell::new(0);
+    let compute = || {
+        calls.set(calls.get() + 1);
+        MessageListRowPreview {
+            key_fmt: "raw".into(),
+            key_preview: "k".into(),
+            val_fmt: "raw".into(),
+            value_preview: "v".into(),
+        }
+    };
+
+    detail.ensure_list_row_previews(&msgs, 0..1, 0, |_| compute());
+    detail.ensure_list_row_previews(&msgs, 0..1, 0, |_| compute());
+    assert_eq!(calls.get(), 1, "second ensure with same schema_cache_len must hit cache");
+
+    detail.ensure_list_row_previews(&msgs, 0..1, 1, |_| compute());
+    assert_eq!(calls.get(), 2, "schema cache growth must recompute previews");
+
+    let preview = detail.list_row_preview(msgs[0], 1).expect("cached after ensure");
+    assert_eq!(preview.value_preview, "v");
+}
+
+#[test]
+fn list_row_preview_cache_only_fills_requested_range() {
+    use crate::app::MessageListRowPreview;
+    use std::cell::Cell;
+
+    let mut app = app_in_topic_detail("orders", 1);
+    if let Some(detail) = app.topic_detail.as_mut() {
+        if let BrowseMode::Tail(buffer) = &mut detail.mode {
+            for i in 0..5 {
+                let mut m = message(&format!("k{i}"), &format!("v{i}"));
+                m.offset = i as i64;
+                buffer.push(m);
+            }
+        }
+        detail.visible_revision = 1;
+        // oldest↑ so display order matches storage offsets 0..5
+        detail.sort = MessageSort::OldestFirst;
+    }
+    let detail = app.topic_detail.as_ref().unwrap();
+    let msgs = detail.visible_messages();
+    assert_eq!(msgs.len(), 5);
+
+    let calls = Cell::new(0);
+    detail.ensure_list_row_previews(&msgs, 1..3, 0, |m| {
+        calls.set(calls.get() + 1);
+        MessageListRowPreview {
+            key_fmt: "raw".into(),
+            key_preview: String::new(),
+            val_fmt: "raw".into(),
+            value_preview: format!("preview-{}", m.offset),
+        }
+    });
+    assert_eq!(calls.get(), 2);
+    assert!(detail.list_row_preview(msgs[0], 0).is_none());
+    assert_eq!(
+        detail.list_row_preview(msgs[1], 0).unwrap().value_preview,
+        "preview-1"
+    );
+    assert_eq!(
+        detail.list_row_preview(msgs[2], 0).unwrap().value_preview,
+        "preview-2"
+    );
+    assert!(detail.list_row_preview(msgs[3], 0).is_none());
 }
 
 #[test]

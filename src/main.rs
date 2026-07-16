@@ -931,22 +931,28 @@ async fn run_loop(
     banner_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     banner_tick.tick().await;
 
+    // Wakes the loop so toast statuses (copy/paste) can auto-clear without
+    // waiting for the next key/mouse event. Only polled while a deadline is set.
+    let mut status_dismiss_tick = tokio::time::interval(std::time::Duration::from_millis(100));
+    status_dismiss_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    status_dismiss_tick.tick().await;
+
     loop {
+        // Drop expired toast status before paint so the toast vanishes on time
+        // even if nothing else is driving a redraw.
+        let _ = app.expire_status_if_due();
+
         // Timed around the draw call itself, not the gap between draws: rakko only
-        // redraws on an event (no fixed render clock), so "draws per second" is
-        // mostly a measure of how often *something happened* — at idle the only
-        // thing driving a redraw is the 200ms banner tick, so that reading pins at
-        // ~5 regardless of actual performance, which reads as "broken" when it's
-        // exactly the intended idle behavior. Render *duration* doesn't have that
-        // problem: idle draws are fast (sub-ms → a very high implied fps, correctly
-        // signaling "no bottleneck"), and a stalled render (the bug this exists to
-        // catch) shows up as a low number regardless of how rarely it's polled.
+        // redraws on an event (no fixed render clock), so a "frames per second"
+        // reading would mostly measure how often *something happened* — at idle
+        // the banner tick is 200ms, which pins at ~5 regardless of paint cost.
+        // Recording milliseconds per `terminal.draw` instead matches what we
+        // actually measure (wall time of one paint) and stays honest when idle
+        // samples arrive only ~5×/sec while mouse/key events sample more often.
         let t0 = Instant::now();
         terminal.draw(|f| ui::draw(f, app))?;
-        let draw_secs = t0.elapsed().as_secs_f64();
-        if draw_secs > 0.0 {
-            app.push_fps_sample(1.0 / draw_secs);
-        }
+        let draw_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        app.push_frame_ms_sample(draw_ms);
 
         if app.should_quit {
             return Ok(());
@@ -994,6 +1000,10 @@ async fn run_loop(
             }
             _ = banner_tick.tick(), if app.banner_mode != BannerMode::Off => {
                 let _ = app.update(Action::BannerTick);
+            }
+            _ = status_dismiss_tick.tick(), if app.status_clear_at.is_some() => {
+                // Wake only; clear runs at the top of the next loop iteration
+                // before draw so the toast actually disappears from the screen.
             }
         }
     }

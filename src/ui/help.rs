@@ -39,7 +39,7 @@ const GLOBAL: KeybindSection = KeybindSection {
         },
         KeybindEntry {
             keys: "A",
-            description: "Cycle banner (wave → fps → off); saved to config",
+            description: "Cycle banner (wave → ms/frame → fps → off); saved to config",
         },
         KeybindEntry {
             keys: "T",

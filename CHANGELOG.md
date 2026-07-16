@@ -11,6 +11,27 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-07-16
+
+### Changed
+
+- Banner **`A`** cycle is now **wave → ms/frame → fps → off**. **`ms`** shows
+  paint wall time; **`fps`** shows paint capacity (`1000 / ms`) — the familiar
+  high number from earlier builds, still not screen refresh rate. Config:
+  `banner_mode = "wave" | "ms" | "fps" | "off"` (existing `"fps"` still loads).
+
+### Fixed
+
+- Message list browsing with large payloads (especially Avro) no longer re-decodes
+  every buffered row on every redraw. List-row key/value previews are cached and
+  only computed for the on-screen viewport (plus a small overscan), so the banner
+  tick and other idle redraws stay cheap while the Value column still shows real
+  preview text.
+- **K** / **V** / **Y** copy confirmations now show as a top-centered toast
+  (`copied key! (N bytes)`) in the same greenish-yellow as the ms/frame strip,
+  not a quiet footer line that was easy to miss (and previously only appeared in
+  the empty list placeholder). Toasts auto-dismiss after ~2.5s.
+
 ## [0.13.0] - 2026-07-16
 
 ### Added
