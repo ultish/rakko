@@ -10,6 +10,46 @@ pub use auth::AuthMode;
 pub use profile::Profile;
 
 use crate::error::{AppError, AppResult};
+use crate::ui::theme::ThemeName;
+
+/// Top banner animation mode — stored under `[ui].banner_mode` and cycled with `A`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BannerMode {
+    #[default]
+    Wave,
+    Fps,
+    Off,
+}
+
+impl BannerMode {
+    pub fn next(self) -> Self {
+        match self {
+            BannerMode::Wave => BannerMode::Fps,
+            BannerMode::Fps => BannerMode::Off,
+            BannerMode::Off => BannerMode::Wave,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BannerMode::Wave => "wave",
+            BannerMode::Fps => "fps",
+            BannerMode::Off => "off",
+        }
+    }
+}
+
+/// Appearance / TUI preferences under `[ui]` — separate from cluster profiles.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UiConfig {
+    /// Color theme (`dark` | `light`). Default `dark`.
+    #[serde(default)]
+    pub theme: ThemeName,
+    /// Top banner animation (`wave` | `fps` | `off`). Default `wave`.
+    #[serde(default)]
+    pub banner_mode: BannerMode,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Config {
@@ -22,6 +62,9 @@ pub struct Config {
     /// falls back to `crate::app::DEFAULT_SEEK_PAGE_SIZE`.
     #[serde(default)]
     pub seek_page_size: Option<usize>,
+    /// TUI appearance (`theme`, `banner_mode`). Absent section → defaults.
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 impl Config {
@@ -65,6 +108,10 @@ mod tests {
     fn sample_config() -> Config {
         Config {
             seek_page_size: Some(25),
+            ui: UiConfig {
+                theme: ThemeName::Light,
+                banner_mode: BannerMode::Fps,
+            },
             profiles: vec![
                 Profile {
                     name: "local".into(),
@@ -138,6 +185,32 @@ mod tests {
         )
         .expect("deserialize");
         assert_eq!(config.seek_page_size, None);
+        assert_eq!(config.ui, UiConfig::default());
+    }
+
+    #[test]
+    fn ui_section_round_trips() {
+        let config: Config = toml::from_str(
+            r#"
+            [ui]
+            theme = "light"
+            banner_mode = "off"
+
+            [[profiles]]
+            name = "local"
+            bootstrap_servers = "localhost:9092"
+            tls_enabled = false
+
+            [profiles.auth]
+            type = "none"
+            "#,
+        )
+        .expect("deserialize");
+        assert_eq!(config.ui.theme, ThemeName::Light);
+        assert_eq!(config.ui.banner_mode, BannerMode::Off);
+        let serialized = toml::to_string_pretty(&config).expect("serialize");
+        assert!(serialized.contains("theme = \"light\""));
+        assert!(serialized.contains("banner_mode = \"off\""));
     }
 
     #[test]

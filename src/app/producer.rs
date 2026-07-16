@@ -126,6 +126,16 @@ impl ProducerState {
         self.cursor = cursor;
     }
 
+    /// Bulk paste into the focused field (same mode gate as `insert_char` for value).
+    pub fn insert_str(&mut self, s: &str) {
+        let mut cursor = self.cursor;
+        {
+            let text = self.active_text_mut();
+            crate::text_field::insert_str(text, &mut cursor, s);
+        }
+        self.cursor = cursor;
+    }
+
     pub fn backspace(&mut self) {
         let mut cursor = self.cursor;
         {
@@ -256,6 +266,16 @@ impl App {
             return;
         }
         state.insert_char(c);
+    }
+
+    pub(super) fn producer_insert_str(&mut self, s: &str) {
+        let Some(state) = self.producer.as_mut() else {
+            return;
+        };
+        if state.focus == ProducerFocus::Value && state.mode != ProducerInputMode::Inline {
+            return;
+        }
+        state.insert_str(s);
     }
 
     pub(super) fn producer_backspace(&mut self) {

@@ -24,14 +24,12 @@
 //! immediately as a flatlined or dropping graph, no targeted benchmark needed.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, BannerMode};
 use crate::ring_buffer::RingBuffer;
-use crate::ui::theme::TITLE_STYLE;
 
 /// One content line + bottom border.
 pub const BANNER_HEIGHT: u16 = 3;
@@ -130,19 +128,20 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let (glyphs, glyph_style, mode_label, next_hint) = match app.banner_mode {
         BannerMode::Wave => (
             stream_wave(app.banner_frame),
-            Style::default().fg(Color::Yellow),
+            // Wave is secondary cyan — purple reserved for brand + selection.
+            app.theme.secondary,
             "stream".to_string(),
             "A: fps",
         ),
         BannerMode::Fps => (
             fps_graph(&app.fps_samples),
-            Style::default().fg(Color::Green),
+            app.theme.success,
             format!("{:.0} fps", recent_fps(&app.fps_samples)),
             "A: off",
         ),
         BannerMode::Off => (
             stream_wave(0),
-            Style::default().fg(Color::DarkGray),
+            app.theme.dim,
             "paused".to_string(),
             "A: wave",
         ),
@@ -154,25 +153,23 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .map(|p| format!(" · {}", p.name))
         .unwrap_or_default();
 
-    let cyan = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::DarkGray);
-    let katakana = Style::default().fg(Color::Cyan);
-
+    // One purple touch: the word “rakko”. Everything else cyan/grey.
     let line = Line::from(vec![
-        Span::styled(" rakko ", cyan),
+        Span::styled(" rakko ", app.theme.accent),
         Span::styled(glyphs, glyph_style),
-        Span::styled(" ラッコ", katakana),
-        Span::styled(format!("  {mode_label}{profile}"), dim),
-        Span::styled(format!("  [{next_hint}]"), dim),
+        Span::styled(" ラッコ", app.theme.secondary),
+        Span::styled(format!("  {mode_label}{profile}"), app.theme.dim),
+        Span::styled(format!("  [{next_hint}]"), app.theme.secondary),
     ]);
 
     frame.render_widget(
         Paragraph::new(line).block(
             Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::DarkGray))
+                .border_style(app.theme.border)
+                .style(app.theme.root_style())
                 .title("rakko")
-                .title_style(TITLE_STYLE),
+                .title_style(app.theme.accent),
         ),
         area,
     );

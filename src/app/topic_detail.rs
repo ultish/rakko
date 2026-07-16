@@ -169,8 +169,8 @@ pub(crate) fn capped_body(body: String) -> String {
     }
 }
 
-/// Full decoded body for the inspector: pretty-print JSON when possible.
-fn bytes_to_display_text(bytes: Option<&[u8]>, registry: Option<&SchemaRegistry>) -> String {
+/// Full decoded body for the inspector / clipboard: pretty-print JSON when possible.
+pub(crate) fn bytes_to_display_text(bytes: Option<&[u8]>, registry: Option<&SchemaRegistry>) -> String {
     let Some(bytes) = bytes else {
         return "<null>".into();
     };
@@ -804,7 +804,7 @@ impl App {
             BrowseMode::Tail(_) => {
                 if announce {
                     self.status_message =
-                        Some("tail is live — switch to page mode (Tab/s) to refresh a page".into());
+                        Some("tail is live — switch to page mode (Tab/s) to load a page".into());
                 }
                 vec![]
             }

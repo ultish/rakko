@@ -96,6 +96,16 @@ cargo run -- --config-dir /path/to/dir
 # reads /path/to/dir/config.toml
 ```
 
+### Appearance (`[ui]`)
+
+```toml
+[ui]
+theme = "dark"          # dark | light  (cycle with T in the TUI)
+banner_mode = "wave"    # wave | fps | off  (cycle with A)
+```
+
+Both keys are optional (defaults: dark theme, wave banner). Changing them with **`T`** / **`A`** in the TUI writes back to `config.toml`.
+
 ### Example profile (PLAINTEXT)
 
 ```toml
@@ -180,7 +190,7 @@ No `schema_registry_url` → Avro is still detected, but not decoded (hex/raw fa
 
 ### Advanced query filter
 
-The plain `/` filter is a substring search. **`?`** opens a second, independent filter
+The plain `/` filter is a substring search. **`Q`** opens a second, independent filter
 — as a dialog, with room for a longer chained query and a built-in help panel — that
 queries structured fields inside JSON/Avro keys and values:
 
@@ -212,7 +222,7 @@ key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
 
 ## Keybinds
 
-Global: **`q`** quit (confirms) · **Ctrl-c** force quit · **Esc** back · **j/k** or arrows move · **Enter** confirm · **`A`** cycle banner mode (flowing wave → FPS diagnostic → off) — FPS mode shows a live braille graph plus numeric render-cadence readout, handy for spotting a stalled render loop.
+Global: **`q`** quit (confirms) · **Ctrl-c** force quit · **Esc** back · **j/k** or arrows move · **Enter** confirm · **`?`** help overlay (keybinds for the current screen) · **`A`** cycle banner mode (flowing wave → FPS diagnostic → off; saved to config) · **`T`** cycle theme (dark ↔ light; saved to config).
 
 On any of the list-level screens (Topics, Messages, Groups, Group detail, Brokers,
 Broker detail) a **switcher bar** sits under the banner: `1 Topics   2 Groups   3
@@ -232,13 +242,13 @@ reduce accidental presses.
 | **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **z** delete profile (confirm) · **q** quit |
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
 | **Topics** | **Enter** open topic · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
-| **Messages** | **Enter** view full message · **Tab**/**s** tail ↔ seek · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page (seek) · **/** filter · **?** query filter · **c** clear filter(s) · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
-| **Message view** | 2×2 grid: **Attrs** (topic/partition/offset/timestamp/formats) + **Headers** on top, **Key**/**Value** below · **j**/**k** or **↑**/**↓** scroll the focused panel · **PgUp**/**PgDn** page · **Tab**/click switch focus between **Headers**/**Key**/**Value** (Attrs has no scrollback, so isn't focusable) · **←**/**→** resize the focused panel against its row-mate (Attrs↔Headers or Key↔Value) · **Enter**/**Esc** close · **y** replay · **x** export this message |
+| **Messages** | Opens in **page (seek)** mode on the latest messages · **Tab**/**s** seek ↔ live tail · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page · **/** filter · **Q** query filter · **c** clear filter(s) · **V**/**K**/**Y** copy value / key / offset · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
+| **Message view** | 2×2 grid: **Attrs** (topic/partition/offset/timestamp/formats) + **Headers** on top, **Key**/**Value** below · **j**/**k** or **↑**/**↓** scroll the focused panel · **PgUp**/**PgDn** page · **Tab**/click switch focus between **Headers**/**Key**/**Value** (Attrs has no scrollback, so isn't focusable) · **←**/**→** resize the focused panel against its row-mate (Attrs↔Headers or Key↔Value) · **V**/**K**/**Y** copy · **Enter**/**Esc** close · **y** replay · **x** export this message |
 | **Groups** | **Enter** detail · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
 | **Group detail** | **z** reset offsets · **r** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch view |
 | **Brokers** | **Enter** view broker config · **r** refresh list · **1**/**2**/**3** switch view |
 | **Broker detail** | **r** refresh config · **Esc** back · **1**/**2**/**3** switch view |
-| **Producer** | **Tab** focus · **F3**/Ctrl-m mode (inline / file / `$EDITOR`) · **F2**/Ctrl-p send · **Esc** back |
+| **Producer** | **Tab** focus · **Ctrl+V**/**Cmd+V** paste · **F3**/Ctrl-m mode (inline / file / `$EDITOR`) · **F2**/Ctrl-p send · **Esc** back |
 | **Replay** | **y**/**Enter** raw replay (byte-identical) · **e** edit in producer · **n**/**Esc** cancel |
 | **Export/import** | type path · **←**/**→**/**Home**/**End** cursor · **Delete** · **Tab** (import: path ↔ topic) · **Enter** run · **Esc** back |
 

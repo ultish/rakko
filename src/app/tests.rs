@@ -717,6 +717,85 @@ fn cycle_banner_mode_goes_wave_fps_off_and_back() {
 }
 
 #[test]
+fn cycle_theme_and_toggle_help() {
+    let path = test_config_path();
+    let mut app = App::new(Config::default(), path.clone());
+    assert_eq!(app.theme.name, crate::ui::theme::ThemeName::Dark);
+    assert!(!app.help_visible);
+
+    app.update(Action::CycleTheme);
+    assert_eq!(app.theme.name, crate::ui::theme::ThemeName::Light);
+    assert_eq!(app.config.ui.theme, crate::ui::theme::ThemeName::Light);
+
+    app.update(Action::ToggleHelp);
+    assert!(app.help_visible);
+    app.update(Action::ToggleHelp);
+    assert!(!app.help_visible);
+
+    // Persisted banner/theme survive a reload of the same config path.
+    let loaded = crate::config::load(&path).expect("load after cycle");
+    assert_eq!(loaded.ui.theme, crate::ui::theme::ThemeName::Light);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn ui_prefs_load_from_config() {
+    let config = Config {
+        ui: crate::config::UiConfig {
+            theme: crate::ui::theme::ThemeName::Light,
+            banner_mode: BannerMode::Off,
+        },
+        ..Default::default()
+    };
+    let app = App::new(config, test_config_path());
+    assert_eq!(app.theme.name, crate::ui::theme::ThemeName::Light);
+    assert_eq!(app.banner_mode, BannerMode::Off);
+}
+
+#[test]
+fn copy_without_selection_sets_status() {
+    let mut app = App::new(Config::default(), test_config_path());
+    app.update(Action::CopyMessageValue);
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|s| s.contains("no message")),
+        "{:?}",
+        app.status_message
+    );
+}
+
+#[test]
+fn paste_into_producer_inserts_at_cursor() {
+    let mut app = App::new(Config::default(), test_config_path());
+    app.screen = Screen::Producer;
+    app.producer = Some(crate::app::ProducerState::new("t".into()));
+    // Simulate paste by inserting via the same insert_str path the paste
+    // action uses (host clipboard is environment-dependent in CI).
+    if let Some(state) = app.producer.as_mut() {
+        state.insert_char('a');
+        state.insert_str("bc\r\ndef");
+        assert_eq!(state.key_input, "abc\ndef");
+        assert_eq!(state.cursor, 7);
+    } else {
+        panic!("producer");
+    }
+}
+
+#[test]
+fn paste_action_without_text_field_reports_nothing() {
+    let mut app = App::new(Config::default(), test_config_path());
+    app.show_splash = false;
+    app.profile_create = None;
+    // Profile picker with profiles: no focused text field.
+    app.config.profiles.push(profile("local"));
+    app.update(Action::PasteClipboard);
+    // Empty host clipboard → "clipboard is empty" or paste failed / nothing —
+    // any of those is fine; the action must not panic.
+    assert!(app.status_message.is_some());
+}
+
+#[test]
 fn dismiss_splash() {
     let mut app = App::new(Config::default(), test_config_path());
     assert!(app.show_splash);
@@ -831,7 +910,7 @@ fn seek_state(
 }
 
 #[test]
-fn confirm_on_topic_list_enters_topic_detail_in_tail_mode_and_starts_tail() {
+fn confirm_on_topic_list_enters_topic_detail_in_seek_mode_and_loads_latest_page() {
     let config = Config {
         profiles: vec![profile("a")],
         ..Default::default()
@@ -846,10 +925,17 @@ fn confirm_on_topic_list_enters_topic_detail_in_tail_mode_and_starts_tail() {
     assert_eq!(app.screen, Screen::TopicDetail);
     let detail = app.topic_detail.as_ref().expect("topic_detail set");
     assert_eq!(detail.topic, "orders");
-    assert!(matches!(detail.mode, BrowseMode::Tail(_)));
+    assert!(matches!(detail.mode, BrowseMode::Seek(_)));
     match commands.as_slice() {
-        [Command::StartTail { topic, .. }] => assert_eq!(topic, "orders"),
-        other => panic!("expected exactly one StartTail command, got {other:?}"),
+        [Command::LoadSeekPage {
+            topic,
+            request: SeekPageRequest::Latest { page_size },
+            ..
+        }] => {
+            assert_eq!(topic, "orders");
+            assert_eq!(*page_size, DEFAULT_SEEK_PAGE_SIZE);
+        }
+        other => panic!("expected LoadSeekPage Latest, got {other:?}"),
     }
 }
 

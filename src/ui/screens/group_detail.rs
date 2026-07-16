@@ -6,7 +6,6 @@ use ratatui::Frame;
 
 use crate::app::{App, GroupDetailState, OffsetResetPhase};
 use crate::kafka::group_offsets::OffsetResetTarget;
-use crate::ui::theme::{ERROR_STYLE, STATUS_STYLE, TITLE_STYLE};
 use crate::ui::widgets::confirm_dialog::render_confirm_dialog;
 use crate::ui::widgets::footer::render_keybind_footer;
 use crate::ui::widgets::table_nav::render_selectable_list;
@@ -14,12 +13,12 @@ use crate::ui::widgets::table_nav::render_selectable_list;
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(detail) = app.group_detail.as_ref() else {
         let placeholder = Paragraph::new("No group selected.")
-            .style(STATUS_STYLE)
+            .style(app.theme.status)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Group")
-                    .title_style(TITLE_STYLE),
+                    .title_style(app.theme.title),
             );
         frame.render_widget(placeholder, area);
         return;
@@ -40,15 +39,15 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    render_header(frame, chunks[0], detail);
+    render_header(frame, app, chunks[0], detail);
     if !detail.members.is_empty() {
         render_members(frame, app, chunks[1], detail);
     }
     render_lag_table(frame, app, chunks[2], detail);
-    render_footer(frame, chunks[3], detail);
+    render_footer(frame, app, chunks[3], detail);
 
     if let Some(phase) = &detail.reset_phase {
-        render_reset_overlay(frame, area, detail, phase);
+        render_reset_overlay(frame, app, area, detail, phase);
     }
 
     if let Some(status) = &app.status_message {
@@ -59,11 +58,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             width: area.width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(status.as_str()).style(STATUS_STYLE), status_area);
+        frame.render_widget(Paragraph::new(status.as_str()).style(app.theme.status), status_area);
     }
 }
 
-fn render_header(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
+fn render_header(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDetailState) {
     let active = if detail.has_active_members {
         format!("  ⚠ {} active member(s)", detail.members.len())
     } else {
@@ -74,9 +73,10 @@ fn render_header(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
         detail.name, detail.state, detail.total_lag, active
     );
     let style = if detail.has_active_members {
-        ERROR_STYLE
+        app.theme.error
     } else {
-        TITLE_STYLE
+        // Summary line is secondary info chrome, not a panel title.
+        app.theme.secondary
     };
     let block = Block::default().borders(Borders::ALL).title("Consumer group");
     let inner = block.inner(area);
@@ -144,13 +144,13 @@ fn render_lag_table(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDeta
         let message = Paragraph::new(
             "No committed offsets found for this group (it may never have consumed).",
         )
-        .style(STATUS_STYLE)
+        .style(app.theme.status)
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Partition lag")
-                .title_style(TITLE_STYLE),
+                .title_style(app.theme.title),
         );
         frame.render_widget(message, area);
         return;
@@ -185,22 +185,19 @@ fn render_lag_table(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDeta
     );
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, detail: &GroupDetailState) {
+fn render_footer(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDetailState) {
     let text = if detail.reset_phase.is_some() {
         "Offset reset in progress — follow the dialog"
     } else {
         "z: reset offsets   r: refresh lag (auto every 3s)   Esc: back"
     };
-    render_keybind_footer(frame, area, text);
+    render_keybind_footer(frame, area, &app.theme, text);
 }
 
-fn render_reset_overlay(frame: &mut Frame, area: Rect, detail: &GroupDetailState, phase: &OffsetResetPhase) {
+fn render_reset_overlay(frame: &mut Frame, app: &App, area: Rect, detail: &GroupDetailState, phase: &OffsetResetPhase) {
     match phase {
         OffsetResetPhase::ChooseMode => {
-            render_confirm_dialog(
-                frame,
-                area,
-                "Reset offsets — choose target",
+            render_confirm_dialog(frame, area, &app.theme, "Reset offsets — choose target",
                 "e: earliest   l: latest   o: absolute offset   t: timestamp (epoch ms)\n\nEsc/n: cancel",
                 active_warning(detail),
             );
@@ -218,6 +215,7 @@ fn render_reset_overlay(frame: &mut Frame, area: Rect, detail: &GroupDetailState
             render_confirm_dialog(
                 frame,
                 area,
+                &app.theme,
                 &format!("Reset offsets — enter {kind}"),
                 &format!(
                     "value> {field}\n\n←/→/Home/End: cursor   Enter: continue   Esc: cancel"
@@ -237,10 +235,7 @@ fn render_reset_overlay(frame: &mut Frame, area: Rect, detail: &GroupDetailState
                 detail.lags.len(),
                 detail.name
             );
-            render_confirm_dialog(
-                frame,
-                area,
-                "Confirm offset reset",
+            render_confirm_dialog(frame, area, &app.theme, "Confirm offset reset",
                 &body,
                 active_warning(detail),
             );

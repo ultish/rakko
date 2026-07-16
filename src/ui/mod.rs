@@ -1,10 +1,12 @@
 pub mod banner;
+pub mod help;
 pub mod screens;
 pub mod splash;
 pub mod theme;
 pub mod widgets;
 
 use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::widgets::{Block, Clear};
 use ratatui::Frame;
 
 use crate::app::{App, Screen};
@@ -16,11 +18,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     app.clear_click_regions();
     let area = frame.area();
 
+    // Paint GrokNight-style near-black (or light) surface so the TUI owns the
+    // background instead of leaving the terminal's default profile color.
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(app.theme.root_style()), area);
+
     if app.show_splash {
-        splash::render(frame, area);
+        splash::render(frame, app, area);
         // Quit confirm can still appear if the user hit `q` on the splash.
         if app.quit_confirm {
-            render_quit_confirm(frame, area);
+            render_quit_confirm(frame, app, area);
         }
         return;
     }
@@ -56,15 +63,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::ExportImport => screens::export_import::render(frame, app, content),
     }
 
+    if app.help_visible {
+        help::render(frame, app, area);
+    }
+
     if app.quit_confirm {
-        render_quit_confirm(frame, area);
+        render_quit_confirm(frame, app, area);
     }
 }
 
-fn render_quit_confirm(frame: &mut Frame, area: ratatui::layout::Rect) {
+fn render_quit_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     render_confirm_dialog(
         frame,
         area,
+        &app.theme,
         "Quit rakko?",
         "Exit the TUI?\n\ny/Enter: quit   n/Esc: cancel",
         None,

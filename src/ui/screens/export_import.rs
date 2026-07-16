@@ -1,21 +1,20 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ExportImportFocus, ExportImportMode};
 use crate::events::Action;
-use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(state) = app.export_import.as_ref() else {
         let placeholder = Paragraph::new("No export/import in progress.")
-            .style(STATUS_STYLE)
+            .style(app.theme.status)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Export/Import")
-                    .title_style(TITLE_STYLE),
+                    .title_style(app.theme.title),
             );
         frame.render_widget(placeholder, area);
         return;
@@ -42,7 +41,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(title)
-            .style(TITLE_STYLE)
+            .style(app.theme.title)
             .block(Block::default().borders(Borders::ALL).title("Export / Import")),
         chunks[0],
     );
@@ -86,9 +85,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     };
     frame.render_widget(
         Paragraph::new(help)
-            .style(STATUS_STYLE)
+            .style(app.theme.secondary)
             .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title("Notes")),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Notes")
+                    .title_style(app.theme.title)
+                    .border_style(app.theme.border)
+                    .style(app.theme.root_style()),
+            ),
         chunks[3],
     );
 
@@ -96,7 +102,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .status_message
         .clone()
         .unwrap_or_else(|| "type a path, then Enter".to_string());
-    frame.render_widget(Paragraph::new(status).style(STATUS_STYLE), chunks[4]);
+    frame.render_widget(Paragraph::new(status).style(app.theme.status), chunks[4]);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -109,16 +115,22 @@ fn render_field(
     focused: bool,
     field: ExportImportFocus,
 ) {
+    // Focused field: purple chrome; body uses reverse only as a light focus fill.
     let style = if focused {
-        Style::default().add_modifier(Modifier::REVERSED)
+        app.theme.text.add_modifier(Modifier::REVERSED)
     } else {
-        Style::default()
+        app.theme.text
     };
     // `value` already includes the ▌ cursor when focused (see ExportImportState::display_with_cursor).
     frame.render_widget(
-        Paragraph::new(value)
-            .style(style)
-            .block(Block::default().borders(Borders::ALL).title(label).title_style(TITLE_STYLE)),
+        Paragraph::new(value).style(style).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(label)
+                .title_style(app.theme.focus_title(focused))
+                .border_style(app.theme.focus_border(focused))
+                .style(app.theme.root_style()),
+        ),
         area,
     );
     app.register_click(area.x, area.y, area.width, area.height, Action::ExportImportFocusField(field));

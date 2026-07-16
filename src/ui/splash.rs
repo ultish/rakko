@@ -9,10 +9,9 @@ use image::{GenericImageView, RgbaImage};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
 
 /// Preferred half-block width (matches the preview the user liked).
 const TRUECOLOR_COLS: u32 = 72;
@@ -114,9 +113,12 @@ fn halfblock_lines(max_cols: u16, max_rows: u16) -> Vec<Line<'static>> {
     lines
 }
 
-pub fn render(frame: &mut Frame, area: Rect) {
-    frame.render_widget(Clear, area);
+pub fn render(frame: &mut Frame, app: &crate::app::App, area: Rect) {
+    // Do **not** Clear here — `ui::draw` already filled `area` with the theme
+    // background. `Clear` resets cells to the terminal default and undoes that
+    // near-black GrokNight surface (what made the splash look "unstyled").
 
+    let root = app.theme.root_style();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -133,34 +135,26 @@ pub fn render(frame: &mut Frame, area: Rect) {
     };
 
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " rakko ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "ラッコ",
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::styled(
-            " — Kafka in the terminal",
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            format!("  [{mode}]"),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(" rakko ", app.theme.accent),
+        Span::styled("ラッコ", app.theme.secondary),
+        Span::styled(" — Kafka in the terminal", app.theme.dim),
+        Span::styled(format!("  [{mode}]"), app.theme.dim),
     ]))
+    .style(root)
     .block(
         Block::default()
             .borders(Borders::ALL)
             .title("welcome")
-            .title_style(TITLE_STYLE),
+            .title_style(app.theme.title)
+            .border_style(app.theme.border)
+            .style(root),
     );
     frame.render_widget(title, chunks[0]);
 
     let art_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(app.theme.border)
+        .style(root);
     let inner = art_block.inner(chunks[1]);
     frame.render_widget(art_block, chunks[1]);
 
@@ -175,21 +169,29 @@ pub fn render(frame: &mut Frame, area: Rect) {
             width: art_w.min(inner.width),
             height: (lines.len() as u16).min(inner.height),
         };
+        // Fill the art pane with theme bg so letterboxing around the otter
+        // stays near-black, not the terminal default.
+        frame.render_widget(Block::default().style(root), inner);
         frame.render_widget(Paragraph::new(lines), art_area);
     } else {
         frame.render_widget(
             Paragraph::new(OTTER_BRAILLE_SMALL_EARS)
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                .style(app.theme.secondary.add_modifier(Modifier::BOLD).bg(app.theme.bg)),
             inner,
         );
     }
 
     let hint = Paragraph::new("Press Enter / Space / Esc to continue")
         .alignment(Alignment::Center)
-        .style(STATUS_STYLE)
+        .style(app.theme.status)
         .wrap(Wrap { trim: true })
-        .block(Block::default().borders(Borders::ALL));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme.border)
+                .style(root),
+        );
     frame.render_widget(hint, chunks[2]);
 }
 

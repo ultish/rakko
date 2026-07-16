@@ -2,7 +2,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::ui::theme::STATUS_STYLE;
+use crate::ui::theme::Theme;
 
 /// Split `area` into (main content, bottom keybind footer).
 pub fn split_with_footer(area: Rect) -> (Rect, Rect) {
@@ -14,6 +14,6 @@ pub fn split_with_footer(area: Rect) -> (Rect, Rect) {
 }
 
 /// One-line keybind / help strip — same style as the topic-detail footer.
-pub fn render_keybind_footer(frame: &mut Frame, area: Rect, text: &str) {
-    frame.render_widget(Paragraph::new(text).style(STATUS_STYLE), area);
+pub fn render_keybind_footer(frame: &mut Frame, area: Rect, theme: &Theme, text: &str) {
+    frame.render_widget(Paragraph::new(text).style(theme.status), area);
 }

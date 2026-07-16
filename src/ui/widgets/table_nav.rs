@@ -4,7 +4,6 @@ use ratatui::Frame;
 
 use crate::app::App;
 use crate::events::Action;
-use crate::ui::theme::{HOVER_ROW_STYLE, SELECTED_ROW_STYLE, TITLE_STYLE};
 
 /// Matches `Table` default spacing between columns.
 const COLUMN_SPACING: u16 = 1;
@@ -69,18 +68,23 @@ pub fn render_selectable_list(
                 Cell::new(truncate_to_width(name, max))
             })
             .collect();
-        Row::new(cells).style(TITLE_STYLE)
+        // Column headers: secondary cyan (static chrome, not purple).
+        Row::new(cells).style(app.theme.title)
     });
 
+    // Table chrome: cyan title, grey border, base body, purple selection only.
     let mut table = Table::new(rows, constraints)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .title_style(TITLE_STYLE),
+                .title_style(app.theme.title)
+                .border_style(app.theme.border)
+                .style(app.theme.root_style()),
         )
         .column_spacing(COLUMN_SPACING)
-        .row_highlight_style(SELECTED_ROW_STYLE)
+        .style(app.theme.text)
+        .row_highlight_style(app.theme.selected_row)
         .highlight_symbol(HIGHLIGHT_SYMBOL);
 
     if let Some(header_row) = header_row {
@@ -133,7 +137,7 @@ fn register_row_interactions(
         if row_index != selected && app.is_hovered(inner.x, y, inner.width, 1) {
             frame
                 .buffer_mut()
-                .set_style(Rect { x: inner.x, y, width: inner.width, height: 1 }, HOVER_ROW_STYLE);
+                .set_style(Rect { x: inner.x, y, width: inner.width, height: 1 }, app.theme.hover_row);
         }
     }
 }

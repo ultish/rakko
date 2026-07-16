@@ -11,6 +11,42 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-16
+
+### Added
+
+- **Help overlay (`?`)** — full keybind reference for the current screen (global +
+  contextual sections). Esc or `?` closes it. Structured query filter moved from
+  `?` to **`Q`** so help can own `?` app-wide.
+- **Copy to clipboard** on the message browser (list selection or open inspector):
+  **`V`** value, **`K`** key, **`Y`** `topic:partition@offset`. Uses the OS
+  clipboard when available, with OSC 52 fallback for SSH/tmux. Status line
+  confirms size or reports failure.
+- **Paste from clipboard** — **Ctrl+V** / **Cmd+V** inserts host clipboard text
+  into the focused producer field (and other text inputs: profile form, export
+  path, filters). Bulk insert at the cursor, not one key per character.
+- **Semantic themes** — dark (default) and light palettes with shared slots
+  (title, selection, status, error, borders, …). Cycle with **`T`**.
+- **`[ui]` config** — `theme` and `banner_mode` under `~/.config/rakko/config.toml`.
+  Cycling banner (`A`) or theme (`T`) persists the choice.
+
+### Changed
+
+- Opening a topic starts in **page (seek) mode** on the latest messages, not live
+  tail — so n/p paging works immediately. Toggle to live tail with **Tab**/**s**.
+- Advanced query filter keybind: **`Q`** (was `?`).
+- Dark theme restyled closer to Grok Build's GrokNight: near-black `#141414`
+  background, painted full-frame surface (no longer leaves the terminal's
+  default profile color showing through). Color roles: **purple** only for
+  selection, focus, and brand “rakko”; **soft cyan** for titles/footers/hints;
+  **grey/white** for borders and body text.
+- Light theme background toned down from near-white to a softer paper grey.
+
+### Fixed
+
+- Splash screen no longer clears the theme background back to the terminal
+  default; it uses the same near-black (or light) surface as the rest of the UI.
+
 ## [0.12.0] - 2026-07-14
 
 ### Added

@@ -274,6 +274,18 @@ pub enum Action {
     BannerTick,
     /// Cycles the top banner's animated content: wave → FPS graph → off (`A` key).
     CycleBannerMode,
+    /// Cycles the color theme (`T` key); persisted to `[ui].theme`.
+    CycleTheme,
+    /// Toggle the global keybind help overlay (`?`).
+    ToggleHelp,
+    /// Copy the selected/inspected message's value to the clipboard (`V`).
+    CopyMessageValue,
+    /// Copy the selected/inspected message's key to the clipboard (`K`).
+    CopyMessageKey,
+    /// Copy `topic:partition@offset` for the selected/inspected message (`Y`).
+    CopyMessageOffset,
+    /// Paste host clipboard into the focused text field (Ctrl/Cmd+V).
+    PasteClipboard,
     /// Dismiss the startup splash (detailed otter).
     DismissSplash,
 }

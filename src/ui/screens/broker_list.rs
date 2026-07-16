@@ -4,7 +4,6 @@ use ratatui::widgets::{Bar, BarChart, Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::ui::theme::{ERROR_STYLE, STATUS_STYLE, TITLE_STYLE};
 use crate::ui::widgets::footer::render_keybind_footer;
 use crate::ui::widgets::table_nav::render_selectable_list;
 
@@ -25,16 +24,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .clone()
             .unwrap_or_else(|| "No brokers found.".to_string());
         let message = Paragraph::new(text)
-            .style(STATUS_STYLE)
+            .style(app.theme.status)
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Brokers")
-                    .title_style(TITLE_STYLE),
+                    .title_style(app.theme.title),
             );
         frame.render_widget(message, main);
-        render_keybind_footer(frame, footer, "r: refresh   Esc: back   q: quit");
+        render_keybind_footer(frame, footer, &app.theme, "r: refresh   Esc: back   q: quit");
         return;
     }
 
@@ -76,6 +75,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_keybind_footer(
         frame,
         footer,
+        &app.theme,
         "Enter: config   r: refresh   Esc: back   q: quit",
     );
 }
@@ -100,7 +100,7 @@ fn render_load_chart(frame: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title("Load (leader/replicas)")
-                .title_style(TITLE_STYLE),
+                .title_style(app.theme.title),
         )
         .bar_width(1)
         .bar_gap(1)
@@ -118,9 +118,9 @@ fn render_health_line(frame: &mut Frame, area: Rect, app: &App) {
         health.offline
     );
     let style = if health.under_replicated > 0 || health.offline > 0 {
-        ERROR_STYLE
+        app.theme.error
     } else {
-        STATUS_STYLE
+        app.theme.secondary
     };
     frame.render_widget(Paragraph::new(text).style(style), area);
 }

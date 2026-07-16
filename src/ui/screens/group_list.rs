@@ -4,7 +4,6 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
 use crate::ui::widgets::footer::render_keybind_footer;
 use crate::ui::widgets::table_nav::render_selectable_list;
 
@@ -30,16 +29,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             .clone()
             .unwrap_or_else(|| "No consumer groups found.".to_string());
         let message = Paragraph::new(text)
-            .style(STATUS_STYLE)
+            .style(app.theme.status)
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Consumer groups")
-                    .title_style(TITLE_STYLE),
+                    .title_style(app.theme.title),
             );
         frame.render_widget(message, main);
-        render_keybind_footer(frame, footer, "r: refresh   Esc: back   q: quit");
+        render_keybind_footer(frame, footer, &app.theme, "r: refresh   Esc: back   q: quit");
         return;
     }
 
@@ -64,13 +63,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             "No consumer groups.".to_string()
         };
         let message = Paragraph::new(text)
-            .style(STATUS_STYLE)
+            .style(app.theme.status)
             .wrap(Wrap { trim: true })
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(title)
-                    .title_style(TITLE_STYLE),
+                    .title_style(app.theme.title),
             );
         frame.render_widget(message, main);
     } else {
@@ -113,7 +112,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     render_keybind_footer(
         frame,
         footer,
-        &format!("Enter: open   r: refresh   /: filter{filter_hint}   Esc: back   q: quit"),
+        &app.theme,
+        &format!("Enter: open   r: refresh   /: filter{filter_hint}   ?: help   Esc: back   q: quit"),
     );
 }
 

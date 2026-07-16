@@ -19,6 +19,31 @@ pub fn insert_char(text: &mut String, cursor: &mut usize, c: char) {
     *cursor += 1;
 }
 
+/// Insert a paste (or any multi-character chunk) at the cursor in one shot.
+/// Normalizes `\r\n` / `\r` to `\n` so clipboard payloads from Windows/macOS
+/// land as Unix newlines in multi-line fields.
+pub fn insert_str(text: &mut String, cursor: &mut usize, s: &str) {
+    if s.is_empty() {
+        return;
+    }
+    let normalized = normalize_paste(s);
+    if normalized.is_empty() {
+        return;
+    }
+    let byte = char_byte_index(text, *cursor);
+    let n_chars = normalized.chars().count();
+    text.insert_str(byte, &normalized);
+    *cursor += n_chars;
+}
+
+/// Collapse CRLF/CR to LF for clipboard paste.
+pub fn normalize_paste(s: &str) -> String {
+    if !s.contains('\r') {
+        return s.to_string();
+    }
+    s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 pub fn backspace(text: &mut String, cursor: &mut usize) {
     if *cursor == 0 {
         return;
@@ -229,6 +254,15 @@ mod tests {
         backspace(&mut s, &mut c);
         assert_eq!(s, "ab");
         assert_eq!(c, 1);
+    }
+
+    #[test]
+    fn insert_str_normalizes_crlf_and_advances_cursor() {
+        let mut s = String::from("x");
+        let mut c = 1;
+        insert_str(&mut s, &mut c, "a\r\nb\rc");
+        assert_eq!(s, "xa\nb\nc");
+        assert_eq!(c, 6);
     }
 
     #[test]

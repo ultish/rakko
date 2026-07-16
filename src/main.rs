@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod clipboard;
 mod config;
 mod error;
 mod events;
@@ -67,11 +68,21 @@ fn init_tracing(log_dir: &Path) -> AppResult<tracing_appender::non_blocking::Wor
 
 /// Producer screen hijacks the keyboard for text entry — meta actions use F-keys / Ctrl
 /// combos so ordinary characters (including `j`/`k`/`m`) type into the focused field.
+/// Ctrl+V or Cmd+V (Super+V) — Grok-style host clipboard paste.
+fn is_paste_key(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
+        && key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+}
+
 fn producer_key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(Action::ForceQuit)
         }
+        _ if is_paste_key(&key) => Some(Action::PasteClipboard),
         // `q` is a normal char in the producer (types into fields); use Ctrl-c to force-quit.
         // From any other screen `q` still opens the quit dialog via key_to_action.
         KeyCode::Esc => Some(Action::Back),
@@ -149,6 +160,18 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         };
     }
 
+    // Help overlay owns the keyboard (close with ? / Esc; quit still works).
+    if app.help_visible {
+        return match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            KeyCode::Char('q') => Some(Action::Quit),
+            KeyCode::Char('?') | KeyCode::Esc => Some(Action::ToggleHelp),
+            _ => None,
+        };
+    }
+
     // Startup splash: any key dismisses (so the detailed otter doesn't trap the user).
     if app.show_splash {
         return match key.code {
@@ -170,6 +193,7 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::ForceQuit)
             }
+            _ if is_paste_key(&key) => Some(Action::PasteClipboard),
             // `q` types into text fields; Esc still cancels (and quits if no profiles).
             KeyCode::Esc => Some(Action::ProfileCreateCancel),
             KeyCode::Enter => Some(Action::ProfileCreateSubmit),
@@ -220,6 +244,7 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::ForceQuit)
             }
+            _ if is_paste_key(&key) => Some(Action::PasteClipboard),
             KeyCode::Char('q') => Some(Action::Quit),
             KeyCode::Esc => Some(Action::Back),
             KeyCode::Enter => Some(Action::ExportImportSubmit),
@@ -259,6 +284,7 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         Some(Action::ForceQuit)
                     }
+                    _ if is_paste_key(&key) => Some(Action::PasteClipboard),
                     KeyCode::Char(c) => Some(Action::FilterChar(c)),
                     KeyCode::Backspace => Some(Action::FilterBackspace),
                     KeyCode::Delete => Some(Action::FilterDelete),
@@ -310,6 +336,7 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::ForceQuit)
             }
+            _ if is_paste_key(&key) => Some(Action::PasteClipboard),
             // Ctrl-h (not Ctrl-c) toggles help — plain 'h' has to stay typeable, since
             // query text routinely contains it (field names, string literals like
             // "shipped").
@@ -338,6 +365,7 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 Some(Action::ForceQuit)
             }
+            _ if is_paste_key(&key) => Some(Action::PasteClipboard),
             // `q` in filter input types 'q'; use Ctrl-c to force-quit.
             KeyCode::Char(c) => Some(Action::FilterChar(c)),
             KeyCode::Backspace => Some(Action::FilterBackspace),
@@ -392,9 +420,17 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         }
         KeyCode::PageUp | KeyCode::Char('p') => Some(Action::PageBackward),
         KeyCode::Char('/') => Some(Action::StartFilterInput),
-        // `?` (shift-/) pairs visually with `/`: the advanced structured filter next to
-        // the plain substring one. Topic detail only — the reducer no-ops elsewhere.
-        KeyCode::Char('?') if app.screen == Screen::TopicDetail => Some(Action::StartQueryFilterInput),
+        // Global help overlay. Query filter used to live on `?` (pairing with `/`);
+        // it moved to `Q` so `?` can mean help app-wide like other TUIs.
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
+        // Structured query filter (JSON/Avro field paths) — topic detail only.
+        KeyCode::Char('Q') if app.screen == Screen::TopicDetail => {
+            Some(Action::StartQueryFilterInput)
+        }
+        // Clipboard yank on the message browser (list selection or open inspector).
+        KeyCode::Char('V') if app.screen == Screen::TopicDetail => Some(Action::CopyMessageValue),
+        KeyCode::Char('K') if app.screen == Screen::TopicDetail => Some(Action::CopyMessageKey),
+        KeyCode::Char('Y') if app.screen == Screen::TopicDetail => Some(Action::CopyMessageOffset),
         KeyCode::Char('c') if filter_applied => Some(Action::ClearFilter),
         // Group detail: `z` starts offset-reset (deliberately not a common/mnemonic key —
         // reduces accidental presses of a destructive action; `x` is reserved app-wide
@@ -448,9 +484,10 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         KeyCode::Char('i') if app.screen == Screen::TopicDetail => Some(Action::OpenImport),
         // `o` = order: toggle newest↑ / oldest↑ (offset-reset wizard hijacks keys when open).
         KeyCode::Char('o') if app.screen == Screen::TopicDetail => Some(Action::ToggleMessageSort),
-        // Banner mode cycle (wave → fps → off) — capital A avoids clashing with typed
-        // text on other screens (producer / filter already capture keys before this match).
+        // Banner / theme cycles — capitals avoid clashing with typed text (producer /
+        // filter already capture keys before this match). Both persist to `[ui]`.
         KeyCode::Char('A') => Some(Action::CycleBannerMode),
+        KeyCode::Char('T') => Some(Action::CycleTheme),
         _ => None,
     }
 }

@@ -11,6 +11,12 @@
 # last profile instead of the top level).
 # seek_page_size = 50
 
+# TUI appearance (also set by A / T keys in the app, which write back here).
+# Must appear before the first [[profiles]] table for the same TOML reason.
+# [ui]
+# theme = "dark"          # dark | light
+# banner_mode = "wave"    # wave | fps | off
+
 [[profiles]]
 name = "local"
 bootstrap_servers = "localhost:19092"

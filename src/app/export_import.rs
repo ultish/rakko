@@ -61,6 +61,15 @@ impl ExportImportState {
         self.cursor = cursor;
     }
 
+    pub fn insert_str(&mut self, s: &str) {
+        let mut cursor = self.cursor;
+        {
+            let text = self.active_text_mut();
+            crate::text_field::insert_str(text, &mut cursor, s);
+        }
+        self.cursor = cursor;
+    }
+
     pub fn backspace(&mut self) {
         let mut cursor = self.cursor;
         {

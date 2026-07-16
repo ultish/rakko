@@ -28,7 +28,7 @@ pub(crate) use topic_detail::capped_body;
 
 use export_import::ExportScope;
 use group_detail::parse_reset_input;
-use topic_detail::PageDirection;
+use topic_detail::{PageDirection, SeekState};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -36,12 +36,17 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::config::{self, Config, Profile};
-use crate::events::{Action, AppEvent, Command};
+use crate::events::{Action, AppEvent, Command, SeekPageRequest};
 use crate::kafka::admin::{BrokerSummary, ClusterHealth, TopicSummary};
 use crate::kafka::group_offsets::{GroupSummary, OffsetResetTarget};
 use crate::kafka::schema_registry::SchemaRegistry;
+use crate::raw_message::RawMessage;
 use crate::ring_buffer::RingBuffer;
 use crate::serde_detect::{detect_format, DetectedFormat};
+use crate::ui::theme::Theme;
+
+// Re-export so existing `crate::app::BannerMode` call sites stay stable.
+pub use crate::config::BannerMode;
 
 const TAIL_BUFFER_CAPACITY: usize = 500;
 /// Fallback for `Config::seek_page_size` when not set in `config.toml`.
@@ -49,33 +54,6 @@ pub const DEFAULT_SEEK_PAGE_SIZE: usize = 50;
 /// How many recent per-frame FPS samples the banner's FPS graph/readout keeps —
 /// also the graph's effective time window at typical interaction rates.
 const FPS_SAMPLE_CAPACITY: usize = 30;
-
-/// Cycles the top banner's animated content (`A` key): the decorative wave, a
-/// live FPS graph + numeric readout (see `App::push_fps_sample`), or off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BannerMode {
-    Wave,
-    Fps,
-    Off,
-}
-
-impl BannerMode {
-    fn next(self) -> Self {
-        match self {
-            BannerMode::Wave => BannerMode::Fps,
-            BannerMode::Fps => BannerMode::Off,
-            BannerMode::Off => BannerMode::Wave,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            BannerMode::Wave => "wave",
-            BannerMode::Fps => "fps",
-            BannerMode::Off => "off",
-        }
-    }
-}
 
 /// A clickable region of the last-rendered frame, in terminal cell coordinates.
 /// `ui::draw` clears these at the start of every frame; screens re-register them
@@ -156,8 +134,12 @@ pub struct App {
     /// Braille stream banner animation frame index.
     pub banner_frame: usize,
     /// Cycles wave → fps → off (`A`). `Off` freezes `banner_frame` and stops the
-    /// periodic tick redraw.
+    /// periodic tick redraw. Loaded from / saved to `[ui].banner_mode`.
     pub banner_mode: BannerMode,
+    /// Active color theme (from `[ui].theme`); cycled with `T` and persisted.
+    pub theme: Theme,
+    /// Global help overlay (`?`).
+    pub help_visible: bool,
     /// Recent per-frame FPS samples (oldest first), for the banner's FPS graph +
     /// numeric readout. Raw `Instant`s are deliberately kept out of `App` — see
     /// `last_row_click` in main.rs — so `main.rs` computes each sample from real
@@ -179,6 +161,8 @@ pub struct App {
 impl App {
     pub fn new(config: Config, config_path: PathBuf) -> Self {
         let empty = config.profiles.is_empty();
+        let banner_mode = config.ui.banner_mode;
+        let theme = Theme::from_name(config.ui.theme);
         Self {
             screen: Screen::ProfilePicker,
             config,
@@ -219,11 +203,81 @@ impl App {
             quit_confirm: false,
             active_profile: None,
             banner_frame: 0,
-            banner_mode: BannerMode::Wave,
+            banner_mode,
+            theme,
+            help_visible: false,
             fps_samples: RingBuffer::new(FPS_SAMPLE_CAPACITY),
             show_splash: true,
             click_regions: RefCell::new(Vec::new()),
             mouse_pos: Cell::new(None),
+        }
+    }
+
+    /// Persist `[ui]` fields currently reflected in `self` (theme, banner_mode).
+    /// Soft-fails into `status_message` so a write error never blocks the TUI.
+    fn persist_ui_prefs(&mut self) {
+        self.config.ui.theme = self.theme.name;
+        self.config.ui.banner_mode = self.banner_mode;
+        if let Err(err) = config::save(&self.config_path, &self.config) {
+            self.status_message = Some(format!("failed to save UI prefs: {err}"));
+        }
+    }
+
+    /// Message under the list selection, or the one open in the inspector.
+    fn selected_browse_message(&self) -> Option<&RawMessage> {
+        let detail = self.topic_detail.as_ref()?;
+        if let Some(view) = &detail.message_view {
+            return Some(&view.message);
+        }
+        let visible = detail.visible_messages_with_registry(self.schema_registry.as_ref());
+        visible.get(detail.selected_index).copied()
+    }
+
+    fn copy_selected_value(&mut self) {
+        let Some(msg) = self.selected_browse_message().cloned() else {
+            self.status_message = Some("no message selected to copy.".into());
+            return;
+        };
+        let Some(bytes) = msg.value.as_deref() else {
+            self.status_message = Some("message has no value.".into());
+            return;
+        };
+        let text = topic_detail::bytes_to_display_text(Some(bytes), self.schema_registry.as_ref());
+        self.apply_clipboard_result("value", &text);
+    }
+
+    fn copy_selected_key(&mut self) {
+        let Some(msg) = self.selected_browse_message().cloned() else {
+            self.status_message = Some("no message selected to copy.".into());
+            return;
+        };
+        let Some(bytes) = msg.key.as_deref() else {
+            self.status_message = Some("message has no key.".into());
+            return;
+        };
+        let text = topic_detail::bytes_to_display_text(Some(bytes), self.schema_registry.as_ref());
+        self.apply_clipboard_result("key", &text);
+    }
+
+    fn copy_selected_offset(&mut self) {
+        let Some(msg) = self.selected_browse_message() else {
+            self.status_message = Some("no message selected to copy.".into());
+            return;
+        };
+        let text = format!("{}:{}@{}", msg.topic, msg.partition, msg.offset);
+        self.apply_clipboard_result("offset", &text);
+    }
+
+    fn apply_clipboard_result(&mut self, what: &str, text: &str) {
+        match crate::clipboard::copy_text(text) {
+            Ok(()) => {
+                let n = text.len();
+                let unit = if n == 1 { "byte" } else { "bytes" };
+                self.status_message = Some(format!("copied {what} ({n} {unit})."));
+            }
+            Err(err) => {
+                self.status_message = Some(format!("copy {what} failed: {err}"));
+            }
         }
     }
 
@@ -437,8 +491,13 @@ impl App {
     /// performed here.
     pub fn update(&mut self, action: Action) -> Vec<Command> {
         match action {
+            Action::ToggleHelp => {
+                self.help_visible = !self.help_visible;
+                vec![]
+            }
             Action::Quit => {
                 // `q` always goes through the confirm dialog (even over other overlays).
+                self.help_visible = false;
                 self.quit_confirm = true;
                 vec![]
             }
@@ -996,7 +1055,35 @@ impl App {
                 if self.banner_mode == BannerMode::Off {
                     self.banner_frame = 0;
                 }
-                self.status_message = Some(format!("banner: {}", self.banner_mode.label()));
+                self.persist_ui_prefs();
+                if self.status_message.as_deref().is_none_or(|s| !s.starts_with("failed to save")) {
+                    self.status_message = Some(format!("banner: {}.", self.banner_mode.label()));
+                }
+                vec![]
+            }
+            Action::CycleTheme => {
+                let next = self.theme.name.next();
+                self.theme = Theme::from_name(next);
+                self.persist_ui_prefs();
+                if self.status_message.as_deref().is_none_or(|s| !s.starts_with("failed to save")) {
+                    self.status_message = Some(format!("theme: {}.", self.theme.name.label()));
+                }
+                vec![]
+            }
+            Action::CopyMessageValue => {
+                self.copy_selected_value();
+                vec![]
+            }
+            Action::CopyMessageKey => {
+                self.copy_selected_key();
+                vec![]
+            }
+            Action::CopyMessageOffset => {
+                self.copy_selected_offset();
+                vec![]
+            }
+            Action::PasteClipboard => {
+                self.paste_from_clipboard();
                 vec![]
             }
             Action::DismissSplash => {
@@ -1004,6 +1091,62 @@ impl App {
                 vec![]
             }
         }
+    }
+
+    /// Grok-style host clipboard paste into whichever text field owns the keyboard.
+    fn paste_from_clipboard(&mut self) {
+        match crate::clipboard::read_text() {
+            Ok(None) => {
+                self.status_message = Some("clipboard is empty.".into());
+            }
+            Ok(Some(text)) => {
+                if text.trim().is_empty() {
+                    self.status_message = Some("clipboard is empty.".into());
+                    return;
+                }
+                if !self.paste_into_active_field(&text) {
+                    self.status_message = Some("nothing to paste into.".into());
+                    return;
+                }
+                let n = text.len();
+                let unit = if n == 1 { "byte" } else { "bytes" };
+                self.status_message = Some(format!("pasted ({n} {unit})."));
+            }
+            Err(err) => {
+                self.status_message = Some(format!("paste failed: {err}"));
+            }
+        }
+    }
+
+    /// Insert `text` into the currently focused editable field. Returns false when
+    /// no text surface is active (or the focused producer field rejects input).
+    fn paste_into_active_field(&mut self, text: &str) -> bool {
+        if self.screen == Screen::Producer {
+            if let Some(state) = self.producer.as_ref() {
+                if state.focus == ProducerFocus::Value && state.mode != ProducerInputMode::Inline {
+                    return false;
+                }
+            }
+            if self.producer.is_some() {
+                self.producer_insert_str(text);
+                return true;
+            }
+            return false;
+        }
+        if self.screen == Screen::ExportImport {
+            if let Some(state) = self.export_import.as_mut() {
+                state.insert_str(text);
+                return true;
+            }
+            return false;
+        }
+        if let Some(state) = self.profile_create.as_mut() {
+            let before = state.cursor;
+            state.insert_str(text);
+            // Auth focus has no text field — insert_str is a no-op (cursor unchanged).
+            return state.cursor != before;
+        }
+        self.text_insert_str(text)
     }
 
     fn move_selection(&mut self, delta: i64) {
@@ -1193,10 +1336,22 @@ impl App {
                 let Some(profile) = self.active_profile.clone() else {
                     return vec![];
                 };
+                // Default to seek/page mode (latest page) so opening a topic is
+                // immediately browsable with n/p — live tail is one Tab/s away.
+                let partition = 0;
+                let page_size = self.seek_page_size();
                 self.topic_detail = Some(TopicDetailState {
                     topic: topic.name.clone(),
                     partition_count: topic.partition_count,
-                    mode: BrowseMode::Tail(RingBuffer::new(TAIL_BUFFER_CAPACITY)),
+                    mode: BrowseMode::Seek(SeekState {
+                        partition,
+                        messages: Vec::new(),
+                        page_start_offset: 0,
+                        at_beginning: false,
+                        at_end: false,
+                        low_watermark: 0,
+                        high_watermark: 0,
+                    }),
                     selected_index: 0,
                     filter_input: String::new(),
                     filter_cursor: 0,
@@ -1217,7 +1372,12 @@ impl App {
                     visible_cache: RefCell::new(None),
                 });
                 self.screen = Screen::TopicDetail;
-                vec![Command::StartTail { profile, topic: topic.name }]
+                vec![Command::LoadSeekPage {
+                    profile,
+                    topic: topic.name,
+                    partition,
+                    request: SeekPageRequest::Latest { page_size },
+                }]
             }
             Screen::TopicDetail => self.open_or_close_message_view(),
             Screen::GroupList => {
@@ -1391,6 +1551,59 @@ impl App {
                 c,
             );
         }
+    }
+
+    /// Bulk paste into shared filter / offset-reset text surfaces.
+    /// Returns true if a surface accepted the paste.
+    fn text_insert_str(&mut self, s: &str) -> bool {
+        if let Some(detail) = self.group_detail.as_mut() {
+            if let Some(OffsetResetPhase::Input { input, cursor, .. }) = detail.reset_phase.as_mut()
+            {
+                // Offset/timestamp fields only accept digits and '-'.
+                let filtered: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '-').collect();
+                if filtered.is_empty() {
+                    return false;
+                }
+                crate::text_field::insert_str(input, cursor, &filtered);
+                return true;
+            }
+        }
+        if let Some(detail) = self.topic_detail.as_mut() {
+            if detail.filter_active {
+                crate::text_field::insert_str(
+                    &mut detail.filter_input,
+                    &mut detail.filter_cursor,
+                    s,
+                );
+                return true;
+            }
+            if detail.query_filter_active {
+                detail.query_filter_completion = None;
+                crate::text_field::insert_str(
+                    &mut detail.query_filter_input,
+                    &mut detail.query_filter_cursor,
+                    s,
+                );
+                return true;
+            }
+        }
+        if self.topic_list_filter_active {
+            crate::text_field::insert_str(
+                &mut self.topic_list_filter_input,
+                &mut self.topic_list_filter_cursor,
+                s,
+            );
+            return true;
+        }
+        if self.group_list_filter_active {
+            crate::text_field::insert_str(
+                &mut self.group_list_filter_input,
+                &mut self.group_list_filter_cursor,
+                s,
+            );
+            return true;
+        }
+        false
     }
 
     fn text_backspace(&mut self) {

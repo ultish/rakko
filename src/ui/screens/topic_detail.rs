@@ -11,7 +11,6 @@ use crate::events::Action;
 use crate::kafka::schema_registry::SchemaRegistry;
 use crate::raw_message::RawMessage;
 use crate::text_field::wrap_lines_for_width;
-use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
 use crate::ui::widgets::confirm_dialog::{centered_rect, centered_rect_fixed_height};
 use crate::ui::widgets::footer::render_keybind_footer;
 use crate::ui::widgets::table_nav::render_selectable_list;
@@ -25,8 +24,13 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(detail) = app.topic_detail.as_ref() else {
         // Not normally reachable (Screen::TopicDetail always implies topic_detail is
         // Some), but render harmlessly rather than panicking if it ever happens.
-        let placeholder = Paragraph::new("No topic selected.").style(STATUS_STYLE).block(
-            Block::default().borders(Borders::ALL).title("Topic").title_style(TITLE_STYLE),
+        let placeholder = Paragraph::new("No topic selected.").style(app.theme.secondary).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Topic")
+                .title_style(app.theme.title)
+                .border_style(app.theme.border)
+                .style(app.theme.root_style()),
         );
         frame.render_widget(placeholder, area);
         return;
@@ -50,7 +54,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         render_filter_input(frame, *next.next().unwrap(), detail);
     }
     render_message_list(frame, *next.next().unwrap(), app, detail);
-    render_footer(frame, *next.next().unwrap());
+    render_footer(frame, app, *next.next().unwrap());
 
     if let Some(view) = &detail.message_view {
         render_message_inspector(
@@ -65,11 +69,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     if let Some(phase) = &detail.replay_phase {
-        render_replay_overlay(frame, area, phase);
+        render_replay_overlay(frame, app, area, phase);
     }
 
     if detail.query_filter_active {
-        render_query_filter_dialog(frame, area, detail);
+        render_query_filter_dialog(frame, app, area, detail);
     }
 }
 
@@ -109,7 +113,8 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect, detail: &TopicDetailS
     }
 
     let text = segments.join("  ·  ");
-    frame.render_widget(Paragraph::new(text).style(TITLE_STYLE), area);
+    // Screen header strip: secondary cyan info (not active purple — that's for panel titles).
+    frame.render_widget(Paragraph::new(text).style(app.theme.secondary), area);
 }
 
 /// Visually distinct from normal browsing (reversed video) so it's obvious keystrokes
@@ -147,7 +152,7 @@ Examples:
 /// Query-filter input as a centered dialog rather than a one-line bar — a chained
 /// query (`a = 1 AND b = 2 AND ...`) needs more room than a terminal-width row gives,
 /// and the dialog has space for the `Ctrl-h` help panel below the input.
-fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetailState) {
+fn render_query_filter_dialog(frame: &mut Frame, app: &App, area: Rect, detail: &TopicDetailState) {
     let dialog = if detail.query_filter_help_visible {
         centered_rect(80, 70, area)
     } else {
@@ -168,16 +173,24 @@ fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetai
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Advanced Query Filter")
-        .title_style(TITLE_STYLE);
+        .title_style(app.theme.title)
+        .border_style(app.theme.border)
+        .style(app.theme.panel_style());
     frame.render_widget(block, dialog);
 
     let field = crate::text_field::display_with_cursor(
         &detail.query_filter_input,
         detail.query_filter_cursor,
     );
+    // Focused input: purple frame + reverse base text.
     let input = Paragraph::new(format!("query> {field}"))
-        .style(Style::default().add_modifier(Modifier::REVERSED))
-        .block(Block::default().borders(Borders::ALL));
+        .style(app.theme.text.add_modifier(Modifier::REVERSED))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(app.theme.focus_border(true))
+                .style(app.theme.root_style()),
+        );
     frame.render_widget(input, inner[0]);
 
     if let Some(completion) = &detail.query_filter_completion {
@@ -189,7 +202,7 @@ fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetai
             .collect();
         frame.render_widget(
             Paragraph::new(format!("Tab to cycle: {}", options.join(" | ")))
-                .style(STATUS_STYLE)
+                .style(app.theme.secondary)
                 .wrap(Wrap { trim: true }),
             inner[1],
         );
@@ -202,13 +215,15 @@ fn render_query_filter_dialog(frame: &mut Frame, area: Rect, detail: &TopicDetai
     };
     frame.render_widget(
         Paragraph::new(format!("Enter: apply   Esc: cancel   Tab: complete   {help_hint}"))
-            .style(STATUS_STYLE),
+            .style(app.theme.secondary),
         inner[2],
     );
 
     if detail.query_filter_help_visible {
         frame.render_widget(
-            Paragraph::new(QUERY_FILTER_HELP).wrap(Wrap { trim: false }),
+            Paragraph::new(QUERY_FILTER_HELP)
+                .style(app.theme.text)
+                .wrap(Wrap { trim: false }),
             inner[3],
         );
     }
@@ -220,8 +235,13 @@ fn render_message_list(frame: &mut Frame, area: Rect, app: &App, detail: &TopicD
 
     if visible.is_empty() {
         let text = empty_state_message(app, detail);
-        let message = Paragraph::new(text).style(STATUS_STYLE).wrap(Wrap { trim: true }).block(
-            Block::default().borders(Borders::ALL).title(list_title(detail)).title_style(TITLE_STYLE),
+        let message = Paragraph::new(text).style(app.theme.secondary).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(list_title(detail))
+                .title_style(app.theme.title)
+                .border_style(app.theme.border)
+                .style(app.theme.root_style()),
         );
         frame.render_widget(message, area);
         return;
@@ -346,11 +366,12 @@ fn list_title(detail: &TopicDetailState) -> String {
     }
 }
 
-fn render_footer(frame: &mut Frame, area: Rect) {
+fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     render_keybind_footer(
         frame,
         area,
-        "Enter: view   Tab/s: mode   o: sort   n/p: page   r: refresh   /: filter   ?: query filter   w: produce   y: replay   x: export one   X: export all   i: import   Esc: back",
+        &app.theme,
+        "Enter: view   Tab/s: mode   o: sort   n/p: page   r: refresh   /: filter   Q: query   V/K/Y: copy   w: produce   y: replay   x/X: export   i: import   ?: help   Esc: back",
     );
 }
 
@@ -374,8 +395,9 @@ fn render_message_inspector(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_style(TITLE_STYLE)
-        .border_style(Style::default().fg(ratatui::style::Color::Cyan));
+        .title_style(app.theme.title)
+        .border_style(app.theme.border)
+        .style(app.theme.panel_style());
     let inner = block.inner(dialog);
     frame.render_widget(block, dialog);
 
@@ -408,7 +430,7 @@ fn render_message_inspector(
         .constraints([Constraint::Percentage(bottom_split), Constraint::Percentage(100 - bottom_split)])
         .split(rows[1]);
 
-    render_static_panel(frame, top_panels[0], "Attrs", &attrs);
+    render_static_panel(frame, app, top_panels[0], "Attrs", &attrs);
 
     let (key_body, value_body) = view.decoded_bodies(registry);
     let headers_body = capped_body(format_message_headers(&view.message));
@@ -468,46 +490,46 @@ fn render_message_inspector(
         InspectorFocus::Headers => (headers_scroll, headers_wrapped.len().max(1)),
         InspectorFocus::Value => (value_scroll, value_wrapped.len().max(1)),
     };
+    // Inspector footer: secondary cyan keys, base dim for line counter.
+    let key = app.theme.secondary.add_modifier(Modifier::BOLD);
+    let mute = app.theme.dim;
     let hint = Line::from(vec![
+        Span::styled("j/k/PgUp/PgDn: scroll", key),
+        Span::styled("   ", mute),
+        Span::styled("Tab/click: switch panel", key),
+        Span::styled("   ", mute),
+        Span::styled("←/→: resize", key),
+        Span::styled("   ", mute),
+        Span::styled("Enter/Esc: close", key),
+        Span::styled("   ", mute),
+        Span::styled("y: replay", key),
+        Span::styled("   ", mute),
+        Span::styled("x: export", key),
         Span::styled(
-            "j/k/PgUp/PgDn: scroll",
-            Style::default().add_modifier(Modifier::BOLD),
+            format!("   line {}/{} ", focused_scroll + 1, focused_line_count),
+            mute,
         ),
-        Span::raw("   "),
-        Span::styled("Tab/click: switch panel", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("   "),
-        Span::styled("←/→: resize", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("   "),
-        Span::styled(
-            "Enter/Esc: close",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("   "),
-        Span::styled("y: replay", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("   "),
-        Span::styled("x: export", Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw(format!(
-            "   line {}/{} ",
-            focused_scroll + 1,
-            focused_line_count
-        )),
     ]);
     frame.render_widget(Paragraph::new(hint), rows[2]);
 }
 
 /// The attrs panel: plain metadata, no scrolling and no click-to-focus (there's
 /// nothing to scroll to — see `format_message_attrs`).
-fn render_static_panel(frame: &mut Frame, area: Rect, title: &str, body: &str) {
-    let block = Block::default().borders(Borders::ALL).title(title).title_style(TITLE_STYLE);
+fn render_static_panel(frame: &mut Frame, app: &App, area: Rect, title: &str, body: &str) {
+    // Attrs: active title, base border + body text.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(app.theme.title)
+        .border_style(app.theme.border)
+        .style(app.theme.root_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new(body.to_string()).style(STATUS_STYLE), inner);
+    frame.render_widget(Paragraph::new(body.to_string()).style(app.theme.text), inner);
 }
 
 /// One key/headers/value panel: a bordered, titled box showing `wrapped` starting at
-/// `scroll`. `focused` gets the same bold-border/reversed-title treatment as a
-/// focused producer field; clicking anywhere in the panel dispatches `focus_action`
-/// (`Action::SetInspectorFocus`) so the mouse can pick a panel directly, same as Tab.
+/// `scroll`. Focused panels use **purple** title+border; body is always base text.
 #[allow(clippy::too_many_arguments)]
 fn render_inspector_panel(
     frame: &mut Frame,
@@ -519,21 +541,12 @@ fn render_inspector_panel(
     focused: bool,
     focus_action: Action,
 ) {
-    let border_style = if focused {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let title_style = if focused {
-        TITLE_STYLE.add_modifier(Modifier::REVERSED)
-    } else {
-        TITLE_STYLE
-    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title.to_string())
-        .title_style(title_style)
-        .border_style(border_style);
+        .title_style(app.theme.focus_title(focused))
+        .border_style(app.theme.focus_border(focused))
+        .style(app.theme.root_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.register_click(area.x, area.y, area.width, area.height, focus_action);
@@ -546,7 +559,7 @@ fn render_inspector_panel(
     frame.render_widget(
         // No Wrap here — lines are already width-bounded; Paragraph wrap would
         // desync scroll offsets again.
-        Paragraph::new(window).style(STATUS_STYLE),
+        Paragraph::new(window).style(app.theme.text),
         inner,
     );
 }
@@ -611,7 +624,7 @@ fn bytes_to_display_text(
 /// message metadata reads better as aligned fields than one wrapped prose blob.
 /// Dialog height tracks the field count instead of a fixed percentage, so there's no
 /// leftover blank space below a handful of short lines.
-fn render_replay_overlay(frame: &mut Frame, area: Rect, phase: &ReplayPhase) {
+fn render_replay_overlay(frame: &mut Frame, app: &App, area: Rect, phase: &ReplayPhase) {
     match phase {
         ReplayPhase::Confirm { message } => {
             let headers = if message.headers.is_empty() {
@@ -638,7 +651,9 @@ fn render_replay_overlay(frame: &mut Frame, area: Rect, phase: &ReplayPhase) {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .title("Replay onto the same topic")
-                .title_style(TITLE_STYLE);
+                .title_style(app.theme.title)
+                .border_style(app.theme.border)
+                .style(app.theme.panel_style());
             let inner = block.inner(dialog);
             frame.render_widget(block, dialog);
 
@@ -652,14 +667,16 @@ fn render_replay_overlay(frame: &mut Frame, area: Rect, phase: &ReplayPhase) {
                 .margin(1)
                 .split(inner);
 
-            frame.render_widget(Paragraph::new(fields).style(STATUS_STYLE), rows[0]);
+            frame.render_widget(Paragraph::new(fields).style(app.theme.text), rows[0]);
+            let key = app.theme.secondary.add_modifier(Modifier::BOLD);
+            let mute = app.theme.dim;
             let footer = Line::from(vec![
-                Span::styled("y/Enter", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(": replay raw (byte-identical)   "),
-                Span::styled("e", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(": edit in producer   "),
-                Span::styled("n/Esc", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(": cancel"),
+                Span::styled("y/Enter", key),
+                Span::styled(": replay raw (byte-identical)   ", mute),
+                Span::styled("e", key),
+                Span::styled(": edit in producer   ", mute),
+                Span::styled("n/Esc", key),
+                Span::styled(": cancel", mute),
             ]);
             frame.render_widget(Paragraph::new(footer), rows[2]);
         }

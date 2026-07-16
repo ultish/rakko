@@ -1,10 +1,9 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ProfileCreateAuthChoice, ProfileCreateFocus, ProfileCreateState};
-use crate::ui::theme::{ERROR_STYLE, STATUS_STYLE, TITLE_STYLE};
 use crate::ui::widgets::confirm_dialog::{centered_rect, render_confirm_dialog};
 use crate::ui::widgets::footer::{render_keybind_footer, split_with_footer};
 use crate::ui::widgets::table_nav::render_selectable_list;
@@ -16,16 +15,16 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         let message = Paragraph::new(
             "No profiles configured.\n\nPress n to create one, or q to quit.",
         )
-        .style(STATUS_STYLE)
+        .style(app.theme.status)
         .wrap(Wrap { trim: true })
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Profiles")
-                .title_style(TITLE_STYLE),
+                .title_style(app.theme.title),
         );
         frame.render_widget(message, main);
-        render_keybind_footer(frame, footer, "n: new profile   q: quit");
+        render_keybind_footer(frame, footer, &app.theme, "n: new profile   q: quit");
     } else if !app.config.profiles.is_empty() {
         let items: Vec<Vec<String>> = app
             .config
@@ -57,47 +56,60 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             true,
         );
         render_keybind_footer(
-            frame,
-            footer,
-            "Enter: connect   n: new   e: edit   z: delete   q: quit",
+        frame,
+        footer,
+        &app.theme,
+        "Enter: connect   n: new   e: edit   z: delete   q: quit",
         );
     } else {
         // Empty + wizard open: dim background under the dialog.
         let message = Paragraph::new("Create your first connection profile.")
-            .style(STATUS_STYLE)
+            .style(app.theme.status)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Profiles")
-                    .title_style(TITLE_STYLE),
+                    .title_style(app.theme.title),
             );
         frame.render_widget(message, main);
         render_keybind_footer(
-            frame,
-            footer,
-            "Tab: fields   ←/→: cursor   Enter: save   Esc: quit",
+        frame,
+        footer,
+        &app.theme,
+        "Tab: fields   ←/→: cursor   Enter: save   Esc: quit",
         );
     }
 
     if let Some(state) = app.profile_create.as_ref() {
         // Dialog draws over main+footer; its own footer is inside the modal.
-        render_create_dialog(frame, area, state, app.config.profiles.is_empty());
+        render_create_dialog(frame, app, area, state, app.config.profiles.is_empty());
     }
 
     if let Some(index) = app.profile_delete_confirm {
-        render_delete_confirm(frame, area, app.config.profiles.get(index).map(|p| p.name.as_str()));
+        render_delete_confirm(
+            frame,
+            app,
+            area,
+            app.config.profiles.get(index).map(|p| p.name.as_str()),
+        );
     }
 }
 
-fn render_delete_confirm(frame: &mut Frame, area: Rect, profile_name: Option<&str>) {
+fn render_delete_confirm(frame: &mut Frame, app: &App, area: Rect, profile_name: Option<&str>) {
     let name = profile_name.unwrap_or("(unknown)");
     let body = format!(
         "Delete profile '{name}'?\n\nThis removes it from config.toml and cannot be undone."
     );
-    render_confirm_dialog(frame, area, "Delete profile?", &body, None);
+    render_confirm_dialog(frame, area, &app.theme, "Delete profile?", &body, None);
 }
 
-fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateState, first_run: bool) {
+fn render_create_dialog(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    state: &ProfileCreateState,
+    first_run: bool,
+) {
     // mTLS adds 3 extra rows (CA/cert/key) over the base 4 fields — grow the dialog to
     // fit rather than clipping.
     let dialog = centered_rect(75, 85, area);
@@ -145,7 +157,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
         Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .title_style(TITLE_STYLE),
+            .title_style(app.theme.title),
         dialog,
     );
 
@@ -154,10 +166,11 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     } else {
         "Tab / Shift-Tab: fields   ←/→/Home/End: edit   Enter: save   Esc: cancel"
     };
-    frame.render_widget(Paragraph::new(intro).style(STATUS_STYLE), chunks[0]);
+    frame.render_widget(Paragraph::new(intro).style(app.theme.status), chunks[0]);
 
     render_field(
         frame,
+        app,
         chunks[1],
         "Name",
         &state.display_with_cursor(ProfileCreateFocus::Name),
@@ -165,6 +178,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     );
     render_field(
         frame,
+        app,
         chunks[2],
         "Bootstrap servers",
         &state.display_with_cursor(ProfileCreateFocus::Bootstrap),
@@ -172,6 +186,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     );
     render_field(
         frame,
+        app,
         chunks[3],
         "Auth",
         &state.display_with_cursor(ProfileCreateFocus::Auth),
@@ -182,6 +197,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     if show_ca {
         render_field(
             frame,
+            app,
             chunks[next_row],
             "CA path",
             &state.display_with_cursor(ProfileCreateFocus::CaPath),
@@ -192,6 +208,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     if show_client_cert {
         render_field(
             frame,
+            app,
             chunks[next_row],
             "Client cert path",
             &state.display_with_cursor(ProfileCreateFocus::CertPath),
@@ -200,6 +217,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
         next_row += 1;
         render_field(
             frame,
+            app,
             chunks[next_row],
             "Client key path",
             &state.display_with_cursor(ProfileCreateFocus::KeyPath),
@@ -217,6 +235,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     };
     render_field(
         frame,
+        app,
         chunks[next_row],
         "Schema Registry URL",
         &sr_display,
@@ -227,7 +246,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
     if let Some(err) = &state.error {
         frame.render_widget(
             Paragraph::new(err.as_str())
-                .style(ERROR_STYLE)
+                .style(app.theme.error)
                 .wrap(Wrap { trim: true }),
             chunks[next_row],
         );
@@ -241,7 +260,7 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
         };
         frame.render_widget(
             Paragraph::new(hint)
-                .style(STATUS_STYLE)
+                .style(app.theme.status)
                 .wrap(Wrap { trim: true }),
             chunks[next_row],
         );
@@ -256,23 +275,32 @@ fn render_create_dialog(frame: &mut Frame, area: Rect, state: &ProfileCreateStat
         "Enter: save   Esc: cancel"
     };
     frame.render_widget(
-        Paragraph::new(footer).style(Style::default().add_modifier(Modifier::BOLD)),
+        Paragraph::new(footer).style(app.theme.secondary.add_modifier(Modifier::BOLD)),
         chunks[next_row],
     );
 }
 
-fn render_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
+fn render_field(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    label: &str,
+    value: &str,
+    focused: bool,
+) {
     let style = if focused {
-        Style::default().add_modifier(Modifier::REVERSED)
+        app.theme.text.add_modifier(Modifier::REVERSED)
     } else {
-        Style::default()
+        app.theme.text
     };
     frame.render_widget(
         Paragraph::new(value).style(style).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(label)
-                .title_style(TITLE_STYLE),
+                .title_style(app.theme.focus_title(focused))
+                .border_style(app.theme.focus_border(focused))
+                .style(app.theme.root_style()),
         ),
         area,
     );

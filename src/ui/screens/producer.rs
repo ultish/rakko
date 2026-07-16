@@ -1,23 +1,21 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, ProducerFocus, ProducerInputMode, ProducerState};
 use crate::events::Action;
 use crate::text_field::wrap_lines_for_width;
-use crate::ui::theme::{STATUS_STYLE, TITLE_STYLE};
 use crate::ui::widgets::editor_pane::render_editor_pane;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let Some(state) = app.producer.as_ref() else {
         let placeholder = Paragraph::new("No producer session.")
-            .style(STATUS_STYLE)
+            .style(app.theme.status)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Producer")
-                    .title_style(TITLE_STYLE),
+                    .title_style(app.theme.title),
             );
         frame.render_widget(placeholder, area);
         return;
@@ -33,10 +31,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    render_header(frame, chunks[0], state);
+    render_header(frame, app, chunks[0], state);
     render_fields(frame, app, chunks[1], state);
     render_status(frame, chunks[2], app);
-    render_footer(frame, chunks[3], state);
+    render_footer(frame, app, chunks[3], state);
 }
 
 /// Key and value as side-by-side vertical slices — same shape as the message
@@ -51,10 +49,10 @@ fn render_fields(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState
     render_body(frame, app, cols[1], state);
 }
 
-fn render_header(frame: &mut Frame, area: Rect, state: &ProducerState) {
+fn render_header(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) {
     let mode = mode_label(state.mode);
     let text = format!("Produce → {}  [mode: {mode}]", state.topic);
-    frame.render_widget(Paragraph::new(text).style(TITLE_STYLE), area);
+    frame.render_widget(Paragraph::new(text).style(app.theme.title), area);
 }
 
 fn mode_label(mode: ProducerInputMode) -> &'static str {
@@ -73,7 +71,7 @@ fn render_key(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) {
     } else {
         None
     };
-    render_editor_pane(frame, area, &state.key_input, cursor, title);
+    render_editor_pane(frame, area, &app.theme, &state.key_input, cursor, title);
     app.register_click(area.x, area.y, area.width, area.height, Action::ProducerFocusField(ProducerFocus::Key));
 }
 
@@ -86,10 +84,7 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) 
             } else {
                 None
             };
-            render_editor_pane(
-                frame,
-                area,
-                &state.value_input,
+            render_editor_pane(frame, area, &app.theme, &state.value_input,
                 cursor,
                 if focused {
                     "Value (focused)"
@@ -112,22 +107,14 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) 
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(3), Constraint::Min(2)])
                 .split(area);
-            let border_style = if focused {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
             let block = Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .title_style(if focused {
-                    TITLE_STYLE.add_modifier(Modifier::REVERSED)
-                } else {
-                    TITLE_STYLE
-                })
-                .border_style(border_style);
+                .title_style(app.theme.focus_title(focused))
+                .border_style(app.theme.focus_border(focused))
+                .style(app.theme.root_style());
             frame.render_widget(
-                Paragraph::new(display).style(STATUS_STYLE).block(block),
+                Paragraph::new(display).style(app.theme.text).block(block),
                 chunks[0],
             );
             app.register_click(
@@ -137,7 +124,7 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) 
                 chunks[0].height,
                 Action::ProducerFocusField(ProducerFocus::FilePath),
             );
-            render_scrollable_preview(frame, chunks[1], &state.value_input, state.value_preview_scroll, "Loaded value");
+            render_scrollable_preview(frame, app, chunks[1], &state.value_input, state.value_preview_scroll, "Loaded value");
         }
         ProducerInputMode::ExternalEditor => {
             let hint = "Press Enter to open $EDITOR for the value body.";
@@ -145,9 +132,10 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) 
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(2), Constraint::Min(2)])
                 .split(area);
-            frame.render_widget(Paragraph::new(hint).style(STATUS_STYLE), chunks[0]);
+            frame.render_widget(Paragraph::new(hint).style(app.theme.secondary), chunks[0]);
             render_scrollable_preview(
                 frame,
+                app,
                 chunks[1],
                 &state.value_input,
                 state.value_preview_scroll,
@@ -162,8 +150,14 @@ fn render_body(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) 
 /// inspector's key/value panels (`topic_detail::render_inspector_panel`) — there's
 /// no cursor here to autoscroll toward, so scrolling is driven by
 /// `App::scroll_producer_preview` (PageUp/PageDown, mouse wheel) instead.
-fn render_scrollable_preview(frame: &mut Frame, area: Rect, content: &str, scroll: usize, title: &str) {
-    let block = Block::default().borders(Borders::ALL).title(title).title_style(TITLE_STYLE);
+fn render_scrollable_preview(frame: &mut Frame, app: &App, area: Rect, content: &str, scroll: usize, title: &str) {
+    // Read-only preview: active title, base border + body text.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .title_style(app.theme.title)
+        .border_style(app.theme.border)
+        .style(app.theme.root_style());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -176,25 +170,25 @@ fn render_scrollable_preview(frame: &mut Frame, area: Rect, content: &str, scrol
     } else {
         wrapped[scroll..].join("\n")
     };
-    frame.render_widget(Paragraph::new(window).style(STATUS_STYLE), inner);
+    frame.render_widget(Paragraph::new(window).style(app.theme.text), inner);
 }
 
 fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     let text = app.status_message.clone().unwrap_or_default();
-    frame.render_widget(Paragraph::new(text).style(STATUS_STYLE), area);
+    frame.render_widget(Paragraph::new(text).style(app.theme.status), area);
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, state: &ProducerState) {
+fn render_footer(frame: &mut Frame, app: &App, area: Rect, state: &ProducerState) {
     let text = match state.mode {
         ProducerInputMode::Inline => {
-            "Tab: focus  ←/→/↑/↓/Home/End: cursor  F3/C-m: mode  Enter: newline  F2/C-p: produce  Esc: back"
+            "Tab: focus  ←/→/↑/↓: cursor  C-v: paste  F3/C-m: mode  Enter: newline  F2/C-p: produce  Esc: back"
         }
         ProducerInputMode::FilePath => {
-            "Tab: focus  F3/C-m: mode  Enter: load file  PgUp/PgDn/wheel: scroll preview  F2/C-p: produce  Esc: back"
+            "Tab: focus  C-v: paste  F3/C-m: mode  Enter: load file  PgUp/PgDn: scroll  F2/C-p: produce  Esc: back"
         }
         ProducerInputMode::ExternalEditor => {
-            "F3/C-m: mode  Enter: open $EDITOR  PgUp/PgDn/wheel: scroll preview  F2/C-p: produce  Esc: back"
+            "C-v: paste key  F3/C-m: mode  Enter: open $EDITOR  PgUp/PgDn: scroll  F2/C-p: produce  Esc: back"
         }
     };
-    frame.render_widget(Paragraph::new(text).style(STATUS_STYLE), area);
+    frame.render_widget(Paragraph::new(text).style(app.theme.secondary), area);
 }

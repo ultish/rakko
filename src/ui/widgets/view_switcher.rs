@@ -10,7 +10,7 @@ use ratatui::Frame;
 
 use crate::app::{App, Screen};
 use crate::events::Action;
-use crate::ui::theme::{SELECTED_ROW_STYLE, STATUS_STYLE};
+
 
 const ENTRIES: [(&str, &str, Action); 3] = [
     ("1", "Topics", Action::SwitchToTopics),
@@ -49,7 +49,12 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::raw(" ".repeat(GAP as usize)));
             x += GAP;
         }
-        let style = if i == active { SELECTED_ROW_STYLE } else { STATUS_STYLE };
+        let style = if i == active {
+            app.theme.selected_row
+        } else {
+            // Inactive tabs: secondary cyan, quieter than purple selection.
+            app.theme.secondary
+        };
         let text = format!("{key} {label}");
         let width = text.chars().count() as u16;
         spans.push(Span::styled(text, style));

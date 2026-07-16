@@ -1,12 +1,19 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::ui::theme::{ERROR_STYLE, STATUS_STYLE, TITLE_STYLE};
+use crate::ui::theme::Theme;
 
 /// Centered yes/no modal. Used for destructive actions (offset reset, bulk import).
-pub fn render_confirm_dialog(frame: &mut Frame, area: Rect, title: &str, body: &str, warning: Option<&str>) {
+pub fn render_confirm_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    title: &str,
+    body: &str,
+    warning: Option<&str>,
+) {
     let dialog = centered_rect(60, 40, area);
     frame.render_widget(Clear, dialog);
 
@@ -20,28 +27,31 @@ pub fn render_confirm_dialog(frame: &mut Frame, area: Rect, title: &str, body: &
         .margin(1)
         .split(dialog);
 
+    // Active title (purple), base grey border, base body text, secondary footer keys.
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_style(TITLE_STYLE);
+        .title_style(theme.title)
+        .border_style(theme.border)
+        .style(theme.panel_style());
     frame.render_widget(block, dialog);
 
     frame.render_widget(
-        Paragraph::new(body).style(STATUS_STYLE).wrap(Wrap { trim: true }),
+        Paragraph::new(body).style(theme.text).wrap(Wrap { trim: true }),
         chunks[0],
     );
 
     if let Some(warning) = warning {
         frame.render_widget(
             Paragraph::new(warning)
-                .style(ERROR_STYLE)
+                .style(theme.error)
                 .wrap(Wrap { trim: true }),
             chunks[1],
         );
     }
 
     let footer = Paragraph::new("y: confirm   n/Esc: cancel")
-        .style(Style::default().add_modifier(Modifier::BOLD));
+        .style(theme.secondary.add_modifier(Modifier::BOLD));
     frame.render_widget(footer, chunks[2]);
 }
 
