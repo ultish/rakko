@@ -1112,9 +1112,8 @@ impl App {
                     self.banner_frame = 0;
                 }
                 self.persist_ui_prefs();
-                if self.status_message.as_deref().is_none_or(|s| !s.starts_with("failed to save")) {
-                    self.status_message = Some(format!("banner: {}.", self.banner_mode.label()));
-                }
+                // Mode is visible on the banner itself — no status toast.
+                // (persist_ui_prefs still sets status if the write fails.)
                 vec![]
             }
             Action::CycleTheme => {

@@ -39,14 +39,6 @@ impl BannerMode {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            BannerMode::Wave => "wave",
-            BannerMode::Ms => "ms",
-            BannerMode::Fps => "fps",
-            BannerMode::Off => "off",
-        }
-    }
 }
 
 /// Appearance / TUI preferences under `[ui]` — separate from cluster profiles.

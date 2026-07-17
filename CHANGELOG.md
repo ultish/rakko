@@ -11,6 +11,13 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-07-17
+
+### Fixed
+
+- Cycling the banner with **A** no longer leaves a sticky `banner: …` toast on
+  screen. The mode is already shown on the banner strip itself.
+
 ## [0.13.1] - 2026-07-16
 
 ### Changed

@@ -704,21 +704,25 @@ fn cycle_banner_mode_goes_wave_ms_fps_off_and_back() {
 
     app.update(Action::CycleBannerMode);
     assert_eq!(app.banner_mode, BannerMode::Ms);
+    assert!(app.status_message.is_none(), "banner cycle should not toast");
     app.update(Action::BannerTick);
     assert_eq!(app.banner_frame, 2); // still ticks — diagnostic modes animate
 
     app.update(Action::CycleBannerMode);
     assert_eq!(app.banner_mode, BannerMode::Fps);
+    assert!(app.status_message.is_none());
     app.update(Action::BannerTick);
     assert_eq!(app.banner_frame, 3);
 
     app.update(Action::CycleBannerMode);
     assert_eq!(app.banner_mode, BannerMode::Off);
+    assert!(app.status_message.is_none());
     app.update(Action::BannerTick);
     assert_eq!(app.banner_frame, 0); // Off freezes and resets
 
     app.update(Action::CycleBannerMode);
     assert_eq!(app.banner_mode, BannerMode::Wave); // cycles back around
+    assert!(app.status_message.is_none());
 }
 
 #[test]
