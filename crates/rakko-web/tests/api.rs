@@ -422,3 +422,78 @@ async fn produce_replay_export_import_groups_brokers_and_tail() {
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0]["value"]["preview"], "{\"n\":50}");
 }
+
+#[tokio::test]
+#[ignore = "requires `docker compose up -d`"]
+async fn delete_records_tombstone_download_and_schema_management() {
+    let app = app();
+    let topic = unique("del");
+    create_topic(&topic, 1).await;
+    let base = format!("/api/p/local/topics/{topic}");
+    produce(&topic, (0..5).map(|i| (format!("k{i}"), format!("{{\"i\":{i}}}").into_bytes())).collect()).await;
+
+    // Download: raw bytes, decoded text, and the whole record as importable JSONL.
+    let (st, bytes) = call_raw(&app, Method::GET, &format!("{base}/messages/0/3/download?part=value"), "x/y", vec![]).await;
+    assert_eq!((st, bytes.as_slice()), (StatusCode::OK, &br#"{"i":3}"#[..]));
+    let (_, bytes) = call_raw(&app, Method::GET, &format!("{base}/messages/0/3/download?part=key&format=decoded"), "x/y", vec![]).await;
+    assert_eq!(bytes, b"k3");
+    let (_, bytes) = call_raw(&app, Method::GET, &format!("{base}/messages/0/3/download?part=message"), "x/y", vec![]).await;
+    let line = rakko_core::export::parse_jsonl_line(std::str::from_utf8(&bytes).unwrap()).unwrap();
+    assert_eq!((line.offset, line.key.as_deref(), line.value.as_deref()), (3, Some(&b"k3"[..]), Some(&br#"{"i":3}"#[..])));
+    let (st, _) = call_raw(&app, Method::GET, &format!("{base}/messages/0/3/download?part=nope"), "x/y", vec![]).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    // Tombstone: same key, null value, appended.
+    let (st, body) = call(&app, Method::POST, &format!("{base}/messages/0/3/tombstone"), None, None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["offset"], 5);
+    let (st, _) = call_raw(&app, Method::GET, &format!("{base}/messages/0/5/download?part=value"), "x/y", vec![]).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "a null value has nothing to download");
+
+    // Delete records needs the topic name typed, then moves the start forward.
+    let del = |confirm: &str| json!({"partition": 0, "before_offset": 3, "confirm": confirm});
+    let (st, _) = call(&app, Method::POST, &format!("{base}/delete-records"), None, Some(del("nope"))).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, body) = call(&app, Method::POST, &format!("{base}/delete-records"), None, Some(del(&topic))).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["low"], 3);
+    let (_, parts) = call(&app, Method::GET, &format!("{base}/partitions"), None, None).await;
+    assert_eq!((parts[0]["low"].as_i64(), parts[0]["messages"].as_i64()), (Some(3), Some(3)));
+
+    // Schemas: register, list, read, compatibility, evolve, delete.
+    let subject = unique("subj");
+    let v1 = r#"{"type":"record","name":"R","fields":[{"name":"a","type":"string"}]}"#;
+    let v2 = r#"{"type":"record","name":"R","fields":[{"name":"a","type":"string"},{"name":"b","type":"int","default":0}]}"#;
+    let bad = r#"{"type":"record","name":"R","fields":[{"name":"a","type":"int"}]}"#;
+    let s = format!("/api/p/local/schemas/{subject}");
+    let (st, body) = call(&app, Method::POST, &s, None, Some(json!({"schema": v1}))).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, subjects) = call(&app, Method::GET, "/api/p/local/schemas", None, None).await;
+    assert!(subjects.as_array().unwrap().iter().any(|x| *x == subject.as_str()));
+    let (_, ok) = call(&app, Method::POST, &format!("{s}/check"), None, Some(json!({"schema": v2}))).await;
+    assert_eq!(ok["compatible"], true);
+    let (_, no) = call(&app, Method::POST, &format!("{s}/check"), None, Some(json!({"schema": bad}))).await;
+    assert_eq!(no["compatible"], false);
+    let (st, _) = call(&app, Method::POST, &s, None, Some(json!({"schema": "not avro"}))).await;
+    assert_ne!(st, StatusCode::OK, "an invalid schema is rejected by the registry");
+    call(&app, Method::POST, &s, None, Some(json!({"schema": v2}))).await;
+    let (_, versions) = call(&app, Method::GET, &s, None, None).await;
+    assert_eq!(versions, json!([1, 2]));
+    let (_, latest) = call(&app, Method::GET, &format!("{s}/versions/latest"), None, None).await;
+    assert_eq!(latest["version"], 2);
+    assert!(latest["schema"].as_str().unwrap().contains("\"b\""));
+    let (st, _) = call(&app, Method::PUT, &format!("{s}/config"), None, Some(json!({"level": "FULL"}))).await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, cfg) = call(&app, Method::GET, &format!("{s}/config"), None, None).await;
+    assert_eq!(cfg["level"], "FULL");
+    let (st, _) = call(&app, Method::DELETE, &format!("{s}/versions/1?confirm=wrong"), None, None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, body) = call(&app, Method::DELETE, &format!("{s}/versions/1?confirm={subject}"), None, None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, versions) = call(&app, Method::GET, &s, None, None).await;
+    assert_eq!(versions, json!([2]));
+    let (st, body) = call(&app, Method::DELETE, &format!("{s}?confirm={subject}&permanent=true"), None, None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, subjects) = call(&app, Method::GET, "/api/p/local/schemas", None, None).await;
+    assert!(!subjects.as_array().unwrap().iter().any(|x| *x == subject.as_str()));
+}

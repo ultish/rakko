@@ -31,6 +31,16 @@ over dumping raw commit subjects.
   `.github/workflows/web-image.yml`): UBI 9 based, with an air-gapped `docker save`
   archive attached to releases and an example `deploy/kubernetes.yaml`.
 
+- **Schema management in the web UI**: browse subjects and versions, view a schema,
+  register a new subject or version (with a compatibility check and references),
+  delete a version or subject (soft or permanent, typed confirmation), and set the
+  compatibility level per subject or globally.
+
+- **Delete and download in the web UI**: tombstone a message's key, or permanently
+  delete everything before an offset in a partition (Kafka can't delete one message in
+  place); download a message's key/value as raw bytes or decoded text, or the whole
+  record as re-importable JSONL.
+
 - Query autocomplete now offers `key` / `value` on an empty query and right after
   `AND` / `OR` / `(` (web: also when the box is focused), instead of only once you've
   started typing a root word.

@@ -206,3 +206,21 @@ code { font-family: var(--mono); color: var(--accent); }
 /* otter placeholder */
 .placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
 .placeholder img { height: min(34vh, 280px); border-radius: 14px; opacity: .92; border: 1px solid var(--border); }
+
+/* download / delete menus in the detail panel */
+.menu { position: relative; }
+.menu summary { list-style: none; cursor: pointer; border: 1px solid var(--border); border-radius: 6px; padding: 5px 11px; background: var(--panel); user-select: none; }
+.menu summary::-webkit-details-marker { display: none; }
+.menu summary:hover, .menu[open] summary { border-color: var(--accent); }
+.menu > div { position: absolute; z-index: 6; top: calc(100% + 4px); left: 0; min-width: 270px; display: flex; flex-direction: column; padding: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px #0006; }
+.menu > div a, .menu > div button { text-align: left; background: none; border: 0; border-radius: 4px; padding: 6px 10px; color: var(--text); text-decoration: none; font-size: 13px; }
+.menu > div a:hover, .menu > div button:hover { background: var(--accent-bg); color: var(--accent); }
+
+/* schemas */
+.schema { margin: 0 12px; font: 12.5px/1.5 var(--mono); white-space: pre; overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.versions { margin: 4px 12px 0; flex-wrap: wrap; }
+.compat { display: flex; align-items: center; gap: 8px; }
+.check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
+.narrow { width: 64px; flex: none !important; }
+.sidebar .new { align-self: flex-start; margin: 0 10px 4px; }
+.placeholder .compat { margin-top: 10px; }

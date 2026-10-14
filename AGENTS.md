@@ -51,7 +51,7 @@ at the crate root, so TUI code still says `crate::kafka::…`, `crate::config::�
   are session-owned and keep running independent of any HTTP request (`scan.rs`);
   schema cache is shared per profile (`runtime.rs`); details are fetched on demand
   and served in ranges (`details.rs`); groups/brokers/produce/replay/export/import/live
-  tail are in `ops.rs` (authentication is the deployment's job — a Bitnami-managed proxy in front; destructive calls need a typed `confirm`). End-to-end tests are in `tests/api.rs`
+  tail, schema registry management, message download and delete are in `ops.rs` (authentication is the deployment's job — a Bitnami-managed proxy in front; destructive calls need a typed `confirm`). End-to-end tests are in `tests/api.rs`
   (`#[ignore]`, need `docker compose up -d`). Build the UI with
   `npm --prefix crates/rakko-web/web ci && npm --prefix crates/rakko-web/web run build`.
 - `src/app/` / `src/events.rs` — the Elm-style `App`/`Action`/`AppEvent`/`Command`

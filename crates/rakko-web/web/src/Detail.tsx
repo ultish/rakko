@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type Detail as DetailT, type Summary } from "./api";
+import { api, urls, type Detail as DetailT, type Summary } from "./api";
+import { Dialog } from "./Dialog";
 import { formatBytes, formatTime } from "./format";
 
 type Props = {
@@ -68,6 +69,18 @@ export function Detail({ profile, topic, message, onClose, onProduceFrom, onRepl
   const [value, setValue] = useState<PartState>(empty);
   const [headers, setHeaders] = useState<[string, string][]>([]);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const tombstone = async () => {
+    if (!window.confirm(`Send a tombstone (null value) for this message's key to ${topic}? On a compacted topic this deletes the key; otherwise it is just another message.`)) return;
+    try {
+      const r = await api.tombstone(profile, topic, message);
+      setNotice({ kind: "ok", text: `Tombstone sent to ${topic}/${r.partition}@${r.offset}` });
+      onReplayed();
+    } catch (e) {
+      setNotice({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    }
+  };
 
   const replay = async () => {
     if (!window.confirm(`Re-send this message's exact bytes to ${topic}? It is appended as a new message.`)) return;
@@ -145,6 +158,23 @@ export function Detail({ profile, topic, message, onClose, onProduceFrom, onRepl
         >
           Edit &amp; produce…
         </button>
+        <details className="menu">
+          <summary>Download ▾</summary>
+          <div>
+            <a href={urls.download(profile, topic, message, "value", "raw")}>value — raw bytes</a>
+            <a href={urls.download(profile, topic, message, "value", "decoded")}>value — decoded (JSON/text)</a>
+            <a href={urls.download(profile, topic, message, "key", "raw")}>key — raw bytes</a>
+            <a href={urls.download(profile, topic, message, "key", "decoded")}>key — decoded</a>
+            <a href={urls.download(profile, topic, message, "message")}>whole message (JSONL, re-importable)</a>
+          </div>
+        </details>
+        <details className="menu">
+          <summary>Delete ▾</summary>
+          <div>
+            <button onClick={() => void tombstone()}>Tombstone this key…</button>
+            <button onClick={() => setDeleting(true)}>Delete this and all earlier in partition…</button>
+          </div>
+        </details>
         {notice && <span className={notice.kind === "ok" ? "ok small" : "err small"}>{notice.text}</span>}
       </div>
       {headers.length > 0 && (
@@ -164,8 +194,80 @@ export function Detail({ profile, topic, message, onClose, onProduceFrom, onRepl
           </table>
         </section>
       )}
+      {deleting && (
+        <DeleteRecordsDialog
+          profile={profile}
+          topic={topic}
+          message={message}
+          onClose={() => setDeleting(false)}
+          onDone={(text) => {
+            setNotice({ kind: "ok", text });
+            onReplayed();
+          }}
+        />
+      )}
       <Part title="Key" state={key} onMore={more("key", key, setKey)} />
       <Part title="Value" state={value} onMore={more("value", value, setValue)} />
     </aside>
+  );
+}
+
+function DeleteRecordsDialog({
+  profile,
+  topic,
+  message,
+  onClose,
+  onDone,
+}: {
+  profile: string;
+  topic: string;
+  message: Summary;
+  onClose: () => void;
+  onDone: (text: string) => void;
+}) {
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.deleteRecords(profile, topic, message.partition, message.offset + 1);
+      onDone(`Deleted partition ${message.partition} up to offset ${message.offset}; it now starts at ${r.low}`);
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog title="Delete records" onClose={onClose}>
+      <form
+        className="dialog-body"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run();
+        }}
+      >
+        <p>
+          Kafka cannot delete a single message in the middle of a log. This permanently deletes <strong>every message in partition{" "}
+          {message.partition} from its start up to and including offset {message.offset}</strong>. It cannot be undone, and consumers positioned in that range will skip ahead.
+        </p>
+        <label className="confirm">
+          Type <code>{topic}</code> to confirm
+          <input value={confirm} onChange={(e) => setConfirm(e.target.value)} spellCheck={false} />
+        </label>
+        {error && <div className="err">{error}</div>}
+        <footer>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="danger" disabled={busy || confirm !== topic}>
+            {busy ? "Deleting…" : "Delete records"}
+          </button>
+        </footer>
+      </form>
+    </Dialog>
   );
 }

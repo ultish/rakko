@@ -4,15 +4,16 @@ import { Brokers } from "./Brokers";
 import { Detail } from "./Detail";
 import { formatCount } from "./format";
 import { GroupList, GroupView } from "./Groups";
+import { RegisterDialog, SchemasHome, SubjectList, SubjectView } from "./Schemas";
 import { TopicView, type ProduceInitial } from "./TopicView";
 
-type View = "topics" | "groups" | "brokers";
+type View = "topics" | "groups" | "schemas" | "brokers";
 type Route = { profile: string; view: View; item: string };
 
 // #/<profile>/<topics|groups|brokers>/<item>
 function readRoute(): Route {
   const [profile = "", view = "topics", item = ""] = window.location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
-  return { profile, view: view === "groups" || view === "brokers" ? view : "topics", item };
+  return { profile, view: view === "groups" || view === "schemas" || view === "brokers" ? view : "topics", item };
 }
 
 function writeRoute(r: Route) {
@@ -31,6 +32,8 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Summary | null>(null);
   const [produceFrom, setProduceFrom] = useState<ProduceInitial | null>(null);
+  const [subjectsKey, setSubjectsKey] = useState(0);
+  const [newSubject, setNewSubject] = useState(false);
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute());
@@ -84,7 +87,7 @@ export function App() {
           ))}
         </select>
         <nav className="tabs" aria-label="sections">
-          {(["topics", "groups", "brokers"] as View[]).map((v) => (
+          {(["topics", "groups", "schemas", "brokers"] as View[]).map((v) => (
             <button key={v} className={route.view === v ? "on" : undefined} aria-current={route.view === v} onClick={() => go(v)}>
               {v}
             </button>
@@ -113,6 +116,16 @@ export function App() {
                 ))}
               </ul>
             </>
+          ) : route.view === "schemas" ? (
+            route.profile && (
+              <SubjectList
+                profile={route.profile}
+                selected={route.item}
+                onSelect={(x) => go("schemas", x)}
+                refreshKey={subjectsKey}
+                onCreate={() => setNewSubject(true)}
+              />
+            )
           ) : (
             route.profile && <GroupList profile={route.profile} selected={route.item} onSelect={(g) => go("groups", g)} />
           )}
@@ -124,6 +137,17 @@ export function App() {
           <Placeholder text="No cluster profiles are configured." />
         ) : route.view === "brokers" ? (
           <Brokers profile={route.profile} />
+        ) : route.view === "schemas" ? (
+          route.item ? (
+            <SubjectView
+              profile={route.profile}
+              subject={route.item}
+              onChanged={() => setSubjectsKey((k) => k + 1)}
+              onGone={() => go("schemas")}
+            />
+          ) : (
+            <SchemasHome profile={route.profile} onChanged={() => setSubjectsKey((k) => k + 1)} onCreated={(x) => go("schemas", x)} />
+          )
         ) : route.view === "groups" ? (
           route.item ? (
             <GroupView profile={route.profile} group={route.item} onOpenTopic={(t) => go("topics", t)} />
@@ -145,6 +169,17 @@ export function App() {
           <Placeholder text="Pick a topic." />
         )}
       </main>
+
+      {newSubject && route.profile && (
+        <RegisterDialog
+          profile={route.profile}
+          onClose={() => setNewSubject(false)}
+          onDone={(x) => {
+            setSubjectsKey((k) => k + 1);
+            go("schemas", x);
+          }}
+        />
+      )}
 
       {selected && showTopic && (
         <Detail

@@ -69,6 +69,19 @@ export type Brokers = {
 export type Field = { text?: string; base64?: string };
 export type ProduceBody = { key?: Field; value?: Field; headers: { key: string; value: string }[] };
 
+export type SchemaReference = { name: string; subject: string; version: number };
+
+export type SubjectVersion = {
+  subject: string;
+  version: number;
+  id: number;
+  schemaType: string;
+  schema: string;
+  references: SchemaReference[];
+};
+
+export type SchemaDraft = { schema: string; schema_type: string; references: SchemaReference[] };
+
 export type Completion = { prefix: string; candidates: string[] };
 
 // Scans belong to this browser's session on the server, so concurrent users never share a filter.
@@ -118,11 +131,44 @@ function filterParams(text: string, query: string): string {
 export const urls = {
   export: (profile: string, topic: string, text: string, query: string) =>
     `/api${base(profile, topic)}/export?${filterParams(text, query)}`,
+  /** `part`: key | value | message; `format`: raw | decoded (ignored for message). */
+  download: (profile: string, topic: string, s: Summary, part: "key" | "value" | "message", format: "raw" | "decoded" = "raw") =>
+    `/api${base(profile, topic)}/messages/${s.partition}/${s.offset}/download?part=${part}&format=${format}`,
   tail: (profile: string, topic: string, text: string, query: string) =>
     `/api${base(profile, topic)}/tail?${filterParams(text, query)}`,
 };
 
 export const api = {
+  tombstone: (profile: string, topic: string, s: Summary) =>
+    request<{ partition: number; offset: number }>(`${base(profile, topic)}/messages/${s.partition}/${s.offset}/tombstone`, {
+      method: "POST",
+    }),
+  deleteRecords: (profile: string, topic: string, partition: number, beforeOffset: number) =>
+    request<{ low: number }>(`${base(profile, topic)}/delete-records`, {
+      method: "POST",
+      body: JSON.stringify({ partition, before_offset: beforeOffset, confirm: topic }),
+    }),
+  subjects: (profile: string) => request<string[]>(`/p/${enc(profile)}/schemas`),
+  versions: (profile: string, subject: string) => request<number[]>(`/p/${enc(profile)}/schemas/${enc(subject)}`),
+  schemaVersion: (profile: string, subject: string, version: number | "latest") =>
+    request<SubjectVersion>(`/p/${enc(profile)}/schemas/${enc(subject)}/versions/${version}`),
+  checkSchema: (profile: string, subject: string, d: SchemaDraft) =>
+    request<{ compatible: boolean }>(`/p/${enc(profile)}/schemas/${enc(subject)}/check`, { method: "POST", body: JSON.stringify(d) }),
+  registerSchema: (profile: string, subject: string, d: SchemaDraft) =>
+    request<{ id: number }>(`/p/${enc(profile)}/schemas/${enc(subject)}`, { method: "POST", body: JSON.stringify(d) }),
+  deleteSchemaVersion: (profile: string, subject: string, version: number, permanent: boolean) =>
+    request<unknown>(`/p/${enc(profile)}/schemas/${enc(subject)}/versions/${version}?permanent=${permanent}&confirm=${enc(subject)}`, {
+      method: "DELETE",
+    }),
+  deleteSubject: (profile: string, subject: string, permanent: boolean) =>
+    request<unknown>(`/p/${enc(profile)}/schemas/${enc(subject)}?permanent=${permanent}&confirm=${enc(subject)}`, { method: "DELETE" }),
+  compatibility: (profile: string, subject?: string) =>
+    request<{ level: string }>(`/p/${enc(profile)}/${subject ? `schemas/${enc(subject)}/config` : "schema-config"}`),
+  setCompatibility: (profile: string, level: string, subject?: string) =>
+    request<{ level: string }>(`/p/${enc(profile)}/${subject ? `schemas/${enc(subject)}/config` : "schema-config"}`, {
+      method: "PUT",
+      body: JSON.stringify({ level }),
+    }),
   groups: (profile: string) => request<Group[]>(`/p/${enc(profile)}/groups`),
   group: (profile: string, group: string) => request<GroupDetail>(`/p/${enc(profile)}/groups/${enc(group)}`),
   resetGroup: (profile: string, group: string, target: ResetTarget, partitions?: { topic: string; partition: number }[]) =>

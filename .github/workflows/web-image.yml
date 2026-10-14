@@ -29,6 +29,8 @@ jobs:
           [[ "$GITHUB_REF_TYPE" == "tag" ]] || version="dev-${GITHUB_SHA::7}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-web" >> "$GITHUB_OUTPUT"
+          # Pre-release tags (v1.2.3-rc.1) never move :latest.
+          if [[ "$version" == *-* ]]; then echo "latest=false" >> "$GITHUB_OUTPUT"; else echo "latest=true" >> "$GITHUB_OUTPUT"; fi
 
       - uses: docker/setup-buildx-action@v3
 
@@ -50,7 +52,7 @@ jobs:
           load: ${{ github.ref_type != 'tag' && !inputs.push }}
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.latest == 'true' && format('{0}:latest', steps.meta.outputs.image) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -61,6 +63,11 @@ jobs:
           archive="rakko-web-${{ steps.meta.outputs.version }}-linux-amd64.tar.gz"
           docker save "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}" | gzip -9 > "$archive"
           sha256sum "$archive" > "$archive.sha256"
-          gh release upload "$GITHUB_REF_NAME" "$archive" "$archive.sha256" --clobber
+          # Releases are cut by hand; only attach if one exists for this tag.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$archive" "$archive.sha256" --clobber
+          else
+            echo "::notice::no GitHub Release for $GITHUB_REF_NAME yet; archive not attached (image was pushed)"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}

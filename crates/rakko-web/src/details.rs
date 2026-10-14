@@ -47,6 +47,11 @@ fn weight(m: &RawMessage) -> usize {
 }
 
 impl DetailCache {
+    /// Forgets everything (after records were deleted, cached copies would be stale).
+    pub fn clear(&self) {
+        self.entries.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
     fn lookup(&self, key: &Key) -> Option<Arc<DetailEntry>> {
         let entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         entries.iter().find(|(k, _)| k == key).map(|(_, e)| e.clone())

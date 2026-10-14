@@ -20,7 +20,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use futures::stream::{self, Stream};
 use rakko_core::export::{message_to_jsonl_line, parse_jsonl_line};
-use rakko_core::kafka::admin::{fetch_broker_configs, list_brokers};
+use rakko_core::kafka::admin::{delete_records_before, fetch_broker_configs, list_brokers};
+use rakko_core::kafka::schema_admin::{self, SchemaReference};
 use rakko_core::kafka::consumer::{fetch_message, run_tail, BrowseEvent};
 use rakko_core::kafka::group_offsets::{describe_group, list_groups, reset_group_offsets, OffsetResetTarget};
 use rakko_core::kafka::producer::RawProducer;
@@ -61,6 +62,21 @@ pub fn router() -> Router<Arc<AppState>> {
             post(import).layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT)),
         )
         .route("/p/{profile}/topics/{topic}/tail", get(tail))
+        .route("/p/{profile}/topics/{topic}/messages/{partition}/{offset}/download", get(download))
+        .route("/p/{profile}/topics/{topic}/messages/{partition}/{offset}/tombstone", post(tombstone))
+        .route("/p/{profile}/topics/{topic}/delete-records", post(delete_records))
+        .route("/p/{profile}/schemas", get(schema_subjects))
+        .route(
+            "/p/{profile}/schemas/{subject}",
+            get(schema_versions).post(schema_register).delete(schema_delete_subject),
+        )
+        .route("/p/{profile}/schemas/{subject}/check", post(schema_check))
+        .route("/p/{profile}/schema-config", get(schema_config_global).put(schema_config_set_global))
+        .route("/p/{profile}/schemas/{subject}/config", get(schema_config).put(schema_config_set))
+        .route(
+            "/p/{profile}/schemas/{subject}/versions/{version}",
+            get(schema_version).delete(schema_delete_version),
+        )
 }
 
 fn profile(state: &AppState, name: &str) -> Result<Arc<crate::runtime::ProfileRuntime>, ApiError> {
@@ -474,4 +490,260 @@ async fn tail(
         Some((Ok(event), (rx, guard)))
     });
     Ok(Sse::new(events).keep_alive(KeepAlive::default()))
+}
+
+// ---------------------------------------------------------------- download
+
+#[derive(Deserialize)]
+struct DownloadQuery {
+    /// `key`, `value`, or `message` (the whole record as one re-importable JSONL line).
+    part: String,
+    /// `raw` (the exact wire bytes) or `decoded` (e.g. Avro rendered as JSON).
+    #[serde(default = "default_raw")]
+    format: String,
+}
+
+fn default_raw() -> String {
+    "raw".into()
+}
+
+fn attachment(body: Vec<u8>, content_type: &'static str, filename: &str) -> Response {
+    let mut response = Body::from(body).into_response();
+    let h = response.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    let safe = filename.replace(['"', '/', '\\'], "_");
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{safe}\"")) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    response
+}
+
+/// The full, unabridged content of a message (no chunking, no preview caps).
+async fn download(
+    State(state): Shared,
+    Path((p, topic, partition, offset)): Path<(String, String, i32, i64)>,
+    Query(q): Query<DownloadQuery>,
+) -> Result<Response, ApiError> {
+    use crate::details::Part;
+    let rt = profile(&state, &p)?;
+    let entry = state
+        .details
+        .get(&rt, &topic, partition, offset)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("{topic}/{partition}@{offset} no longer exists")))?;
+    let stem = format!("{topic}-{partition}-{offset}");
+    if q.part == "message" {
+        let mut line = message_to_jsonl_line(&entry.message, None)?;
+        line.push('\n');
+        return Ok(attachment(line.into_bytes(), "application/x-ndjson", &format!("{stem}.jsonl")));
+    }
+    let part = match q.part.as_str() {
+        "key" => Part::Key,
+        "value" => Part::Value,
+        other => return Err(ApiError::bad_request(format!("part must be key, value or message, got '{other}'"))),
+    };
+    let raw = match part {
+        Part::Key => entry.message.key.clone(),
+        Part::Value => entry.message.value.clone(),
+    };
+    let Some(raw) = raw else {
+        return Err(ApiError::not_found(format!("the {} is null", q.part)));
+    };
+    match q.format.as_str() {
+        "raw" => Ok(attachment(raw, "application/octet-stream", &format!("{stem}.{}.bin", q.part))),
+        "decoded" => {
+            let rendered = entry
+                .render(&rt, part)
+                .await?
+                .ok_or_else(|| ApiError::not_found(format!("the {} is null", q.part)))?;
+            let (ct, ext) = if rendered.format == "raw" { ("text/plain; charset=utf-8", "txt") } else { ("application/json", "json") };
+            Ok(attachment(rendered.text.clone().into_bytes(), ct, &format!("{stem}.{}.{ext}", q.part)))
+        }
+        other => Err(ApiError::bad_request(format!("format must be raw or decoded, got '{other}'"))),
+    }
+}
+
+// ---------------------------------------------------------------- delete
+
+/// Kafka can't delete a record in place. On a compacted topic a null-value record with
+/// the same key makes compaction drop the key; this sends exactly that.
+async fn tombstone(
+    State(state): Shared,
+    Path((p, topic, partition, offset)): Path<(String, String, i32, i64)>,
+) -> ApiResult<Value> {
+    let rt = profile(&state, &p)?;
+    let m = fetch_message(&rt.profile, &topic, partition, offset)
+        .await?
+        .ok_or_else(|| ApiError::not_found(format!("{topic}/{partition}@{offset} no longer exists")))?;
+    let key = m.key.ok_or_else(|| ApiError::bad_request("this message has no key, so there is nothing to tombstone"))?;
+    let (np, no) = RawProducer::new(&rt.profile)?.send(&topic, Some(&key), None, &[]).await?;
+    Ok(Json(json!({ "partition": np, "offset": no })))
+}
+
+#[derive(Deserialize)]
+struct DeleteRecordsBody {
+    partition: i32,
+    /// Everything below this offset is deleted permanently.
+    before_offset: i64,
+    /// Must equal the topic name.
+    confirm: String,
+}
+
+async fn delete_records(
+    State(state): Shared,
+    Path((p, topic)): Path<(String, String)>,
+    Json(body): Json<DeleteRecordsBody>,
+) -> ApiResult<Value> {
+    if body.confirm != topic {
+        return Err(ApiError::bad_request("confirm must equal the topic name"));
+    }
+    if body.before_offset < 0 {
+        return Err(ApiError::bad_request("before_offset must be >= 0"));
+    }
+    let rt = profile(&state, &p)?;
+    let low = delete_records_before(&rt.profile, &topic, body.partition, body.before_offset).await?;
+    tracing::info!("deleted records below {}/{}@{} on profile {p}", topic, body.partition, body.before_offset);
+    state.details.clear();
+    Ok(Json(json!({ "low": low })))
+}
+
+// ---------------------------------------------------------------- schema registry
+
+fn registry_url(rt: &crate::runtime::ProfileRuntime) -> Result<String, ApiError> {
+    rt.profile
+        .schema_registry_url
+        .clone()
+        .ok_or_else(|| ApiError::bad_request(format!("profile '{}' has no schema registry configured", rt.name)))
+}
+
+async fn schema_subjects(State(state): Shared, Path(p): Path<String>) -> ApiResult<Vec<String>> {
+    let rt = profile(&state, &p)?;
+    Ok(Json(schema_admin::list_subjects(&registry_url(&rt)?).await?))
+}
+
+async fn schema_versions(State(state): Shared, Path((p, subject)): Path<(String, String)>) -> ApiResult<Vec<i64>> {
+    let rt = profile(&state, &p)?;
+    Ok(Json(schema_admin::list_versions(&registry_url(&rt)?, &subject).await?))
+}
+
+async fn schema_version(
+    State(state): Shared,
+    Path((p, subject, version)): Path<(String, String, String)>,
+) -> ApiResult<schema_admin::SubjectVersion> {
+    let rt = profile(&state, &p)?;
+    Ok(Json(schema_admin::get_version(&registry_url(&rt)?, &subject, &version).await?))
+}
+
+#[derive(Deserialize)]
+struct SchemaBody {
+    schema: String,
+    #[serde(default = "default_schema_type")]
+    schema_type: String,
+    #[serde(default)]
+    references: Vec<SchemaReference>,
+}
+
+fn default_schema_type() -> String {
+    "AVRO".into()
+}
+
+async fn schema_check(
+    State(state): Shared,
+    Path((p, subject)): Path<(String, String)>,
+    Json(b): Json<SchemaBody>,
+) -> ApiResult<Value> {
+    let rt = profile(&state, &p)?;
+    let ok = schema_admin::check_compatibility(&registry_url(&rt)?, &subject, &b.schema_type, &b.schema, &b.references).await?;
+    Ok(Json(json!({ "compatible": ok })))
+}
+
+async fn schema_register(
+    State(state): Shared,
+    Path((p, subject)): Path<(String, String)>,
+    Json(b): Json<SchemaBody>,
+) -> ApiResult<Value> {
+    let rt = profile(&state, &p)?;
+    let id = schema_admin::register(&registry_url(&rt)?, &subject, &b.schema_type, &b.schema, &b.references).await?;
+    tracing::info!("registered schema id {id} under subject {subject} on profile {p}");
+    Ok(Json(json!({ "id": id })))
+}
+
+#[derive(Deserialize)]
+struct DeleteSchemaQuery {
+    #[serde(default)]
+    permanent: bool,
+    /// Must equal the subject name.
+    confirm: String,
+}
+
+async fn schema_delete_version(
+    State(state): Shared,
+    Path((p, subject, version)): Path<(String, String, String)>,
+    Query(q): Query<DeleteSchemaQuery>,
+) -> ApiResult<Value> {
+    if q.confirm != subject {
+        return Err(ApiError::bad_request("confirm must equal the subject name"));
+    }
+    let rt = profile(&state, &p)?;
+    schema_admin::delete_version(&registry_url(&rt)?, &subject, &version, q.permanent).await?;
+    tracing::info!("deleted {subject} v{version} (permanent={}) on profile {p}", q.permanent);
+    Ok(Json(json!({ "deleted": true })))
+}
+
+async fn schema_delete_subject(
+    State(state): Shared,
+    Path((p, subject)): Path<(String, String)>,
+    Query(q): Query<DeleteSchemaQuery>,
+) -> ApiResult<Value> {
+    if q.confirm != subject {
+        return Err(ApiError::bad_request("confirm must equal the subject name"));
+    }
+    let rt = profile(&state, &p)?;
+    schema_admin::delete_subject(&registry_url(&rt)?, &subject, q.permanent).await?;
+    tracing::info!("deleted subject {subject} (permanent={}) on profile {p}", q.permanent);
+    Ok(Json(json!({ "deleted": true })))
+}
+
+#[derive(Deserialize)]
+struct CompatBody {
+    level: String,
+}
+
+const COMPAT_LEVELS: [&str; 7] =
+    ["BACKWARD", "BACKWARD_TRANSITIVE", "FORWARD", "FORWARD_TRANSITIVE", "FULL", "FULL_TRANSITIVE", "NONE"];
+
+async fn compat_get(state: &AppState, p: &str, subject: Option<&str>) -> ApiResult<Value> {
+    let rt = profile(state, p)?;
+    let level = schema_admin::get_compatibility(&registry_url(&rt)?, subject).await?;
+    Ok(Json(json!({ "level": level })))
+}
+
+async fn compat_set(state: &AppState, p: &str, subject: Option<&str>, level: &str) -> ApiResult<Value> {
+    let level = level.to_ascii_uppercase();
+    if !COMPAT_LEVELS.contains(&level.as_str()) {
+        return Err(ApiError::bad_request(format!("level must be one of {}", COMPAT_LEVELS.join(", "))));
+    }
+    let rt = profile(state, p)?;
+    schema_admin::set_compatibility(&registry_url(&rt)?, subject, &level).await?;
+    Ok(Json(json!({ "level": level })))
+}
+
+async fn schema_config_global(State(state): Shared, Path(p): Path<String>) -> ApiResult<Value> {
+    compat_get(&state, &p, None).await
+}
+
+async fn schema_config_set_global(State(state): Shared, Path(p): Path<String>, Json(b): Json<CompatBody>) -> ApiResult<Value> {
+    compat_set(&state, &p, None, &b.level).await
+}
+
+async fn schema_config(State(state): Shared, Path((p, subject)): Path<(String, String)>) -> ApiResult<Value> {
+    compat_get(&state, &p, Some(&subject)).await
+}
+
+async fn schema_config_set(
+    State(state): Shared,
+    Path((p, subject)): Path<(String, String)>,
+    Json(b): Json<CompatBody>,
+) -> ApiResult<Value> {
+    compat_set(&state, &p, Some(&subject), &b.level).await
 }

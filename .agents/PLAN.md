@@ -184,6 +184,10 @@ as `dropped`; stops when the client disconnects). The UI gained Topics/Groups/Br
 tabs, Browse/Live toggle, produce/import dialogs, replay + edit-and-produce in the detail
 panel. rakko-web has no auth of its own by decision — a Bitnami-managed proxy in front handles login; destructive calls only
 require an explicit confirmation naming the target.
+**Web, slice 3 (built).** `schema_admin.rs` (core, REST client: subjects, versions,
+register, compatibility check/level, soft/permanent delete) + Schemas tab; message
+download (raw/decoded/JSONL), key tombstone, and `delete_records_before` (AdminClient
+DeleteRecords) behind a typed topic-name confirmation.
 Not yet built: topic create/delete, topic-level time/offset range for scans.
 
 **Container image.** `Dockerfile.web` (Node UI build → Rocky 9 build with vendored

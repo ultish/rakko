@@ -4,6 +4,7 @@ pub mod consumer;
 pub mod group_offsets;
 pub mod producer;
 pub mod scan;
+pub mod schema_admin;
 pub mod schema_registry;
 
 /// Docker-compose-gated integration test helpers — see `integration_support`'s doc

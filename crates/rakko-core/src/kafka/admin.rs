@@ -232,6 +232,42 @@ fn fetch_broker_configs_blocking(profile: &Profile, broker_id: i32) -> AppResult
     Ok(entries)
 }
 
+/// Deletes every record in `partition` with an offset below `before_offset` (Kafka's
+/// DeleteRecords). There is no way to delete one record in the middle of a log — this
+/// moves the partition's start forward, permanently. Returns the new low watermark.
+pub async fn delete_records_before(
+    profile: &Profile,
+    topic: &str,
+    partition: i32,
+    before_offset: i64,
+) -> AppResult<i64> {
+    let (profile, topic) = (profile.clone(), topic.to_string());
+    tokio::task::spawn_blocking(move || {
+        use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
+        let admin_client: AdminClient<DefaultClientContext> =
+            consumer_client_config(&profile, ADMIN_GROUP_ID).create()?;
+        let mut tpl = TopicPartitionList::new();
+        tpl.add_partition_offset(&topic, partition, Offset::Offset(before_offset))
+            .map_err(|err| AppError::Other(format!("bad partition/offset: {err}")))?;
+        let opts = AdminOptions::new().request_timeout(Some(DESCRIBE_CONFIGS_TIMEOUT));
+        let result = futures::executor::block_on(admin_client.delete_records(&tpl, &opts))?;
+        let element = result
+            .elements_for_topic(&topic)
+            .into_iter()
+            .find(|e| e.partition() == partition)
+            .ok_or_else(|| AppError::Other("broker returned no result for the partition".into()))?;
+        element
+            .error()
+            .map_err(|err| AppError::Other(format!("delete records failed: {err}")))?;
+        match element.offset() {
+            Offset::Offset(low) => Ok(low),
+            _ => Ok(before_offset),
+        }
+    })
+    .await
+    .map_err(|err| AppError::Other(format!("delete records task panicked: {err}")))?
+}
+
 /// Reads the broker's `message.max.bytes` via `describe_configs` on the first
 /// broker from metadata. Used to auto-fill profile `message_max_bytes` when unset.
 ///
