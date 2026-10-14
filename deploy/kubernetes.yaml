@@ -1,0 +1,60 @@
+# Minimal rakko-web deployment. Edit the ConfigMap (cluster profiles), the image
+# reference (your registry's copy of ghcr.io/ultish/rakko-web), and expose the Service
+# however your ingress/mTLS setup requires.
+#
+# rakko-web has no login of its own and full write access (produce,
+# replay, import, offset reset). Keep it behind your mTLS ingress / a private network.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rakko-web-config
+data:
+  config.toml: |
+    [[profiles]]
+    name = "prod"
+    bootstrap_servers = "kafka-bootstrap.kafka.svc:9092"
+    tls_enabled = false
+    schema_registry_url = "http://schema-registry.kafka.svc:8081"
+
+    [profiles.auth]
+    type = "none"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rakko-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: rakko-web }
+  template:
+    metadata:
+      labels: { app: rakko-web }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: rakko-web
+          image: ghcr.io/ultish/rakko-web:latest
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - { name: config, mountPath: /etc/rakko, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /api/profiles, port: 8080 }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 2Gi }
+      volumes:
+        - name: config
+          configMap: { name: rakko-web-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rakko-web
+spec:
+  selector: { app: rakko-web }
+  ports:
+    - { port: 80, targetPort: 8080 }

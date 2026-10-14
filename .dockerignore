@@ -1,0 +1,9 @@
+.git
+target
+dist
+**/node_modules
+**/dist
+.agents
+*.md
+!README.md
+.DS_Store

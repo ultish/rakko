@@ -1,0 +1,66 @@
+name: rakko-web image
+
+# Builds the rakko-web container image, pushes it to GHCR, and (on a release tag)
+# attaches a docker-save archive to the GitHub Release for air-gapped installs.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Push to ghcr.io (otherwise just build)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # upload release assets
+  packages: write   # push to ghcr.io
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          version="${ref#v}"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || version="dev-${GITHUB_SHA::7}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-web" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.ref_type == 'tag' || inputs.push
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.web
+          platforms: linux/amd64
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          push: ${{ github.ref_type == 'tag' || inputs.push }}
+          load: ${{ github.ref_type != 'tag' && !inputs.push }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Export archive for air-gapped installs
+        if: github.ref_type == 'tag'
+        run: |
+          docker pull "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}"
+          archive="rakko-web-${{ steps.meta.outputs.version }}-linux-amd64.tar.gz"
+          docker save "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}" | gzip -9 > "$archive"
+          sha256sum "$archive" > "$archive.sha256"
+          gh release upload "$GITHUB_REF_NAME" "$archive" "$archive.sha256" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

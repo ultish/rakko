@@ -1,0 +1,66 @@
+# syntax=docker/dockerfile:1.7
+# rakko-web container image: the web server plus its built frontend.
+#
+# Built on Rocky 9 (≈ RHEL 9 glibc) and run on UBI 9 minimal, so the binary matches
+# what an air-gapped RHEL 9 estate expects. librdkafka and OpenSSL are vendored into
+# the binary (same rdkafka features as the TUI), so the runtime image needs only glibc.
+#
+#   docker build --platform linux/amd64 -f Dockerfile.web -t rakko-web .
+#   ./scripts/build-web-image.sh            # also writes dist/rakko-web-<ver>-linux-amd64.tar.gz
+#
+# Run (config.toml lists the cluster profiles; mount any TLS material it references):
+#   docker run --rm -p 8080:8080 -v $PWD/config.toml:/etc/rakko/config.toml:ro rakko-web
+#
+# NOTE: no login of its own — run it behind your authenticating proxy.
+
+FROM node:22-bookworm-slim AS ui
+WORKDIR /ui
+COPY crates/rakko-web/web/package.json crates/rakko-web/web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY crates/rakko-web/web/ ./
+RUN npm run build
+
+FROM rockylinux:9 AS build
+RUN dnf install -y gcc gcc-c++ make cmake perl clang clang-libs binutils file diffutils \
+    && dnf clean all
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+# librdkafka / vendored OpenSSL are memory-hungry, especially under emulation.
+ENV CARGO_BUILD_JOBS=2
+
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY src ./src
+COPY assets ./assets
+
+# Same librdkafka 2.12.1 cmake-build workaround as Dockerfile.rhel9 (see the note there);
+# drop it once rdkafka-sys ships librdkafka >= 2.15.0.
+RUN --mount=type=cache,target=/root/.cargo/registry,id=rakko-web-cargo-registry \
+    --mount=type=cache,target=/src/target,id=rakko-web-cargo-target \
+    cargo fetch \
+    && rdkafka_conf="$(find /root/.cargo/registry/src -path '*/rdkafka-sys-*/librdkafka/src/rdkafka_conf.c' -print -quit)" \
+    && test -n "$rdkafka_conf" \
+    && sed -i 's/#ifdef WITH_OAUTHBEARER_OIDC/#if WITH_OAUTHBEARER_OIDC/' "$rdkafka_conf" \
+    && cargo build --release --offline -p rakko-web \
+    && mkdir -p /out \
+    && cp target/release/rakko-web /out/rakko-web \
+    && if ldd /out/rakko-web | grep -Eiq 'libssl|libcrypto|librdkafka|libz\.so'; then \
+         echo "error: rakko-web has unexpected dynamic deps (vendoring failed):" >&2; ldd /out/rakko-web >&2; exit 1; \
+       fi
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="rakko-web" \
+      org.opencontainers.image.description="Web UI for Kafka: browse, filter, tail, produce, consumer groups" \
+      org.opencontainers.image.source="https://github.com/ultish/rakko" \
+      org.opencontainers.image.version="${VERSION}"
+COPY --from=build /out/rakko-web /usr/local/bin/rakko-web
+COPY --from=ui /ui/dist /app/web
+ENV RAKKO_BIND=0.0.0.0:8080 \
+    RAKKO_CONFIG=/etc/rakko/config.toml \
+    RAKKO_STATIC_DIR=/app/web
+EXPOSE 8080
+USER 10001
+ENTRYPOINT ["/usr/local/bin/rakko-web"]
