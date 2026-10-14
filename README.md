@@ -287,7 +287,7 @@ cargo run -p rakko-web -- --config config.example.toml --static-dir crates/rakko
 # → http://localhost:8080   (flags also read RAKKO_BIND / RAKKO_CONFIG / RAKKO_STATIC_DIR / RAKKO_SCAN_WINDOW)
 ```
 
-Filters run over the **whole topic** (newest first, in offset windows) and keep finding
+Filters run over the **whole topic** (or a time window / one partition's offsets, via the Range button) (newest first, in offset windows) and keep finding
 matches as you scroll; autocomplete for the query box comes from the server. Each browser
 session has its own scans. It has no login of its own (and full write access) — run it behind
 your authenticating proxy / on a trusted network.

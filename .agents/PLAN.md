@@ -192,7 +192,11 @@ Topic create/delete/config (`admin.rs`, typed-name confirmation, internal topics
 protected). Autocomplete candidates also come from `CachedSchema::skeleton()` (every
 field of the Avro schema, unions merged) for ids seen in samples plus the latest
 `<topic>-key/-value` subjects, so optional fields and empty topics complete.
-Not yet built: topic-level time/offset range for scans.
+Scan ranges: `ScanRange` (core) narrows each partition's watermarks via
+`offsets_for_times` and a partition/offset window; scans and export also check each
+message's timestamp, since timestamps are not monotonic. Time lookups use the broker's
+timestamp index (CreateTime or LogAppendTime as configured on the topic).
+Not yet built: nothing planned beyond the TUI having none of the web-only features.
 
 **Container image.** `Dockerfile.web` (Node UI build → Rocky 9 build with vendored
 librdkafka/OpenSSL → UBI 9 minimal runtime, non-root 10001, config at

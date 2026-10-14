@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Summary } from "./api";
+import { api, type Range, type Summary } from "./api";
 import { formatCount } from "./format";
 import { MessageTable } from "./MessageTable";
 import { QueryInput } from "./QueryInput";
+import { describeRange, emptyDraft, isEmptyDraft, RangePicker, toRange, type RangeDraft } from "./RangePicker";
 
 type Status = {
   scanned: number;
@@ -21,7 +22,7 @@ type Props = {
   selected: Summary | null;
   onSelect: (s: Summary) => void;
   /** Reports the filter the visible results were produced with (for export / live tail). */
-  onApplied?: (text: string, query: string) => void;
+  onApplied?: (text: string, query: string, range: Range) => void;
 };
 
 /**
@@ -43,6 +44,9 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
   const demand = useRef(PAGE);
   const pumping = useRef(false);
   const [epoch, setEpoch] = useState(0);
+  const [draft, setDraft] = useState<RangeDraft>(emptyDraft);
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const [applied, setApplied] = useState<Range>({});
 
   const pump = useCallback(async (gen: number) => {
     if (pumping.current) return;
@@ -76,9 +80,10 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
   }, []);
 
   const start = useCallback(
-    async (filterText: string, filterQuery: string) => {
+    async (filterText: string, filterQuery: string, range: Range) => {
       const gen = ++generation.current;
-      onApplied?.(filterText, filterQuery);
+      setApplied(range);
+      onApplied?.(filterText, filterQuery, range);
       const previous = scanId.current;
       scanId.current = null;
       if (previous) api.deleteScan(previous).catch(() => {});
@@ -90,7 +95,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
       setError(null);
       setEpoch((e) => e + 1);
       try {
-        const created = await api.createScan(profile, topic, filterText, filterQuery);
+        const created = await api.createScan(profile, topic, filterText, filterQuery, range);
         if (gen !== generation.current) {
           api.deleteScan(created.scan_id).catch(() => {});
           return;
@@ -113,7 +118,9 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
   useEffect(() => {
     setText("");
     setQuery("");
-    void start("", "");
+    setDraft(emptyDraft);
+    setRangeOpen(false);
+    void start("", "", {});
     return () => {
       generation.current++;
       const id = scanId.current;
@@ -130,9 +137,17 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
     [pump],
   );
 
-  const submit = () => void start(text, query);
+  const submit = () => {
+    try {
+      void start(text, query, toRange(draft));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setRangeOpen(true);
+    }
+  };
   const pct = status && status.total > 0 ? Math.min(100, Math.round((status.scanned / status.total) * 100)) : status ? 100 : 0;
-  const filtered = text.trim() !== "" || query.trim() !== "";
+  const rangeLabel = describeRange(applied);
+  const filtered = text.trim() !== "" || query.trim() !== "" || rangeLabel !== "";
 
   return (
     <div className="messages">
@@ -158,10 +173,15 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
           onSubmit={submit}
           placeholder={'query — value.customer.tier = "gold" AND value.qty > 2   (Tab to complete)'}
         />
+        <button type="button" className={rangeOpen || !isEmptyDraft(draft) ? "toggle on" : "toggle"} onClick={() => setRangeOpen((o) => !o)} aria-expanded={rangeOpen}>
+          Range{!isEmptyDraft(draft) ? " •" : ""}
+        </button>
         <button type="submit" className="primary">
           {filtered ? "Search" : "Refresh"}
         </button>
       </form>
+
+      {rangeOpen && <RangePicker profile={profile} topic={topic} value={draft} onChange={setDraft} onApply={submit} />}
 
       <div className="status" role="status">
         <div className="progress" aria-hidden>
@@ -174,6 +194,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
               ? ""
               : "starting scan…"}
         </span>
+        {rangeLabel && <span className="range-tag">{rangeLabel}</span>}
         {status && status.skipped > 0 && (
           <span className="warn">
             ⚠ {formatCount(status.skipped)} message(s) couldn't be decoded (schema unavailable) and were not matched

@@ -82,6 +82,11 @@ export type SubjectVersion = {
 
 export type SchemaDraft = { schema: string; schema_type: string; references: SchemaReference[] };
 
+/** Restricts a scan to a time window (epoch ms; from inclusive, to exclusive) or one partition's offsets. */
+export type Range = { fromMs?: number; toMs?: number; partition?: number; fromOffset?: number; toOffset?: number };
+
+export type PartitionInfo = { partition: number; low: number; high: number; messages: number };
+
 export type Completion = { prefix: string; candidates: string[] };
 
 // Scans belong to this browser's session on the server, so concurrent users never share a filter.
@@ -120,17 +125,30 @@ const enc = encodeURIComponent;
 
 const base = (profile: string, topic: string) => `/p/${enc(profile)}/topics/${enc(topic)}`;
 
-function filterParams(text: string, query: string): string {
+function filterParams(text: string, query: string, range: Range = {}): string {
   const p = new URLSearchParams();
   if (text.trim()) p.set("text", text);
   if (query.trim()) p.set("query", query);
+  if (range.fromMs !== undefined) p.set("from_ms", String(range.fromMs));
+  if (range.toMs !== undefined) p.set("to_ms", String(range.toMs));
+  if (range.partition !== undefined) p.set("partition", String(range.partition));
+  if (range.fromOffset !== undefined) p.set("from_offset", String(range.fromOffset));
+  if (range.toOffset !== undefined) p.set("to_offset", String(range.toOffset));
   return p.toString();
 }
 
+const rangeBody = (r: Range) => ({
+  from_ms: r.fromMs,
+  to_ms: r.toMs,
+  partition: r.partition,
+  from_offset: r.fromOffset,
+  to_offset: r.toOffset,
+});
+
 /** URLs the browser opens directly (download / event stream) rather than via fetch. */
 export const urls = {
-  export: (profile: string, topic: string, text: string, query: string) =>
-    `/api${base(profile, topic)}/export?${filterParams(text, query)}`,
+  export: (profile: string, topic: string, text: string, query: string, range: Range = {}) =>
+    `/api${base(profile, topic)}/export?${filterParams(text, query, range)}`,
   /** `part`: key | value | message; `format`: raw | decoded (ignored for message). */
   download: (profile: string, topic: string, s: Summary, part: "key" | "value" | "message", format: "raw" | "decoded" = "raw") =>
     `/api${base(profile, topic)}/messages/${s.partition}/${s.offset}/download?part=${part}&format=${format}`,
@@ -202,10 +220,11 @@ export const api = {
     }),
   profiles: () => request<Profile[]>("/profiles"),
   topics: (profile: string) => request<Topic[]>(`/p/${enc(profile)}/topics`),
-  createScan: (profile: string, topic: string, text: string, query: string) =>
+  partitions: (profile: string, topic: string) => request<PartitionInfo[]>(`${base(profile, topic)}/partitions`),
+  createScan: (profile: string, topic: string, text: string, query: string, range: Range = {}) =>
     request<{ scan_id: string; total_offsets: number }>(`/p/${enc(profile)}/topics/${enc(topic)}/scans`, {
       method: "POST",
-      body: JSON.stringify({ text, query }),
+      body: JSON.stringify({ text, query, range: rangeBody(range) }),
     }),
   matches: (scanId: string, from: number, limit: number, signal?: AbortSignal) =>
     request<MatchesPage>(`/scans/${enc(scanId)}/matches?from=${from}&limit=${limit}&wait_ms=2500`, { signal }),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, urls, type Summary, type Topic } from "./api";
+import { api, urls, type Range, type Summary, type Topic } from "./api";
 import { formatCount } from "./format";
 import { Messages } from "./Messages";
 import { ProduceDialog } from "./ProduceDialog";
@@ -23,7 +23,7 @@ export type ProduceInitial = { key?: string; value?: string; headers?: [string, 
 /** One topic: browse/filter the whole topic or follow it live, plus produce/export/import. */
 export function TopicView({ profile, topic, info, selected, onSelect, onChanged, onDeleted, produceFrom, onProduceFrom }: Props) {
   const [mode, setMode] = useState<"browse" | "live">("browse");
-  const [applied, setApplied] = useState({ text: "", query: "" });
+  const [applied, setApplied] = useState<{ text: string; query: string; range: Range }>({ text: "", query: "", range: {} });
   const [producing, setProducing] = useState(false);
   const [admin, setAdmin] = useState<"config" | "delete" | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -31,11 +31,11 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
 
   useEffect(() => {
     setMode("browse");
-    setApplied({ text: "", query: "" });
+    setApplied({ text: "", query: "", range: {} });
     setNotice(null);
   }, [profile, topic]);
 
-  const onApplied = useCallback((text: string, query: string) => setApplied({ text, query }), []);
+  const onApplied = useCallback((text: string, query: string, range: Range) => setApplied({ text, query, range }), []);
 
   const importFile = async (file: File) => {
     if (!window.confirm(`Produce every message in "${file.name}" to ${topic}?`)) return;
@@ -50,7 +50,8 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
     }
   };
 
-  const filtered = applied.text.trim() !== "" || applied.query.trim() !== "";
+  const filtered =
+    applied.text.trim() !== "" || applied.query.trim() !== "" || Object.values(applied.range).some((v) => v !== undefined);
 
   return (
     <>
@@ -73,9 +74,9 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
         <button onClick={() => setProducing(true)}>Produce…</button>
         <a
           className="button"
-          href={urls.export(profile, topic, applied.text, applied.query)}
+          href={urls.export(profile, topic, applied.text, applied.query, applied.range)}
           download
-          title={filtered ? "Download every message matching the current filter (whole topic)" : "Download the whole topic"}
+          title={filtered ? "Download every message matching the current filter and range" : "Download the whole topic"}
         >
           Export{filtered ? " matches" : ""}
         </a>

@@ -7,6 +7,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use rakko_core::kafka::admin::list_topics;
 use rakko_core::kafka::consumer::partition_watermarks;
+use rakko_core::kafka::scan::ScanRange;
 use rakko_core::message_filter::MessageFilter;
 use rakko_core::query_complete::suggest;
 use serde::{Deserialize, Serialize};
@@ -117,6 +118,9 @@ struct ScanRequest {
     text: Option<String>,
     /// Structured query, e.g. `value.customer.tier = "gold" AND value.qty > 2`.
     query: Option<String>,
+    /// Limit the scan to a time window or one partition's offset window.
+    #[serde(default)]
+    range: ScanRange,
 }
 
 async fn create_scan(
@@ -128,7 +132,8 @@ async fn create_scan(
     let owner = session(&headers)?;
     let rt = profile(&state, &profile_name)?;
     let filter = MessageFilter::parse(body.text.as_deref(), body.query.as_deref()).map_err(ApiError::bad_request)?;
-    let scan = ScanSession::open(owner, rt, topic, filter, state.scan_window).await?;
+    body.range.validate().map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let scan = ScanSession::open(owner, rt, topic, filter, body.range, state.scan_window).await?;
     let (id, total) = (scan.id.clone(), scan.total_offsets());
     state
         .scans

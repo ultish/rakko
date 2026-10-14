@@ -227,3 +227,11 @@ code { font-family: var(--mono); color: var(--accent); }
 .grow { flex: 1; }
 .presets { display: flex; flex-wrap: wrap; gap: 2px 8px; }
 .dialog .seg { align-self: flex-start; }
+
+/* scan range */
+.range { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+.range-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.range-row input[type="datetime-local"] { padding: 4px 8px; }
+.narrow-num { width: 96px; flex: none; }
+button.toggle.on { border-color: var(--accent); color: var(--accent); }
+.range-tag { color: var(--title); font-family: var(--mono); font-size: 12px; }

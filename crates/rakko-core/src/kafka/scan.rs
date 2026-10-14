@@ -46,6 +46,95 @@ impl ScanProgress {
     }
 }
 
+/// Restricts a scan to part of a topic. Empty = the whole topic.
+///
+/// * Time bounds (`from_ms` inclusive, `to_ms` exclusive, epoch millis) are resolved to
+///   offsets per partition with the broker's timestamp index, so a narrow window is
+///   found without reading what lies outside it. Message timestamps are not guaranteed
+///   monotonic, so callers wanting exact edges should also check each message
+///   ([`ScanRange::contains_timestamp`]).
+/// * `partition` limits the scan to one partition; `from_offset`/`to_offset` (inclusive
+///   start, exclusive end) only make sense together with it, since offsets are per
+///   partition.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ScanRange {
+    pub from_ms: Option<i64>,
+    pub to_ms: Option<i64>,
+    pub partition: Option<i32>,
+    pub from_offset: Option<i64>,
+    pub to_offset: Option<i64>,
+}
+
+impl ScanRange {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate(&self) -> AppResult<()> {
+        if (self.from_offset.is_some() || self.to_offset.is_some()) && self.partition.is_none() {
+            return Err(AppError::Other("an offset range needs a partition (offsets are per partition)".into()));
+        }
+        if let (Some(a), Some(b)) = (self.from_ms, self.to_ms) {
+            if a >= b {
+                return Err(AppError::Other("the time range must end after it starts".into()));
+            }
+        }
+        if let (Some(a), Some(b)) = (self.from_offset, self.to_offset) {
+            if a >= b {
+                return Err(AppError::Other("the offset range must end after it starts".into()));
+            }
+        }
+        if self.from_offset.is_some_and(|o| o < 0) || self.to_offset.is_some_and(|o| o < 0) {
+            return Err(AppError::Other("offsets must be >= 0".into()));
+        }
+        Ok(())
+    }
+
+    /// Whether a message with this timestamp is inside the time bounds. A message with no
+    /// timestamp can't be placed, so it is kept.
+    pub fn contains_timestamp(&self, timestamp_ms: Option<i64>) -> bool {
+        let Some(ts) = timestamp_ms else { return true };
+        self.from_ms.is_none_or(|from| ts >= from) && self.to_ms.is_none_or(|to| ts < to)
+    }
+
+    /// The offset window each partition is scanned over. `time_to_offset(partition, ms)`
+    /// is the first offset whose timestamp is >= `ms`, or `None` when there is none (every
+    /// message is older). Pure so the arithmetic is testable without a broker.
+    pub fn narrow(
+        &self,
+        marks: &[PartitionWatermarks],
+        mut time_to_offset: impl FnMut(i32, i64) -> Option<i64>,
+    ) -> Vec<PartitionWatermarks> {
+        marks
+            .iter()
+            .map(|m| {
+                let empty = PartitionWatermarks { partition: m.partition, low: m.high, high: m.high };
+                if self.partition.is_some_and(|p| p != m.partition) {
+                    return empty;
+                }
+                let (mut low, mut high) = (m.low, m.high);
+                if let Some(from) = self.from_ms {
+                    low = low.max(time_to_offset(m.partition, from).unwrap_or(m.high));
+                }
+                if let Some(to) = self.to_ms {
+                    high = high.min(time_to_offset(m.partition, to).unwrap_or(m.high));
+                }
+                if let Some(o) = self.from_offset {
+                    low = low.max(o);
+                }
+                if let Some(o) = self.to_offset {
+                    high = high.min(o);
+                }
+                if low >= high {
+                    return empty;
+                }
+                PartitionWatermarks { partition: m.partition, low, high }
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Cursor {
     partition: i32,
@@ -73,6 +162,42 @@ impl TopicScan {
         let consumer: BaseConsumer = config.create()?;
         let watermarks = partition_watermarks_with(&consumer, topic)?;
         Ok(Self::from_watermarks(consumer, topic, window, &watermarks))
+    }
+
+    /// [`open`](Self::open) restricted to `range`. Blocking.
+    pub fn open_range(profile: &Profile, topic: &str, window: usize, range: &ScanRange) -> AppResult<Self> {
+        range.validate()?;
+        let mut config = consumer_client_config(profile, SCAN_GROUP_ID);
+        config.set("enable.partition.eof", "true");
+        config.set("auto.offset.reset", "error");
+        let consumer: BaseConsumer = config.create()?;
+        let marks = partition_watermarks_with(&consumer, topic)?;
+        if let Some(p) = range.partition {
+            if !marks.iter().any(|m| m.partition == p) {
+                return Err(AppError::Other(format!("topic {topic} has no partition {p}")));
+            }
+        }
+        let mut lookup_error = None;
+        let narrowed = range.narrow(&marks, |partition, ms| {
+            let mut tpl = TopicPartitionList::with_capacity(1);
+            if tpl.add_partition_offset(topic, partition, Offset::Offset(ms)).is_err() {
+                return None;
+            }
+            match consumer.offsets_for_times(tpl, Duration::from_secs(10)) {
+                Ok(resolved) => resolved.elements().into_iter().find_map(|e| match e.offset() {
+                    Offset::Offset(n) => Some(n),
+                    _ => None,
+                }),
+                Err(err) => {
+                    lookup_error.get_or_insert(err);
+                    None
+                }
+            }
+        });
+        if let Some(err) = lookup_error {
+            return Err(err.into());
+        }
+        Ok(Self::from_watermarks(consumer, topic, window, &narrowed))
     }
 
     fn from_watermarks(consumer: BaseConsumer, topic: &str, window: usize, marks: &[PartitionWatermarks]) -> Self {
@@ -203,6 +328,73 @@ mod tests {
 
     fn cursor(partition: i32, low: i64, high: i64) -> Cursor {
         Cursor { partition, low, high, next_end: high }
+    }
+
+    fn marks() -> Vec<PartitionWatermarks> {
+        vec![
+            PartitionWatermarks { partition: 0, low: 100, high: 1000 },
+            PartitionWatermarks { partition: 1, low: 0, high: 50 },
+        ]
+    }
+
+    /// Timestamps are the offset times ten, so `ms / 10` is the offset at `ms`.
+    fn by_ten(_partition: i32, ms: i64) -> Option<i64> {
+        Some(ms / 10)
+    }
+
+    #[test]
+    fn empty_range_is_the_whole_topic() {
+        assert_eq!(ScanRange::default().narrow(&marks(), by_ten), marks());
+    }
+
+    #[test]
+    fn time_bounds_become_offset_bounds_clamped_to_what_exists() {
+        let range = ScanRange { from_ms: Some(2_000), to_ms: Some(5_000), ..Default::default() };
+        let narrowed = range.narrow(&marks(), by_ten);
+        assert_eq!((narrowed[0].low, narrowed[0].high), (200, 500));
+        // Partition 1 only holds 0..50, all older than the window: nothing to scan.
+        assert_eq!(narrowed[1].low, narrowed[1].high);
+    }
+
+    #[test]
+    fn a_start_past_every_message_scans_nothing() {
+        let range = ScanRange { from_ms: Some(9_999_999), ..Default::default() };
+        let narrowed = range.narrow(&marks(), |_, _| None);
+        assert!(narrowed.iter().all(|m| m.low >= m.high));
+    }
+
+    #[test]
+    fn an_open_ended_range_runs_to_the_end() {
+        let range = ScanRange { from_ms: Some(9_000), ..Default::default() };
+        let narrowed = range.narrow(&marks(), by_ten);
+        assert_eq!((narrowed[0].low, narrowed[0].high), (900, 1000));
+    }
+
+    #[test]
+    fn partition_and_offset_range_pick_one_partition_window() {
+        let range = ScanRange { partition: Some(0), from_offset: Some(150), to_offset: Some(300), ..Default::default() };
+        let narrowed = range.narrow(&marks(), by_ten);
+        assert_eq!((narrowed[0].low, narrowed[0].high), (150, 300));
+        assert_eq!(narrowed[1].low, narrowed[1].high, "other partitions are skipped");
+    }
+
+    #[test]
+    fn range_validation() {
+        let bad = |r: ScanRange| r.validate().is_err();
+        assert!(bad(ScanRange { from_offset: Some(1), ..Default::default() }), "offsets need a partition");
+        assert!(bad(ScanRange { from_ms: Some(5), to_ms: Some(5), ..Default::default() }));
+        assert!(bad(ScanRange { partition: Some(0), from_offset: Some(9), to_offset: Some(3), ..Default::default() }));
+        assert!(bad(ScanRange { partition: Some(0), from_offset: Some(-1), ..Default::default() }));
+        assert!(ScanRange { partition: Some(0), from_offset: Some(1), ..Default::default() }.validate().is_ok());
+    }
+
+    #[test]
+    fn timestamp_edges_are_exact_and_untimed_messages_are_kept() {
+        let range = ScanRange { from_ms: Some(10), to_ms: Some(20), ..Default::default() };
+        assert!(range.contains_timestamp(Some(10)));
+        assert!(!range.contains_timestamp(Some(20)), "end is exclusive");
+        assert!(!range.contains_timestamp(Some(9)));
+        assert!(range.contains_timestamp(None));
     }
 
     #[test]

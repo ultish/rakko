@@ -36,6 +36,11 @@ over dumping raw commit subjects.
   delete a version or subject (soft or permanent, typed confirmation), and set the
   compatibility level per subject or globally.
 
+- **Scan ranges in the web UI**: limit a browse, filter or export to a time window
+  (presets for the last 15 min / 1 h / 24 h / 7 d, or any from/to) or to one partition's
+  offset window, instead of always scanning the whole topic. Time bounds use the
+  broker's timestamp index, so a narrow window is found without reading the rest.
+
 - **Topic management in the web UI**: create a topic (partitions, replication factor,
   config overrides with presets), view its non-default config, and delete it (typed
   confirmation; internal topics are protected).

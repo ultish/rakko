@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rakko_core::error::AppError;
-use rakko_core::kafka::scan::{ScanProgress, TopicScan};
+use rakko_core::kafka::scan::{ScanProgress, ScanRange, TopicScan};
 use rakko_core::message_filter::MessageFilter;
 use serde::Serialize;
 
@@ -42,6 +42,7 @@ pub struct ScanSession {
     pub topic: String,
     profile: Arc<ProfileRuntime>,
     filter: Arc<MessageFilter>,
+    range: ScanRange,
     scan: Mutex<Option<TopicScan>>,
     state: Mutex<ScanState>,
     /// How many matches the client has asked to see so far (`from + limit`).
@@ -107,10 +108,11 @@ impl ScanSession {
         profile: Arc<ProfileRuntime>,
         topic: String,
         filter: MessageFilter,
+        range: ScanRange,
         window: usize,
     ) -> Result<Arc<Self>, AppError> {
-        let (p, t) = (profile.profile.clone(), topic.clone());
-        let scan = tokio::task::spawn_blocking(move || TopicScan::open(&p, &t, window))
+        let (p, t, r) = (profile.profile.clone(), topic.clone(), range.clone());
+        let scan = tokio::task::spawn_blocking(move || TopicScan::open_range(&p, &t, window, &r))
             .await
             .map_err(|e| AppError::Other(format!("scan open panicked: {e}")))??;
         let progress = scan.progress();
@@ -121,6 +123,7 @@ impl ScanSession {
             topic,
             profile,
             filter: Arc::new(filter),
+            range,
             scan: Mutex::new(Some(scan)),
             state: Mutex::new(state),
             want: AtomicUsize::new(0),
@@ -167,12 +170,16 @@ impl ScanSession {
     async fn run(self: &Arc<Self>) {
         while self.needs_more() {
             let Some(mut scan) = lock(&self.scan).take() else { return };
-            let (profile, filter) = (self.profile.clone(), self.filter.clone());
+            let (profile, filter, range) = (self.profile.clone(), self.filter.clone(), self.range.clone());
             let handle = tokio::runtime::Handle::current();
             let result = tokio::task::spawn_blocking(move || {
                 let mut found: Vec<MessageSummary> = Vec::new();
                 let mut skipped = 0u64;
                 let outcome = scan.scan_next(&mut |message| {
+                    // Timestamps aren't monotonic, so the window is only approximate at the edges.
+                    if !range.contains_timestamp(message.timestamp_millis) {
+                        return;
+                    }
                     let (matched, undecodable) = evaluate(&profile, &handle, &filter, &message);
                     if undecodable && !matched {
                         skipped += 1;

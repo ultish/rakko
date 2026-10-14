@@ -25,7 +25,7 @@ use rakko_core::kafka::schema_admin::{self, SchemaReference};
 use rakko_core::kafka::consumer::{fetch_message, run_tail, BrowseEvent};
 use rakko_core::kafka::group_offsets::{describe_group, list_groups, reset_group_offsets, OffsetResetTarget};
 use rakko_core::kafka::producer::RawProducer;
-use rakko_core::kafka::scan::TopicScan;
+use rakko_core::kafka::scan::{ScanRange, TopicScan};
 use rakko_core::message_filter::MessageFilter;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -288,6 +288,24 @@ struct ExportQuery {
     query: Option<String>,
     /// Stop after this many messages.
     limit: Option<u64>,
+    // Spelled out (not `#[serde(flatten)]`): query strings can't flatten numbers.
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
+    partition: Option<i32>,
+    from_offset: Option<i64>,
+    to_offset: Option<i64>,
+}
+
+impl ExportQuery {
+    fn range(&self) -> ScanRange {
+        ScanRange {
+            from_ms: self.from_ms,
+            to_ms: self.to_ms,
+            partition: self.partition,
+            from_offset: self.from_offset,
+            to_offset: self.to_offset,
+        }
+    }
 }
 
 /// Streams matching messages as JSONL (raw base64 bytes — re-importable byte for byte).
@@ -301,9 +319,12 @@ async fn export(
     let filter = MessageFilter::parse(q.text.as_deref(), q.query.as_deref()).map_err(ApiError::bad_request)?;
     let limit = q.limit.unwrap_or(u64::MAX);
     let window = state.scan_window;
+    let range = q.range();
+    let q_range = range.clone();
+    range.validate().map_err(|e| ApiError::bad_request(e.to_string()))?;
 
     let (profile_cfg, t) = (rt.profile.clone(), topic.clone());
-    let mut scan = tokio::task::spawn_blocking(move || TopicScan::open(&profile_cfg, &t, window))
+    let mut scan = tokio::task::spawn_blocking(move || TopicScan::open_range(&profile_cfg, &t, window, &range))
         .await
         .map_err(|e| ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
 
@@ -315,6 +336,9 @@ async fn export(
         while !closed && sent < limit && !scan.done() {
             let outcome = scan.scan_next(&mut |message| {
                 if closed || sent >= limit {
+                    return;
+                }
+                if !q_range.contains_timestamp(message.timestamp_millis) {
                     return;
                 }
                 let (matched, _) = evaluate(&rt, &handle, &filter, &message);

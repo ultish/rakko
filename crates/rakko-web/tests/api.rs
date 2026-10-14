@@ -555,3 +555,68 @@ async fn autocomplete_comes_from_the_registered_schema_even_on_an_empty_topic() 
     assert_eq!(complete("value.rare.").await["candidates"], json!(["deep"]));
     assert_eq!(complete("key.").await["candidates"], json!([]), "no key schema, no key suggestions");
 }
+
+#[tokio::test]
+#[ignore = "requires `docker compose up -d`"]
+async fn scans_and_exports_can_be_limited_to_a_time_or_offset_range() {
+    let app = app();
+    let topic = unique("range");
+    create_topic(&topic, 2).await;
+    // 100 messages, one per "minute" from a fixed epoch, alternating partitions by key.
+    let producer: FutureProducer = ClientConfig::new().set("bootstrap.servers", BOOTSTRAP).create().unwrap();
+    let t0: i64 = 1_700_000_000_000;
+    for i in 0..100i64 {
+        let (key, body) = (format!("k{i}"), format!("{{\"i\":{i}}}"));
+        producer
+            .send(FutureRecord::to(&topic).key(&key).payload(&body).timestamp(t0 + i * 60_000), Duration::from_secs(30))
+            .await
+            .map_err(|(e, _)| e)
+            .unwrap();
+    }
+
+    let scan = |range: Value| {
+        let (app, topic) = (app.clone(), topic.clone());
+        async move {
+            let (st, created) = call(&app, Method::POST, &format!("/api/p/local/topics/{topic}/scans"), Some(SESSION), Some(json!({"range": range}))).await;
+            assert_eq!(st, StatusCode::OK, "{created}");
+            let id = created["scan_id"].as_str().unwrap().to_string();
+            let (rows, page) = drain(&app, &id, SESSION).await;
+            (rows, page)
+        }
+    };
+
+    // 10 minutes starting at minute 20: messages 20..30.
+    let (rows, page) = scan(json!({"from_ms": t0 + 20 * 60_000, "to_ms": t0 + 30 * 60_000})).await;
+    assert_eq!(rows.len(), 10, "{rows:?}");
+    assert!(rows.iter().all(|r| {
+        let ts = r["timestamp_ms"].as_i64().unwrap();
+        ts >= t0 + 20 * 60_000 && ts < t0 + 30 * 60_000
+    }));
+    assert!(page["total_offsets"].as_u64().unwrap() <= 100, "the window is narrower than the topic: {page}");
+
+    // Open-ended.
+    let (rows, _) = scan(json!({"from_ms": t0 + 90 * 60_000})).await;
+    assert_eq!(rows.len(), 10);
+    // Nothing in range.
+    let (rows, page) = scan(json!({"from_ms": t0 + 1_000 * 60_000})).await;
+    assert!(rows.is_empty());
+    assert_eq!(page["total_offsets"], 0);
+
+    // One partition's offset window.
+    let (rows, _) = scan(json!({"partition": 0, "from_offset": 5, "to_offset": 10})).await;
+    assert!(rows.iter().all(|r| r["partition"] == 0 && (5..10).contains(&r["offset"].as_i64().unwrap())));
+    assert!(!rows.is_empty());
+
+    // Bad ranges are rejected.
+    let (st, _) = call(&app, Method::POST, &format!("/api/p/local/topics/{topic}/scans"), Some(SESSION), Some(json!({"range": {"from_offset": 3}}))).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "offsets need a partition");
+
+    // Export honours the same range, and combines with a filter.
+    let uri = format!("/api/p/local/topics/{topic}/export?from_ms={}&to_ms={}", t0 + 20 * 60_000, t0 + 30 * 60_000);
+    let (st, bytes) = call_raw(&app, Method::GET, &uri, "x/y", vec![]).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(String::from_utf8(bytes).unwrap().lines().count(), 10);
+    let uri = format!("{uri}&query=value.i%20%3E%3D%2025");
+    let (_, bytes) = call_raw(&app, Method::GET, &uri, "x/y", vec![]).await;
+    assert_eq!(String::from_utf8(bytes).unwrap().lines().count(), 5, "messages 25..30");
+}
