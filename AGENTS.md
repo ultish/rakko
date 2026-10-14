@@ -15,19 +15,45 @@ when architecture decisions change, don't let it silently drift from the code.
 
 ## Layout
 
-- `src/config/` — `Profile`/`AuthMode` (PLAINTEXT / TLS+private-CA / mTLS; SASL
-  designed for later without a redesign) and TOML load/save at
+Cargo workspace: the root package `rakko` is the TUI (binary, `src/`); everything
+frontend-agnostic lives in `crates/rakko-core`, which a web frontend will also depend on.
+Core must stay free of ratatui/crossterm/UI types — if a core module needs to tell a
+frontend something, it reports a core-owned type (see `kafka::consumer::BrowseEvent`)
+and the frontend maps it into its own event. `src/main.rs` re-exports the core modules
+at the crate root, so TUI code still says `crate::kafka::…`, `crate::config::…`.
+
+- `crates/rakko-core/src/config/` — `Profile`/`AuthMode` (PLAINTEXT / TLS+private-CA /
+  mTLS; SASL designed for later without a redesign) and TOML load/save at
   `~/.config/rakko/config.toml` (constructed manually, not via a platform-native
-  path).
-- `src/kafka/` — `client_config.rs` (Profile → librdkafka `ClientConfig`),
-  `admin.rs` (topic listing), `consumer.rs` (tail + seek, `BaseConsumer`-backed),
+  path). `[ui]` prefs (`ThemeName`, `BannerMode`) are plain serde enums here.
+- `crates/rakko-core/src/kafka/` — `client_config.rs` (Profile → librdkafka
+  `ClientConfig`), `admin.rs` (topic listing), `consumer.rs` (tail + seek,
+  `BaseConsumer`-backed, reports `BrowseEvent` through a caller-supplied sink),
   `producer.rs`, `group_offsets.rs` (the `AdminClient` consumer-group-offset gap
-  workaround — read `.agents/PLAN.md` before touching this), `schema_registry.rs`.
-- `src/raw_message.rs` — the byte-preserving `RawMessage` type threaded through
-  browsing, replay, and export/import. Replay and export must always use these raw
-  bytes, never a decoded-then-re-encoded value — see `.agents/PLAN.md`.
-- `src/serde_detect.rs` — Avro (magic byte + schema registry) / JSON / raw
-  auto-detect. Decode-only, never mutates `RawMessage`.
+  workaround — read `.agents/PLAN.md` before touching this), `schema_registry.rs`
+  (schema-id cache incl. Confluent schema **references**, and `SchemaFetchTracker`'s
+  transient-vs-permanent retry/backoff policy).
+- `crates/rakko-core/src/raw_message.rs` — the byte-preserving `RawMessage` type
+  threaded through browsing, replay, and export/import. Replay and export must always
+  use these raw bytes, never a decoded-then-re-encoded value — see `.agents/PLAN.md`.
+- `crates/rakko-core/src/serde_detect.rs` — Avro (magic byte + schema registry) / JSON
+  / raw auto-detect. Decode-only, never mutates `RawMessage`. Avro→JSON is our own
+  infallible conversion (NaN/Inf as strings, `bytes`/`fixed` as base64), not
+  apache-avro's `TryFrom`.
+- `crates/rakko-core/src/{query_filter,ring_buffer,export,error}.rs` — structured
+  filter parser/evaluator, tail ring buffer, JSONL export/import, `AppError`.
+- `crates/rakko-core/src/{preview,message_filter,query_complete}.rs` and
+  `kafka/scan.rs` — frontend-shared pieces: list-row previews (bounded work on huge
+  Avro), the combined text+query message predicate, filter autocomplete as a pure
+  function, and the resumable full-topic `TopicScan` (newest-first windows,
+  definite-end termination — no "quiet for a while" guessing).
+- `crates/rakko-web/` — axum JSON API (`src/`) + React/Vite frontend (`web/`). Scans
+  are session-owned and keep running independent of any HTTP request (`scan.rs`);
+  schema cache is shared per profile (`runtime.rs`); details are fetched on demand
+  and served in ranges (`details.rs`); groups/brokers/produce/replay/export/import/live
+  tail are in `ops.rs` (authentication is the deployment's job — a Bitnami-managed proxy in front; destructive calls need a typed `confirm`). End-to-end tests are in `tests/api.rs`
+  (`#[ignore]`, need `docker compose up -d`). Build the UI with
+  `npm --prefix crates/rakko-web/web ci && npm --prefix crates/rakko-web/web run build`.
 - `src/app/` / `src/events.rs` — the Elm-style `App`/`Action`/`AppEvent`/`Command`
   reducer. `mod.rs` holds the `App` struct and the cross-cutting dispatchers
   (`update`, `confirm`, `back`, `apply_event`); per-screen state and handlers live in
@@ -50,6 +76,11 @@ when architecture decisions change, don't let it silently drift from the code.
 - `scripts/produce-test-messages.sh` / `scripts/consume-test-messages.sh` —
   kcat-based dev helpers for exercising a real broker (continuous producer with
   random delay; fixed-group-id consumer for lag/resume testing).
+- `Dockerfile.web` + `scripts/build-web-image.sh` + `.github/workflows/web-image.yml` —
+  the `rakko-web` container image (UBI 9, non-root) and its air-gapped `docker save`
+  archive; the workflow runs on `v*` tags and pushes to GHCR. The TUI release is still
+  manual (checklist below); attach the web archive with `gh release upload` or let the
+  workflow do it.
 - `docker-compose.yml` / `config.example.toml` — local Kafka + Schema Registry stack
   for manual testing.
 
@@ -73,12 +104,12 @@ when architecture decisions change, don't let it silently drift from the code.
 
 ## Before you finish a change
 
-- `cargo test` — pure-logic tests, no broker required (config round-trips, ring
+- `cargo test --workspace` — pure-logic tests, no broker required (config round-trips, ring
   buffer, serde_detect, seek pagination math, etc.).
-- `cargo build` / `cargo clippy` — should stay warning-clean modulo expected
+- `cargo build` / `cargo clippy --workspace --all-targets` — should stay warning-clean modulo expected
   dead-code on not-yet-wired pieces.
 - For anything touching connection/TLS/consumer/producer/group-offset logic:
-  `docker compose up -d` then `cargo test -- --ignored` runs the docker-compose-gated
+  `docker compose up -d` then `cargo test --workspace -- --ignored` runs the docker-compose-gated
   integration tier (produce/consume round-trip incl. a 20MiB message, topic listing,
   consumer-group lag + offset reset idle/active-member paths, live Schema Registry
   fetch) — see `kafka::integration_support`'s doc comment for the pattern to extend.

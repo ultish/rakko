@@ -1,6 +1,7 @@
-//! Persistent top-level view switcher bar (M10's `1`/`2`/`3` bindings), rendered in the
-//! same place on every list-level screen so the switch mechanism is visually consistent
-//! rather than restated differently in each screen's footer.
+//! Persistent top-level view switcher bar (M10's `1`/`2`/`3` bindings, plus `4` for
+//! Settings), rendered in the same place on every list-level screen so the switch
+//! mechanism is visually consistent rather than restated differently in each screen's
+//! footer.
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -12,21 +13,23 @@ use crate::app::{App, Screen};
 use crate::events::Action;
 
 
-const ENTRIES: [(&str, &str, Action); 3] = [
+const ENTRIES: [(&str, &str, Action); 4] = [
     ("1", "Topics", Action::SwitchToTopics),
     ("2", "Groups", Action::SwitchToGroups),
     ("3", "Brokers", Action::SwitchToBrokers),
+    ("4", "Settings", Action::SwitchToSettings),
 ];
 /// Column gap between switcher entries — matches the `"   "` spacer pushed between
 /// spans in `render` below.
 const GAP: u16 = 3;
 
-/// Which of the three switcher entries (if any) `screen` belongs to.
+/// Which of the switcher entries (if any) `screen` belongs to.
 fn active_index(screen: Screen) -> Option<usize> {
     match screen {
         Screen::TopicList | Screen::TopicDetail => Some(0),
         Screen::GroupList | Screen::GroupDetail => Some(1),
         Screen::BrokerList | Screen::BrokerDetail => Some(2),
+        Screen::Settings => Some(3),
         _ => None,
     }
 }

@@ -139,6 +139,65 @@ Picks up after v1 (M1–M8, shipped as 0.1.0/0.2.0).
 11. **Keybind consistency pass** (post-M10, prompted by user feedback that `e` meant both "edit" on the profile picker and "export" on the message browser). Resolved by reserving `e` app-wide for *edit* only: export selected/all moved from `e`/`E` to `x`/`X` on the topic-detail screen and message inspector. That freed `x`, which collided with group-detail's existing offset-reset trigger — moved to `z` (deliberately non-mnemonic; a less-reachable key is a mild safety property for a destructive action, and it was the only meaning left for `x` to have anywhere). The offset-reset wizard's own internal choice hotkeys (`e`/`l`/`o`/`t` for earliest/latest/absolute/timestamp) were left alone — those are modal, self-documenting, and exempt from the same-letter-same-meaning rule that applies to persistent, footer-visible screen shortcuts.
 12. **Advanced structured query filter** (post-M10, prompted by wanting to search Avro/JSON key/value *fields* rather than flattened substring text — e.g. `key.person.name = jxhui AND value.house.owner = jxhui`). Evaluated JMESPath (right shape, but the Rust crate looked unmaintained — a risk for the from-source airgap build) and JSONPath (`jsonpath-rust`, actively maintained but its `$[?(@.x=='y')]` filter syntax is clunkier than the plain `key.a = b AND ...` form wanted) before deciding to hand-roll a small parser instead: the grammar is tiny (path, `=`/`!=`, literal, `AND`-chain) and a custom implementation keeps the airgap build's dependency tree lean. New `src/query_filter.rs` (pure logic, no I/O): a hand-written tokenizer + recursive-descent parser producing `QueryFilter { raw, conditions: Vec<Condition> }`, evaluated via `path_matches()` — recursively fans out over `serde_json::Value::Array` at *any* point in the path (same implicit semantics as MongoDB's dot-notation array queries: `value.items.sku = "ABC123"` matches if any element of `items` has that sku, no index syntax, arrays-of-arrays included). `!=` is `NOT(matches_path_eq(...))` computed at the top level rather than threaded through the array fan-out as its own comparison — that gives "no element equals" (universal negation), which is what a user means by `tags != "urgent"`; threading `!=` through the recursion would instead give "some element differs," which is a different (and far less useful) question. `serde_detect::decode_json_value()` reuses the same Avro-schema-cache / JSON-object-or-array boundary as the existing `decode_value()`, just returning the parsed `serde_json::Value` instead of a display string, so paths can be walked directly without re-parsing text. Wired as a **second, independent filter** on `TopicDetailState` (`query_filter_input`/`_cursor`/`_active`, `applied_query_filter: Option<QueryFilter>`) — deliberately not folded into the existing substring filter's fields, since the two compose (AND) rather than replace one another. `?` opens it (pairs visually with `/` — same physical key, shift-modified); `Action::ApplyQueryFilter` parses on Enter and, on a parse error, sets the status line and leaves the wizard open rather than closing on invalid input (same pattern as the offset-reset wizard's numeric-input phase). Text-editing keys (`FilterChar`/`FilterBackspace`/cursor movement) and `CancelFilterInput`/`ClearFilter` are reused rather than duplicated — the existing chain-of-`if`s dispatch in `app/mod.rs`'s `text_insert`/etc. already routes by which `*_active` flag is set, so a fourth text-input target is an additive branch, not a new mechanism. **Comparison operators + dialog UI** (added same session, once `=`/`!=` alone proved too limited and a terminal-width single-line bar too cramped for a multi-condition query): `>`/`<`/`>=`/`<=` added as a separate internal `Comparator` enum (`Eq`/`Gt`/`Lt`/`Ge`/`Le`) threaded through `path_matches()`'s array recursion directly — unlike `!=`, which stays a top-level `NOT`, the ordering operators don't have `!=`'s "any-differs is nearly always true" pitfall, so `value.scores > 90` matching if *any* array element exceeds 90 is exactly the expected reading. Parser rejects a non-numeric literal on an ordering operator at parse time (`'>', '<', '>=', and '<=' need a numeric value`) rather than silently never matching. The input moved from an inline one-line bar to a centered dialog (`render_query_filter_dialog`, sized 80%×20% collapsed / 80%×70% with help open) so a long `AND`-chained query has room; `Ctrl-h` (plain `h` has to stay typeable — query text routinely contains it) toggles a static help panel with the syntax summary and worked examples, backed by a new `query_filter_help_visible` flag reset to `false` each time the dialog reopens.
 
+## Workspace split + web direction (post-0.13.2)
+
+**Split.** The repo is a Cargo workspace. Root package `rakko` = the TUI (unchanged
+`src/`, so `Dockerfile.rhel9` / release scripts only gained `COPY crates`).
+`crates/rakko-core` = config, error, export, `kafka/*`, `query_filter`, `raw_message`,
+`ring_buffer`, `serde_detect`. Rule: core owns no UI types. The two historical
+back-edges were removed — `ThemeName` moved into `config`, and `kafka::consumer` now
+reports `BrowseEvent` through a sink closure (`FnMut(BrowseEvent) -> bool`, `false` =
+receiver gone) which the TUI maps into `AppEvent`. `SeekPageRequest`/`SeekPageMeta`
+moved into core with it. `rakko-web` (axum) is now a workspace member; see below.
+
+**Web decisions (user-confirmed).** Server runs inside the kube cluster with plaintext
+broker access; users log in with client certs at the ingress — no auth in the first
+cut, but handlers should accept an identity header so audit/auth is middleware later.
+Full write access (produce, replay, offset reset, import) and groups/lag are in scope
+from day one. Multiple concurrent viewers ⇒ all browse state (position, buffer, filter,
+completion) is **per-session on the server**. Filtering runs against the **whole
+topic**, in batches (cancellable scan with progress), not just the loaded
+buffer/page as in the TUI; the browser shows a virtualized, paginated view and keeps
+finding matches as the user scrolls. Query-filter autocomplete becomes a pure core
+function (input + cursor + samples/schema → candidates) called by the server per
+keystroke; today's logic in `app/topic_detail.rs` is still TUI-coupled and has to be
+extracted first. Wire protocol principle: lists carry metadata + capped previews only;
+full values are fetched lazily and in ranges.
+
+**Web, slice 1 (built).** `crates/rakko-web`: REST API under `/api` (profiles, topics,
+partitions, scans, matches, autocomplete, message detail) and the static React/Vite UI.
+A *scan* = `TopicScan` + `MessageFilter`, owned by the session (`x-rakko-session`
+header, client-generated), advanced by a runner task until the client has enough
+matches, so closing a request/tab never loses or restarts it. Empty filter = browse the
+whole topic. Matches store summaries only; payloads are fetched by `(partition,
+offset)`. Messages the filter could not decode (schema unavailable) are counted and
+shown, never silently treated as non-matches. Autocomplete samples the newest 25
+messages per partition (cached 60s) and calls `query_complete::suggest`.
+
+**Web, slice 2 (built).** `ops.rs`: groups (list/describe/reset — reset requires
+`confirm == group`), brokers (+ non-default configs), produce (JSON body, text or base64
+fields; 32 MiB cap), replay (fetch raw → `RawProducer`, same topic), export (streamed
+JSONL from a fresh `TopicScan` with the same filter; backpressured via a bounded
+channel), import (streamed line by line through one `RawProducer`; bad lines reported),
+live tail (SSE over `run_tail`; per-client bounded queue, overflow counted and reported
+as `dropped`; stops when the client disconnects). The UI gained Topics/Groups/Brokers
+tabs, Browse/Live toggle, produce/import dialogs, replay + edit-and-produce in the detail
+panel. rakko-web has no auth of its own by decision — a Bitnami-managed proxy in front handles login; destructive calls only
+require an explicit confirmation naming the target.
+Not yet built: topic create/delete, topic-level time/offset range for scans.
+
+**Container image.** `Dockerfile.web` (Node UI build → Rocky 9 build with vendored
+librdkafka/OpenSSL → UBI 9 minimal runtime, non-root 10001, config at
+`/etc/rakko/config.toml`). `scripts/build-web-image.sh` builds + `docker save`s an
+air-gapped archive; `.github/workflows/web-image.yml` pushes to GHCR and attaches the
+archive on `v*` tags (the TUI release stays manual).
+
+**Schema Registry behaviour worth knowing.** Decode is by schema *id* from the wire
+header, so RecordNameStrategy needs no special handling. References are followed
+transitively and must be parsed dependencies-first (apache-avro resolves names in one
+pass). Transient registry failures (unreachable/5xx/408/429) back off 1s→60s via
+`SchemaFetchTracker`; 4xx/parse failures/non-Avro schemas are permanent.
+
 ## Verification
 
 - **Local stack**: a dev-only `docker-compose.yml` at repo root with `confluentinc/cp-kafka` (KRaft, no ZooKeeper) + `confluentinc/cp-schema-registry`. Used for all manual milestone checkpoints, including generating a throwaway self-signed CA/cert to test mTLS, and running `kcat -C -G <group> <topic>` in a second terminal to create real consumer-group activity for the offset-reset warning path.

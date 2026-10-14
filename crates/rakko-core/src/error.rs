@@ -20,6 +20,10 @@ pub enum AppError {
     #[error("schema registry error: {0}")]
     SchemaRegistry(String),
 
+    /// Registry unreachable or returned 5xx/408/429 — worth retrying later.
+    #[error("schema registry unavailable: {0}")]
+    SchemaRegistryTransient(String),
+
     #[error("{0}")]
     Other(String),
 }

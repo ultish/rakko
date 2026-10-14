@@ -3,9 +3,10 @@
 //! Never mutates [`crate::raw_message::RawMessage`] — decoded views sit alongside the
 //! raw bytes so replay and export remain byte-identical.
 
+#[cfg(test)]
 use apache_avro::Schema;
 
-use crate::kafka::schema_registry::SchemaRegistry;
+use crate::kafka::schema_registry::{CachedSchema, SchemaRegistry};
 
 /// Result of a cheap magic-byte / UTF-8 sniff (no registry I/O).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,11 +69,18 @@ pub fn decode_value(value: &[u8], registry: Option<&SchemaRegistry>) -> DecodedV
 #[cfg(test)]
 pub fn decode_value_with_schema(value: &[u8], schema: &Schema) -> DecodedValue {
     if confluent_schema_id(value).is_some() {
-        if let Some(text) = avro_payload_to_json(&value[5..], schema) {
+        if let Some(text) = avro_payload_to_json(&value[5..], &CachedSchema::new(schema.clone())) {
             return DecodedValue::Avro(text);
         }
     }
     decode_json_or_raw(value)
+}
+
+/// The Schema Registry id in a Confluent wire-format header (magic `0x00` + big-endian
+/// u32), or `None`. A 5-byte check: cheap regardless of payload size, and — unlike
+/// [`detect_format`] — never parses the body.
+pub fn avro_schema_id(value: &[u8]) -> Option<u32> {
+    confluent_schema_id(value)
 }
 
 fn confluent_schema_id(value: &[u8]) -> Option<u32> {
@@ -91,13 +99,55 @@ fn try_decode_avro(value: &[u8], registry: Option<&SchemaRegistry>) -> Option<De
     Some(DecodedValue::Avro(text))
 }
 
-fn avro_payload_to_json_value(payload: &[u8], schema: &Schema) -> Option<serde_json::Value> {
-    let mut cursor = payload;
-    let avro_value = apache_avro::from_avro_datum(schema, &mut cursor, None).ok()?;
-    avro_value.try_into().ok()
+fn avro_payload_to_json_value(payload: &[u8], schema: &CachedSchema) -> Option<serde_json::Value> {
+    Some(avro_value_to_json(schema.decode_datum(payload)?))
 }
 
-fn avro_payload_to_json(payload: &[u8], schema: &Schema) -> Option<String> {
+/// Avro → JSON for display and filtering. apache-avro's own `TryFrom` is unusable
+/// here on two counts: it errors on NaN/±Infinity (one such `double` made the whole
+/// message fall through to raw hex), and it renders `bytes`/`fixed` as an array of
+/// integers (a 1 MiB blob becomes ~4 MB of `[12,255,…]`). This version is infallible,
+/// emits non-finite floats as the strings `"NaN"`/`"Infinity"`/`"-Infinity"`, and emits
+/// opaque binary as base64.
+fn avro_value_to_json(value: apache_avro::types::Value) -> serde_json::Value {
+    use apache_avro::types::Value as A;
+    use base64::Engine;
+    use serde_json::Value as J;
+    let b64 = |bytes: &[u8]| J::String(base64::engine::general_purpose::STANDARD.encode(bytes));
+    let float = |f: f64| match serde_json::Number::from_f64(f) {
+        Some(n) => J::Number(n),
+        None if f.is_nan() => J::String("NaN".into()),
+        None if f.is_sign_positive() => J::String("Infinity".into()),
+        None => J::String("-Infinity".into()),
+    };
+    match value {
+        A::Null => J::Null,
+        A::Boolean(b) => J::Bool(b),
+        A::Int(i) | A::Date(i) | A::TimeMillis(i) => J::from(i),
+        A::Long(l)
+        | A::TimeMicros(l)
+        | A::TimestampMillis(l)
+        | A::TimestampMicros(l)
+        | A::TimestampNanos(l)
+        | A::LocalTimestampMillis(l)
+        | A::LocalTimestampMicros(l)
+        | A::LocalTimestampNanos(l) => J::from(l),
+        A::Float(f) => float(f.into()),
+        A::Double(d) => float(d),
+        A::String(s) | A::Enum(_, s) => J::String(s),
+        A::Bytes(b) | A::Fixed(_, b) => b64(&b),
+        A::Union(_, inner) => avro_value_to_json(*inner),
+        A::Array(items) => J::Array(items.into_iter().map(avro_value_to_json).collect()),
+        A::Map(items) => J::Object(items.into_iter().map(|(k, v)| (k, avro_value_to_json(v))).collect()),
+        A::Record(fields) => J::Object(fields.into_iter().map(|(k, v)| (k, avro_value_to_json(v))).collect()),
+        A::Uuid(u) => J::String(u.as_hyphenated().to_string()),
+        A::Decimal(d) => <Vec<u8>>::try_from(&d).map(|b| b64(&b)).unwrap_or(J::Null),
+        A::BigDecimal(d) => J::String(d.to_string()),
+        A::Duration(d) => b64(&<[u8; 12]>::from(d)),
+    }
+}
+
+fn avro_payload_to_json(payload: &[u8], schema: &CachedSchema) -> Option<String> {
     avro_payload_to_json_value(payload, schema).map(|v| v.to_string())
 }
 
@@ -188,12 +238,10 @@ pub fn avro_value_preview(value: &[u8], registry: Option<&SchemaRegistry>, max_c
     let schema_id = confluent_schema_id(value)?;
     let registry = registry?;
     let schema = registry.cached_schema(schema_id)?;
-    let mut cursor = &value[5..];
-    let avro_value = apache_avro::from_avro_datum(schema, &mut cursor, None).ok()?;
+    let avro_value = schema.decode_datum(&value[5..])?;
     let mut budget = max_chars;
     let truncated = truncate_avro_value_bounded(avro_value, &mut budget);
-    let json_value: serde_json::Value = truncated.try_into().ok()?;
-    Some(json_value.to_string())
+    Some(avro_value_to_json(truncated).to_string())
 }
 
 /// Structured JSON view of `value`, for the advanced query filter
@@ -413,6 +461,33 @@ mod tests {
         ]);
         let payload = apache_avro::to_avro_datum(&schema, value).unwrap();
         (schema, payload)
+    }
+
+    #[test]
+    fn avro_non_finite_floats_do_not_break_decode() {
+        let schema = Schema::parse_str(
+            r#"{"type":"record","name":"F","fields":[{"name":"d","type":"double"},{"name":"x","type":"float"}]}"#,
+        )
+        .unwrap();
+        let mut payload = f64::NAN.to_le_bytes().to_vec();
+        payload.extend(f32::NEG_INFINITY.to_le_bytes());
+        let mut sr = SchemaRegistry::new("http://localhost:8081").unwrap();
+        sr.insert_schema(5, schema);
+        let json = decode_json_value(&confluent_frame(5, &payload), Some(&sr)).expect("decodes");
+        assert_eq!(json, serde_json::json!({"d": "NaN", "x": "-Infinity"}));
+    }
+
+    #[test]
+    fn avro_bytes_and_fixed_render_as_base64_not_integer_arrays() {
+        let schema = Schema::parse_str(
+            r#"{"type":"record","name":"B","fields":[{"name":"b","type":"bytes"},{"name":"f","type":{"type":"fixed","name":"F2","size":2}}]}"#,
+        )
+        .unwrap();
+        let payload = [6, 0xde, 0xad, 0xbe, 0xca, 0xfe]; // len 3, then fixed(2)
+        let mut sr = SchemaRegistry::new("http://localhost:8081").unwrap();
+        sr.insert_schema(6, schema);
+        let json = decode_json_value(&confluent_frame(6, &payload), Some(&sr)).expect("decodes");
+        assert_eq!(json, serde_json::json!({"b": "3q2+", "f": "yv4="}));
     }
 
     #[test]

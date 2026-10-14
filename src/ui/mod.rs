@@ -61,6 +61,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Screen::BrokerDetail => screens::broker_detail::render(frame, app, content),
         Screen::Producer => screens::producer::render(frame, app, content),
         Screen::ExportImport => screens::export_import::render(frame, app, content),
+        Screen::Settings => screens::settings::render(frame, app, content),
     }
 
     if app.help_visible {

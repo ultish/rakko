@@ -61,6 +61,49 @@ pub async fn produce(
     Ok(())
 }
 
+/// A reusable producer for sending many messages (imports) without paying a client
+/// setup per record. Sends are awaited one at a time, so ordering and errors are exact.
+pub struct RawProducer {
+    producer: FutureProducer,
+}
+
+impl RawProducer {
+    pub fn new(profile: &Profile) -> AppResult<Self> {
+        let mut config = producer_client_config(profile);
+        config.set("message.timeout.ms", "30000");
+        let producer = config
+            .create()
+            .map_err(|err| AppError::Other(format!("failed to create producer: {err}")))?;
+        Ok(Self { producer })
+    }
+
+    /// Sends the bytes exactly as given; returns the `(partition, offset)` it landed at.
+    pub async fn send(
+        &self,
+        topic: &str,
+        key: Option<&[u8]>,
+        value: Option<&[u8]>,
+        headers: &[(String, Vec<u8>)],
+    ) -> AppResult<(i32, i64)> {
+        let mut record: FutureRecord<'_, [u8], [u8]> = FutureRecord::to(topic);
+        if let Some(k) = key {
+            record = record.key(k);
+        }
+        if let Some(v) = value {
+            record = record.payload(v);
+        }
+        if !headers.is_empty() {
+            record = record.headers(build_owned_headers(headers));
+        }
+        let delivery = self
+            .producer
+            .send(record, PRODUCE_TIMEOUT)
+            .await
+            .map_err(|(err, _)| AppError::Kafka(err))?;
+        Ok((delivery.partition, delivery.offset))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

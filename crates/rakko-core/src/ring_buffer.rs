@@ -32,7 +32,6 @@ impl<T> RingBuffer<T> {
         self.items.len()
     }
 
-    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

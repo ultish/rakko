@@ -2,10 +2,9 @@
 //! the single-message replay wizard.
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::ops::Range;
 
-use serde_json::Value;
 
 use super::producer::{ProducerFocus, ProducerState};
 use super::{App, Screen, TAIL_BUFFER_CAPACITY};
@@ -333,11 +332,11 @@ impl TopicDetailState {
                 .filter(|(_, message)| {
                     needle
                         .as_deref()
-                        .is_none_or(|n| message_matches_filter(message, n, registry))
+                        .is_none_or(|n| crate::message_filter::text_matches(message, n, registry))
                         && self
                             .applied_query_filter
                             .as_ref()
-                            .is_none_or(|q| query_filter_matches(message, q, registry))
+                            .is_none_or(|q| crate::message_filter::query_matches(message, q, registry))
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -427,136 +426,6 @@ impl TopicDetailState {
     }
 }
 
-/// Case-insensitive substring match against key, raw value, and the serde_detect
-/// decoded view (JSON/Avro text/hex). Never mutates the raw message.
-fn message_matches_filter(
-    message: &RawMessage,
-    needle_lowercase: &str,
-    registry: Option<&SchemaRegistry>,
-) -> bool {
-    // Key: raw UTF-8 view and decoded view (Avro/JSON/text/hex) — formats can differ from value.
-    if let Some(key) = message.key.as_deref() {
-        if String::from_utf8_lossy(key)
-            .to_lowercase()
-            .contains(needle_lowercase)
-        {
-            return true;
-        }
-        if crate::serde_detect::decode_value(key, registry)
-            .as_str()
-            .to_lowercase()
-            .contains(needle_lowercase)
-        {
-            return true;
-        }
-    }
-    let Some(value) = message.value.as_deref() else {
-        return false;
-    };
-    if String::from_utf8_lossy(value)
-        .to_lowercase()
-        .contains(needle_lowercase)
-    {
-        return true;
-    }
-    // Decoded value view (JSON / Avro-as-JSON when schema is cached / text / hex).
-    crate::serde_detect::decode_value(value, registry)
-        .as_str()
-        .to_lowercase()
-        .contains(needle_lowercase)
-}
-
-/// Structured-query match: decodes key/value to `serde_json::Value` (same Avro-cache
-/// boundary as the substring filter) and evaluates the parsed query against them.
-fn query_filter_matches(
-    message: &RawMessage,
-    query: &crate::query_filter::QueryFilter,
-    registry: Option<&SchemaRegistry>,
-) -> bool {
-    let key = message
-        .key
-        .as_deref()
-        .and_then(|k| crate::serde_detect::decode_json_value(k, registry));
-    let value = message
-        .value
-        .as_deref()
-        .and_then(|v| crate::serde_detect::decode_json_value(v, registry));
-    query.matches(key.as_ref(), value.as_ref())
-}
-
-/// Child field names reachable from `value` at `path`, transparently fanning out over
-/// arrays exactly like `query_filter::path_matches` does when *evaluating* a path —
-/// so what's offered here always matches what would actually work if typed. `path`
-/// empty at an object yields that object's own keys (the completion candidates);
-/// arrays never consume a path segment; leaves have no children.
-fn candidate_children(value: &Value, path: &[String]) -> BTreeSet<String> {
-    match value {
-        Value::Array(items) => {
-            let mut out = BTreeSet::new();
-            for item in items {
-                out.extend(candidate_children(item, path));
-            }
-            out
-        }
-        Value::Object(map) => match path.split_first() {
-            Some((head, rest)) => map
-                .get(head)
-                .map(|next| candidate_children(next, rest))
-                .unwrap_or_default(),
-            None => map.keys().cloned().collect(),
-        },
-        _leaf => BTreeSet::new(),
-    }
-}
-
-/// What a trailing path-like token (see `trailing_path_token`) is asking to complete.
-enum CompletionTarget {
-    /// Still typing the root word itself (`val` → `key`/`value`).
-    Root,
-    /// Completing one path segment under `root`, `path_so_far` deep, with `partial`
-    /// typed so far for the segment being completed (may be empty, e.g. right after
-    /// a trailing `.`).
-    Path {
-        root: &'static str,
-        path_so_far: Vec<String>,
-        partial: String,
-    },
-}
-
-/// The path-like token at the very end of `input` (letters/digits/underscore/dot) —
-/// e.g. `"value.hou"` out of `"key.x = 1 AND value.hou"`. Completion only ever looks
-/// at the end of the input (see `Action::QueryFilterAutocomplete`'s cursor-at-end
-/// check), so this doesn't need to know about the cursor at all.
-fn trailing_path_token(input: &str) -> &str {
-    let is_path_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
-    match input.char_indices().rev().find(|(_, c)| !is_path_char(*c)) {
-        Some((i, c)) => &input[i + c.len_utf8()..],
-        None => input,
-    }
-}
-
-/// Splits a trailing token into what it's completing. `None` means "not a key/value
-/// path at all" (an empty token, or a root word that isn't a prefix of `key`/`value`)
-/// — Tab is a no-op in that case.
-fn classify_token(token: &str) -> Option<CompletionTarget> {
-    if token.is_empty() {
-        return None;
-    }
-    match token.split_once('.') {
-        None => Some(CompletionTarget::Root),
-        Some((root, rest)) => {
-            let root = match root {
-                "key" => "key",
-                "value" => "value",
-                _ => return None,
-            };
-            let mut segments: Vec<String> = rest.split('.').map(str::to_string).collect();
-            let partial = segments.pop().unwrap_or_default();
-            Some(CompletionTarget::Path { root, path_so_far: segments, partial })
-        }
-    }
-}
-
 impl App {
     /// Tab in the query-filter dialog. Continues an in-flight cycle (see
     /// `QueryFilterCompletion`) if the input still matches what was last inserted, or
@@ -586,46 +455,25 @@ impl App {
             }
         }
 
-        let token = trailing_path_token(&detail.query_filter_input);
-        let Some(target) = classify_token(token) else {
+        let input = detail.query_filter_input.clone();
+        let suggestions = crate::query_complete::suggest(&input, |root| {
+            let mut out = Vec::new();
+            for message in detail.visible_messages_with_registry(registry) {
+                let bytes = match root {
+                    crate::query_complete::Root::Key => message.key.as_deref(),
+                    crate::query_complete::Root::Value => message.value.as_deref(),
+                };
+                if let Some(decoded) =
+                    bytes.and_then(|b| crate::serde_detect::decode_json_value(b, registry))
+                {
+                    out.push(decoded);
+                }
+            }
+            out
+        });
+        let Some(crate::query_complete::Suggestions { prefix, candidates }) = suggestions else {
             detail.query_filter_completion = None;
             return;
-        };
-        // Text before the whole trailing token — NOT necessarily what gets kept: for a
-        // path target, only the last (partial) segment is replaced, so "value.house."
-        // stays and only "o" in "value.house.o" is swapped out.
-        let token_start = detail.query_filter_input.len() - token.len();
-        let outer_prefix = &detail.query_filter_input[..token_start];
-
-        let (prefix, candidates): (String, Vec<String>) = match &target {
-            CompletionTarget::Root => {
-                let candidates = ["key", "value"]
-                    .into_iter()
-                    .filter(|r| r.starts_with(token))
-                    .map(str::to_string)
-                    .collect();
-                (outer_prefix.to_string(), candidates)
-            }
-            CompletionTarget::Path { root, path_so_far, partial } => {
-                let mut set = BTreeSet::new();
-                for message in detail.visible_messages_with_registry(registry) {
-                    let bytes = if *root == "key" { message.key.as_deref() } else { message.value.as_deref() };
-                    let Some(decoded) =
-                        bytes.and_then(|b| crate::serde_detect::decode_json_value(b, registry))
-                    else {
-                        continue;
-                    };
-                    set.extend(candidate_children(&decoded, path_so_far));
-                }
-                let candidates =
-                    set.into_iter().filter(|c| c.starts_with(partial.as_str())).collect();
-                let mut prefix = format!("{outer_prefix}{root}.");
-                for segment in path_so_far {
-                    prefix.push_str(segment);
-                    prefix.push('.');
-                }
-                (prefix, candidates)
-            }
         };
 
         match candidates.len() {

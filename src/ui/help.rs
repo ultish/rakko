@@ -62,8 +62,8 @@ const GLOBAL: KeybindSection = KeybindSection {
             description: "Back / cancel",
         },
         KeybindEntry {
-            keys: "1/2/3",
-            description: "Jump Topics / Groups / Brokers",
+            keys: "1/2/3/4",
+            description: "Jump Topics / Groups / Brokers / Settings",
         },
     ],
 };
@@ -308,6 +308,20 @@ const EXPORT_IMPORT: KeybindSection = KeybindSection {
     ],
 };
 
+const SETTINGS: KeybindSection = KeybindSection {
+    title: "Settings",
+    entries: &[
+        KeybindEntry {
+            keys: "Enter · Space",
+            description: "Cycle theme/banner, or edit seek_page_size",
+        },
+        KeybindEntry {
+            keys: "←/→",
+            description: "Nudge seek_page_size by 10",
+        },
+    ],
+};
+
 /// Sections shown for the current screen (global always first).
 pub fn sections_for(app: &App) -> Vec<&'static KeybindSection> {
     let mut sections = vec![&GLOBAL];
@@ -330,6 +344,7 @@ pub fn sections_for(app: &App) -> Vec<&'static KeybindSection> {
         Screen::BrokerDetail => sections.push(&BROKER_DETAIL),
         Screen::Producer => sections.push(&PRODUCER),
         Screen::ExportImport => sections.push(&EXPORT_IMPORT),
+        Screen::Settings => sections.push(&SETTINGS),
     }
     sections
 }
@@ -398,5 +413,6 @@ fn screen_label(screen: Screen) -> &'static str {
         Screen::BrokerDetail => "Broker detail",
         Screen::Producer => "Producer",
         Screen::ExportImport => "Export / import",
+        Screen::Settings => "Settings",
     }
 }

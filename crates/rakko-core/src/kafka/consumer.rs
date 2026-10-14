@@ -6,7 +6,6 @@ use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 
 use crate::config::Profile;
 use crate::error::{AppError, AppResult};
-use crate::events::{AppEvent, SeekPageMeta, SeekPageRequest};
 use crate::kafka::client_config::consumer_client_config;
 use crate::raw_message::RawMessage;
 
@@ -26,7 +25,7 @@ const SEEK_STALL_LIMIT: u32 = 5;
 
 /// Converts a borrowed Kafka message into the owned, byte-preserving `RawMessage` type
 /// used everywhere outside of the consumer poll loop.
-fn to_raw_message(msg: &rdkafka::message::BorrowedMessage<'_>) -> RawMessage {
+pub(crate) fn to_raw_message(msg: &rdkafka::message::BorrowedMessage<'_>) -> RawMessage {
     let headers = msg
         .headers()
         .map(|headers| {
@@ -48,6 +47,42 @@ fn to_raw_message(msg: &rdkafka::message::BorrowedMessage<'_>) -> RawMessage {
     }
 }
 
+/// Which end of a topic/partition a seek page request is anchored to. `Forward`/`Backward`
+/// page relative to the current page's edge offset; `Latest` is used the first time a
+/// partition enters seek mode.
+#[derive(Debug, Clone)]
+pub enum SeekPageRequest {
+    Latest { page_size: usize },
+    Forward { from_offset: i64, page_size: usize },
+    Backward { before_offset: i64, page_size: usize },
+}
+
+/// Metadata describing where a loaded seek page sits relative to the partition's
+/// watermarks, so the UI can grey out "page further" keys at either edge.
+#[derive(Debug, Clone)]
+pub struct SeekPageMeta {
+    pub partition: i32,
+    /// Offset of the first message in the page (or the requested start if the page is
+    /// empty), used as the anchor for the next Forward/Backward request.
+    pub page_start_offset: i64,
+    pub at_beginning: bool,
+    pub at_end: bool,
+    /// Partition low watermark (earliest available offset) at load time.
+    pub low_watermark: i64,
+    /// Partition high watermark (next offset to be written) at load time.
+    pub high_watermark: i64,
+}
+
+/// What a browse task reports back. Frontends map this into their own event type, so
+/// the consumer stays free of any UI state. The sink passed to the task returns
+/// `false` once its receiver is gone, which ends a tail loop.
+#[derive(Debug)]
+pub enum BrowseEvent {
+    Message { topic: String, partition: i32, message: RawMessage },
+    SeekPage { topic: String, messages: Vec<RawMessage>, meta: SeekPageMeta },
+    Failed(String),
+}
+
 /// Runs the continuous tail-mode poll loop until `stop_rx` flips to `true`, sending one
 /// `AppEvent::MessageArrived` per message received. Cooperatively cancellable: the actual
 /// blocking work happens in `spawn_blocking`, and the loop checks `stop_rx` after every
@@ -56,11 +91,11 @@ fn to_raw_message(msg: &rdkafka::message::BorrowedMessage<'_>) -> RawMessage {
 pub async fn run_tail(
     profile: Profile,
     topic: String,
-    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    mut emit: impl FnMut(BrowseEvent) -> bool + Send + 'static,
     stop_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let result =
-        tokio::task::spawn_blocking(move || run_tail_blocking(&profile, &topic, &tx, stop_rx)).await;
+        tokio::task::spawn_blocking(move || run_tail_blocking(&profile, &topic, &mut emit, stop_rx)).await;
     if let Err(err) = result {
         tracing::warn!("tail task panicked: {err}");
     }
@@ -69,13 +104,13 @@ pub async fn run_tail(
 fn run_tail_blocking(
     profile: &Profile,
     topic: &str,
-    tx: &tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    emit: &mut impl FnMut(BrowseEvent) -> bool,
     stop_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let consumer: BaseConsumer = match consumer_client_config(profile, BROWSE_GROUP_ID).create() {
         Ok(consumer) => consumer,
         Err(err) => {
-            let _ = tx.send(AppEvent::BrowseFailed(format!("failed to create consumer: {err}")));
+            let _ = emit(BrowseEvent::Failed(format!("failed to create consumer: {err}")));
             return;
         }
     };
@@ -83,26 +118,26 @@ fn run_tail_blocking(
     let metadata = match consumer.fetch_metadata(Some(topic), METADATA_TIMEOUT) {
         Ok(metadata) => metadata,
         Err(err) => {
-            let _ = tx.send(AppEvent::BrowseFailed(format!("failed to fetch metadata for {topic}: {err}")));
+            let _ = emit(BrowseEvent::Failed(format!("failed to fetch metadata for {topic}: {err}")));
             return;
         }
     };
 
     let Some(topic_metadata) = metadata.topics().iter().find(|t| t.name() == topic) else {
-        let _ = tx.send(AppEvent::BrowseFailed(format!("topic {topic} not found")));
+        let _ = emit(BrowseEvent::Failed(format!("topic {topic} not found")));
         return;
     };
 
     let mut tpl = TopicPartitionList::with_capacity(topic_metadata.partitions().len());
     for partition in topic_metadata.partitions() {
         if let Err(err) = tpl.add_partition_offset(topic, partition.id(), Offset::End) {
-            let _ = tx.send(AppEvent::BrowseFailed(format!("failed to build partition assignment: {err}")));
+            let _ = emit(BrowseEvent::Failed(format!("failed to build partition assignment: {err}")));
             return;
         }
     }
 
     if let Err(err) = consumer.assign(&tpl) {
-        let _ = tx.send(AppEvent::BrowseFailed(format!("failed to assign partitions: {err}")));
+        let _ = emit(BrowseEvent::Failed(format!("failed to assign partitions: {err}")));
         return;
     }
 
@@ -111,12 +146,12 @@ fn run_tail_blocking(
             Some(Ok(msg)) => {
                 let partition = msg.partition();
                 let message = to_raw_message(&msg);
-                let event = AppEvent::MessageArrived {
+                let event = BrowseEvent::Message {
                     topic: topic.to_string(),
                     partition,
                     message,
                 };
-                if tx.send(event).is_err() {
+                if !emit(event) {
                     // Receiver dropped (app shutting down) - normal shutdown race, not an error.
                     break;
                 }
@@ -133,31 +168,158 @@ fn run_tail_blocking(
     }
 }
 
-/// Loads exactly one bounded page of messages for seek mode, sending
-/// `AppEvent::SeekPageLoaded` on success or `AppEvent::BrowseFailed` on failure. One-shot:
+/// Loads exactly one bounded page of messages for seek mode, reporting
+/// `BrowseEvent::SeekPage` on success or `BrowseEvent::Failed` on failure. One-shot:
 /// no cancellation needed since the work is bounded and expected to finish quickly.
 pub async fn load_seek_page(
     profile: Profile,
     topic: String,
     partition: i32,
     request: SeekPageRequest,
-    tx: tokio::sync::mpsc::UnboundedSender<AppEvent>,
+    emit: impl FnOnce(BrowseEvent) -> bool,
 ) {
     let topic_for_result = topic.clone();
     let result = tokio::task::spawn_blocking(move || load_seek_page_blocking(&profile, &topic, partition, &request))
         .await;
 
     let event = match result {
-        Ok(Ok((messages, meta))) => AppEvent::SeekPageLoaded {
+        Ok(Ok((messages, meta))) => BrowseEvent::SeekPage {
             topic: topic_for_result,
             messages,
             meta,
         },
-        Ok(Err(err)) => AppEvent::BrowseFailed(err.to_string()),
-        Err(err) => AppEvent::BrowseFailed(format!("seek page load task panicked: {err}")),
+        Ok(Err(err)) => BrowseEvent::Failed(err.to_string()),
+        Err(err) => BrowseEvent::Failed(format!("seek page load task panicked: {err}")),
     };
 
-    let _ = tx.send(event);
+    let _ = emit(event);
+}
+
+/// One partition's retained offset range at a point in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartitionWatermarks {
+    pub partition: i32,
+    /// Earliest available offset.
+    pub low: i64,
+    /// Next offset to be written (one past the newest message).
+    pub high: i64,
+}
+
+impl PartitionWatermarks {
+    pub fn message_count(&self) -> i64 {
+        (self.high - self.low).max(0)
+    }
+}
+
+/// Partition ids and watermarks for `topic`, sorted by partition. Errors if the topic
+/// does not exist.
+pub async fn partition_watermarks(profile: &Profile, topic: &str) -> AppResult<Vec<PartitionWatermarks>> {
+    let profile = profile.clone();
+    let topic = topic.to_string();
+    tokio::task::spawn_blocking(move || partition_watermarks_blocking(&profile, &topic))
+        .await
+        .map_err(|err| AppError::Other(format!("watermark task panicked: {err}")))?
+}
+
+pub(crate) fn partition_watermarks_blocking(profile: &Profile, topic: &str) -> AppResult<Vec<PartitionWatermarks>> {
+    let consumer: BaseConsumer = consumer_client_config(profile, BROWSE_GROUP_ID).create()?;
+    partition_watermarks_with(&consumer, topic)
+}
+
+pub(crate) fn partition_watermarks_with(consumer: &BaseConsumer, topic: &str) -> AppResult<Vec<PartitionWatermarks>> {
+    let metadata = consumer.fetch_metadata(Some(topic), METADATA_TIMEOUT)?;
+    let topic_meta = metadata
+        .topics()
+        .iter()
+        .find(|t| t.name() == topic)
+        .filter(|t| t.error().is_none())
+        .ok_or_else(|| AppError::Other(format!("topic {topic} not found")))?;
+    let mut out = Vec::new();
+    for partition in topic_meta.partitions() {
+        let (low, high) = consumer.fetch_watermarks(topic, partition.id(), WATERMARK_TIMEOUT)?;
+        out.push(PartitionWatermarks { partition: partition.id(), low, high });
+    }
+    out.sort_by_key(|p| p.partition);
+    Ok(out)
+}
+
+/// Loads one bounded seek page and returns it (the value-returning sibling of
+/// [`load_seek_page`], for callers that don't route results through an event sink).
+pub async fn read_seek_page(
+    profile: &Profile,
+    topic: &str,
+    partition: i32,
+    request: SeekPageRequest,
+) -> AppResult<(Vec<RawMessage>, SeekPageMeta)> {
+    let profile = profile.clone();
+    let topic = topic.to_string();
+    tokio::task::spawn_blocking(move || load_seek_page_blocking(&profile, &topic, partition, &request))
+        .await
+        .map_err(|err| AppError::Other(format!("seek page task panicked: {err}")))?
+}
+
+/// How long [`fetch_message`] waits for the broker before giving up.
+const FETCH_ONE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Reads exactly the message at `partition`/`offset`. `None` if that offset no longer
+/// exists (retention, compaction) or is past the end of the log.
+pub async fn fetch_message(
+    profile: &Profile,
+    topic: &str,
+    partition: i32,
+    offset: i64,
+) -> AppResult<Option<RawMessage>> {
+    let profile = profile.clone();
+    let topic = topic.to_string();
+    tokio::task::spawn_blocking(move || fetch_message_blocking(&profile, &topic, partition, offset))
+        .await
+        .map_err(|err| AppError::Other(format!("fetch message task panicked: {err}")))?
+}
+
+fn fetch_message_blocking(
+    profile: &Profile,
+    topic: &str,
+    partition: i32,
+    offset: i64,
+) -> AppResult<Option<RawMessage>> {
+    use rdkafka::error::KafkaError;
+    use rdkafka::types::RDKafkaErrorCode;
+
+    let mut config = consumer_client_config(profile, BROWSE_GROUP_ID);
+    config.set("enable.partition.eof", "true");
+    config.set("auto.offset.reset", "error");
+    let consumer: BaseConsumer = config.create()?;
+
+    // Outside the retained range there is nothing to wait for.
+    let (low, high) = consumer.fetch_watermarks(topic, partition, WATERMARK_TIMEOUT)?;
+    if offset < low || offset >= high {
+        return Ok(None);
+    }
+
+    let mut tpl = TopicPartitionList::with_capacity(1);
+    tpl.add_partition_offset(topic, partition, Offset::Offset(offset))
+        .map_err(|err| AppError::Other(format!("failed to build partition assignment: {err}")))?;
+    consumer.assign(&tpl)?;
+
+    let started = std::time::Instant::now();
+    while started.elapsed() < FETCH_ONE_TIMEOUT {
+        match consumer.poll(SEEK_POLL_TIMEOUT) {
+            Some(Ok(msg)) => {
+                return Ok((msg.offset() == offset).then(|| to_raw_message(&msg)));
+            }
+            Some(Err(KafkaError::PartitionEOF(_))) => return Ok(None),
+            // Retention removed it between the watermark check and the fetch. With
+            // `auto.offset.reset=error` librdkafka reports that as AutoOffsetReset.
+            Some(Err(KafkaError::MessageConsumption(
+                RDKafkaErrorCode::OffsetOutOfRange | RDKafkaErrorCode::AutoOffsetReset,
+            ))) => {
+                return Ok(None);
+            }
+            Some(Err(err)) => tracing::warn!("transient error fetching {topic}/{partition}@{offset}: {err}"),
+            None => {}
+        }
+    }
+    Err(AppError::Other(format!("timed out fetching {topic}/{partition}@{offset}")))
 }
 
 /// Pure description of how a seek page should be loaded, derived from the low/high
@@ -503,13 +665,13 @@ mod integration_tests {
             topic,
             0,
             SeekPageRequest::Latest { page_size: 10 },
-            tx,
+            move |event| tx.send(event).is_ok(),
         )
         .await;
 
         match rx.recv().await.expect("load_seek_page should report an event") {
-            AppEvent::SeekPageLoaded { messages, .. } => messages,
-            other => panic!("expected SeekPageLoaded, got {other:?}"),
+            BrowseEvent::SeekPage { messages, .. } => messages,
+            other => panic!("expected SeekPage, got {other:?}"),
         }
     }
 

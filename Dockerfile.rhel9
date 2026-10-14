@@ -92,6 +92,7 @@ WORKDIR /src
 
 # Context is repo root (Cargo.toml + src/ at the root of the context)
 COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
 COPY src ./src
 COPY assets ./assets
 

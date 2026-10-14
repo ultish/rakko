@@ -104,7 +104,7 @@ theme = "dark"          # dark | light  (cycle with T in the TUI)
 banner_mode = "wave"    # wave | ms | fps | off  (cycle with A)
 ```
 
-Both keys are optional (defaults: dark theme, wave banner). Changing them with **`T`** / **`A`** in the TUI writes back to `config.toml`.
+Both keys are optional (defaults: dark theme, wave banner). Changing them with **`T`** / **`A`**, or from the **Settings** tab (**`4`**), writes back to `config.toml`.
 
 ### Example profile (PLAINTEXT)
 
@@ -162,9 +162,10 @@ Optional per-profile producer knobs:
 `seek_page_size` (top-level, not per-profile — a browsing preference, not a
 cluster setting) controls how many messages a seek-mode page request loads at a
 time: n/p paging, the initial page on switching into seek mode, and
-mode-switch-to-latest. Defaults to 50 if unset. Must come before the first
-`[[profiles]]` table (TOML array-of-tables rule — after `[[profiles]]`, a bare
-key attaches to that profile instead of the top level):
+mode-switch-to-latest. Defaults to 50 if unset. Edit it in the TUI from the
+**Settings** tab (**`4`**), or hand-edit the file — it must come before the
+first `[[profiles]]` table (TOML array-of-tables rule — after `[[profiles]]`,
+a bare key attaches to that profile instead of the top level):
 
 ```toml
 seek_page_size = 50
@@ -225,11 +226,12 @@ key.person.name = jxhui AND key.person.age = 20 AND value.house.owner = jxhui
 Global: **`q`** quit (confirms) · **Ctrl-c** force quit · **Esc** back · **j/k** or arrows move · **Enter** confirm · **`?`** help overlay (keybinds for the current screen) · **`A`** cycle banner mode (wave → ms/frame → paint-capacity fps → off; saved to config) · **`T`** cycle theme (dark ↔ light; saved to config).
 
 On any of the list-level screens (Topics, Messages, Groups, Group detail, Brokers,
-Broker detail) a **switcher bar** sits under the banner: `1 Topics   2 Groups   3
-Brokers`, with the active view highlighted. **1**/**2**/**3** jump straight there —
-the only way to move between top-level views (no per-screen `g`/`b` shortcuts, so it
-means the same thing everywhere it appears). Producer/Export-import/Create-profile
-don't show it — a stray digit there would clobber an in-progress draft.
+Broker detail, Settings) a **switcher bar** sits under the banner: `1 Topics   2
+Groups   3 Brokers   4 Settings`, with the active view highlighted.
+**1**/**2**/**3**/**4** jump straight there — the only way to move between
+top-level views (no per-screen `g`/`b` shortcuts, so it means the same thing
+everywhere it appears). Producer/Export-import/Create-profile don't show it — a
+stray digit there would clobber an in-progress draft.
 
 Shortcuts are kept consistent app-wide: **e** always means *edit* (profile picker,
 replay's "edit in producer"), never anything else. Export uses **x**/**X** instead.
@@ -241,13 +243,14 @@ reduce accidental presses.
 |--------|------|
 | **Profile picker** | **Enter** connect · **n** new profile · **e** edit profile · **z** delete profile (confirm) · **q** quit |
 | **Create profile** | **Tab** / **Shift-Tab** fields · **←**/**→**/**Home**/**End** cursor · **Delete** · **Space**/**t** cycle Auth · **Enter** save · **Esc** cancel/quit |
-| **Topics** | **Enter** open topic · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
-| **Messages** | Opens in **page (seek)** mode on the latest messages · **Tab**/**s** seek ↔ live tail · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page · **/** filter · **Q** query filter · **c** clear filter(s) · **V**/**K**/**Y** copy value / key / offset · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3** switch view |
+| **Topics** | **Enter** open topic · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3**/**4** switch view |
+| **Messages** | Opens in **page (seek)** mode on the latest messages · **Tab**/**s** seek ↔ live tail · **o** sort newest/oldest · **n**/**p** or PgDn/PgUp page · **r** refresh page · **/** filter · **Q** query filter · **c** clear filter(s) · **V**/**K**/**Y** copy value / key / offset · **w** produce · **y** replay · **x** export selected · **X** export all visible · **i** import · **1**/**2**/**3**/**4** switch view |
 | **Message view** | 2×2 grid: **Attrs** (topic/partition/offset/timestamp/formats) + **Headers** on top, **Key**/**Value** below · **j**/**k** or **↑**/**↓** scroll the focused panel · **PgUp**/**PgDn** page · **Tab**/click switch focus between **Headers**/**Key**/**Value** (Attrs has no scrollback, so isn't focusable) · **←**/**→** resize the focused panel against its row-mate (Attrs↔Headers or Key↔Value) · **V**/**K**/**Y** copy · **Enter**/**Esc** close · **y** replay · **x** export this message |
-| **Groups** | **Enter** detail · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3** switch view |
-| **Group detail** | **z** reset offsets · **r** refresh lag (also auto every ~3s while open) · **1**/**2**/**3** switch view |
-| **Brokers** | **Enter** view broker config · **r** refresh list · **1**/**2**/**3** switch view |
-| **Broker detail** | **r** refresh config · **Esc** back · **1**/**2**/**3** switch view |
+| **Groups** | **Enter** detail · **r** refresh list · **/** filter by name · **c** clear filter · **1**/**2**/**3**/**4** switch view |
+| **Group detail** | **z** reset offsets · **r** refresh lag (also auto every ~3s while open) · **1**/**2**/**3**/**4** switch view |
+| **Brokers** | **Enter** view broker config · **r** refresh list · **1**/**2**/**3**/**4** switch view |
+| **Broker detail** | **r** refresh config · **Esc** back · **1**/**2**/**3**/**4** switch view |
+| **Settings** | **j**/**k** move · **Enter**/**Space** cycle theme/banner or edit `seek_page_size` · **←**/**→** nudge `seek_page_size` · **Esc** back · **1**/**2**/**3**/**4** switch view |
 | **Producer** | **Tab** focus · **Ctrl+V**/**Cmd+V** paste · **F3**/Ctrl-m mode (inline / file / `$EDITOR`) · **F2**/Ctrl-p send · **Esc** back |
 | **Replay** | **y**/**Enter** raw replay (byte-identical) · **e** edit in producer · **n**/**Esc** cancel |
 | **Export/import** | type path · **←**/**→**/**Home**/**End** cursor · **Delete** · **Tab** (import: path ↔ topic) · **Enter** run · **Esc** back |
@@ -262,7 +265,7 @@ Offset reset only works reliably when the group has **no active members** — th
   Hovering a row highlights it.
 - **Click** a producer or export/import field box to focus it directly, instead of
   Tab-cycling to it.
-- **Click** `1 Topics` / `2 Groups` / `3 Brokers` in the switcher bar to jump there.
+- **Click** `1 Topics` / `2 Groups` / `3 Brokers` / `4 Settings` in the switcher bar to jump there.
 
 ### What updates live
 
@@ -272,6 +275,41 @@ Offset reset only works reliably when the group has **no active members** — th
 | Messages in **seek** mode | No — load pages with **n**/**p** |
 | Topic list / group list / broker list / broker config | On open, or **r** refresh |
 | Group lag / members | On open, **r**, or auto ~every 3s while detail is open |
+
+## Web UI (`rakko-web`)
+
+The same engine in a browser, for shared deployments (e.g. inside a cluster where the
+broker is reachable without client certs). It reads the same `config.toml` profiles.
+
+```bash
+npm --prefix crates/rakko-web/web ci && npm --prefix crates/rakko-web/web run build
+cargo run -p rakko-web -- --config config.example.toml --static-dir crates/rakko-web/web/dist
+# → http://localhost:8080   (flags also read RAKKO_BIND / RAKKO_CONFIG / RAKKO_STATIC_DIR / RAKKO_SCAN_WINDOW)
+```
+
+Filters run over the **whole topic** (newest first, in offset windows) and keep finding
+matches as you scroll; autocomplete for the query box comes from the server. Each browser
+session has its own scans. It has no login of its own (and full write access) — run it behind
+your authenticating proxy / on a trusted network.
+
+Beyond browsing it has **live tail** (server-sent events, filtered server-side), **produce**
+(text, base64 or file; headers; null/tombstone), **replay** and edit-and-resend of a
+message, **JSONL export** (of the current filter, whole topic) and **import**,
+**consumer groups** (lag, members, offset reset with a typed confirmation) and
+**brokers** (health and non-default config). It has full write access.
+
+### Container image (air-gapped)
+
+```bash
+./scripts/build-web-image.sh     # → dist/rakko-web-<ver>-linux-amd64.tar.gz (docker save)
+# on the air-gapped host:
+docker load -i rakko-web-<ver>-linux-amd64.tar.gz
+docker run --rm -p 8080:8080 -v $PWD/config.toml:/etc/rakko/config.toml:ro rakko-web:<ver>
+```
+
+Tagging a release (`v*`) also runs `.github/workflows/web-image.yml`, which pushes
+`ghcr.io/ultish/rakko-web` and attaches the same archive to the GitHub Release.
+`deploy/kubernetes.yaml` is a minimal Deployment/Service/ConfigMap.
 
 ## Release builds
 
@@ -404,7 +442,7 @@ Everything that talks to Kafka or the network runs inside `kafka/` on a
 `tokio::task::spawn_blocking` (rdkafka's client is sync), reporting results back as an
 `AppEvent` over an `mpsc` channel; the render loop's `tokio::select!` merges that
 channel with terminal input and a couple of timer ticks (group-lag auto-refresh,
-banner animation). `RawMessage` (`src/raw_message.rs`) is the one byte-preserving type
+banner animation). `RawMessage` (`crates/rakko-core/src/raw_message.rs`) is the one byte-preserving type
 threaded through browsing, replay, and export/import, so replayed/exported messages
 are never a decode-then-re-encode round trip.
 

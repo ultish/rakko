@@ -17,32 +17,8 @@
 //! focus still read as “active.”
 
 use ratatui::style::{Color, Modifier, Style};
-use serde::{Deserialize, Serialize};
 
-/// User-facing theme name — stored in `[ui].theme` and used to rebuild `Theme`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ThemeName {
-    #[default]
-    Dark,
-    Light,
-}
-
-impl ThemeName {
-    pub fn next(self) -> Self {
-        match self {
-            ThemeName::Dark => ThemeName::Light,
-            ThemeName::Light => ThemeName::Dark,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ThemeName::Dark => "dark",
-            ThemeName::Light => "light",
-        }
-    }
-}
+pub use rakko_core::config::ThemeName;
 
 const fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb(r, g, b)

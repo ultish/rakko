@@ -1,18 +1,17 @@
 mod app;
 mod cli;
 mod clipboard;
-mod config;
-mod error;
 mod events;
-mod export;
 mod external_editor;
-mod kafka;
-mod query_filter;
-mod raw_message;
-mod ring_buffer;
-mod serde_detect;
 mod text_field;
 mod ui;
+
+// The shared core lives in `rakko-core`; re-exported at the crate root so TUI code
+// keeps addressing it as `crate::kafka::…`, `crate::config::…`, etc.
+pub use rakko_core::{
+    config, error, export, kafka, message_filter, preview, query_complete, query_filter, raw_message, ring_buffer,
+    serde_detect,
+};
 
 use std::io::Stdout;
 use std::path::{Path, PathBuf};
@@ -264,6 +263,30 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         };
     }
 
+    // Settings text editor (seek_page_size) owns the keyboard while open.
+    if app.settings_editor.is_some() {
+        return match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::ForceQuit)
+            }
+            _ if is_paste_key(&key) => Some(Action::PasteClipboard),
+            KeyCode::Esc => Some(Action::CancelSettingsEditor),
+            KeyCode::Enter => Some(Action::SaveSettingsEditor),
+            KeyCode::Backspace => Some(Action::SettingsEditorBackspace),
+            KeyCode::Delete => Some(Action::SettingsEditorDelete),
+            KeyCode::Left => Some(Action::SettingsEditorCursorLeft),
+            KeyCode::Right => Some(Action::SettingsEditorCursorRight),
+            KeyCode::Home => Some(Action::SettingsEditorCursorHome),
+            KeyCode::End => Some(Action::SettingsEditorCursorEnd),
+            KeyCode::Char(c)
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                Some(Action::SettingsEditorChar(c))
+            }
+            _ => None,
+        };
+    }
+
     // Offset-reset wizard takes over the keyboard while open.
     if let Some(detail) = app.group_detail.as_ref() {
         if let Some(phase) = &detail.reset_phase {
@@ -402,6 +425,11 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
         // states (producer, profile create, export/import, filter inputs).
         KeyCode::Left if inspector_open => Some(Action::ShrinkInspectorPanel),
         KeyCode::Right if inspector_open => Some(Action::GrowInspectorPanel),
+        // Settings screen: nudge the focused Int setting; Space is an Enter alias for
+        // toggling/cycling (no text fields on this screen to collide with).
+        KeyCode::Left if app.screen == Screen::Settings => Some(Action::NudgeSettingLeft),
+        KeyCode::Right if app.screen == Screen::Settings => Some(Action::NudgeSettingRight),
+        KeyCode::Char(' ') if app.screen == Screen::Settings => Some(Action::Confirm),
         KeyCode::Tab | KeyCode::Char('s') => Some(Action::ToggleBrowseMode),
         // `n` is seek page-forward on topic detail only — profile picker uses `n` for new profile.
         KeyCode::PageDown => Some(Action::PageForward),
@@ -450,14 +478,14 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
             Some(Action::Refresh)
         }
         // M10: digit keys jump directly between list-level screens — the sole way to
-        // move between Topics/Groups/Brokers (no per-screen 'g'/'b' shortcuts, so the
-        // switcher bar's meaning is consistent no matter which list screen you're on).
-        // Reached only after the filter-input / replay-wizard / offset-reset-wizard /
-        // profile-create / export-import early-return guards above, so a stray digit
-        // while one of those is capturing keystrokes never fires this.
+        // move between Topics/Groups/Brokers/Settings (no per-screen 'g'/'b' shortcuts,
+        // so the switcher bar's meaning is consistent no matter which list screen you're
+        // on). Reached only after the filter-input / replay-wizard / offset-reset-wizard
+        // / profile-create / export-import / settings-editor early-return guards above,
+        // so a stray digit while one of those is capturing keystrokes never fires this.
         // Producer/ExportImport/ProfileCreate are deliberately excluded so a digit
         // doesn't blow away an in-progress draft.
-        KeyCode::Char('1' | '2' | '3')
+        KeyCode::Char('1' | '2' | '3' | '4')
             if matches!(
                 app.screen,
                 Screen::TopicList
@@ -466,12 +494,14 @@ fn key_to_action(key: KeyEvent, app: &App) -> Option<Action> {
                     | Screen::GroupDetail
                     | Screen::BrokerList
                     | Screen::BrokerDetail
+                    | Screen::Settings
             ) =>
         {
             match key.code {
                 KeyCode::Char('1') => Some(Action::SwitchToTopics),
                 KeyCode::Char('2') => Some(Action::SwitchToGroups),
                 KeyCode::Char('3') => Some(Action::SwitchToBrokers),
+                KeyCode::Char('4') => Some(Action::SwitchToSettings),
                 _ => unreachable!(),
             }
         }
@@ -714,7 +744,13 @@ fn handle_command(
             stop_tail(tail_stop);
             let (stop_tx, stop_rx) = watch::channel(false);
             *tail_stop = Some(stop_tx);
-            tokio::spawn(kafka::consumer::run_tail(profile, topic, tx.clone(), stop_rx));
+            let tail_tx = tx.clone();
+            tokio::spawn(kafka::consumer::run_tail(
+                profile,
+                topic,
+                move |event| tail_tx.send(event.into()).is_ok(),
+                stop_rx,
+            ));
         }
         Command::StopTail => stop_tail(tail_stop),
         Command::LoadSeekPage {
@@ -725,12 +761,13 @@ fn handle_command(
         } => {
             // One-shot; no cancellation tracking needed. Superseded results are ignored
             // by the reducer's topic-tag staleness check on `SeekPageLoaded`.
+            let seek_tx = tx.clone();
             tokio::spawn(kafka::consumer::load_seek_page(
                 profile,
                 topic,
                 partition,
                 request,
-                tx.clone(),
+                move |event| seek_tx.send(event.into()).is_ok(),
             ));
         }
         Command::LoadGroups(profile) => spawn_group_load(profile, tx.clone()),
@@ -793,26 +830,14 @@ fn handle_command(
         } => {
             let tx = tx.clone();
             tokio::spawn(async move {
-                let client = match reqwest::Client::builder().build() {
-                    Ok(c) => c,
-                    Err(err) => {
-                        let _ = tx.send(AppEvent::SchemaLoadFailed {
-                            schema_id,
-                            message: format!("http client: {err}"),
-                        });
-                        return;
-                    }
+                let event = match kafka::schema_registry::fetch_schema(&registry_url, schema_id).await {
+                    Ok(schema) => AppEvent::SchemaLoaded { schema_id, schema },
+                    Err(err) => AppEvent::SchemaLoadFailed {
+                        schema_id,
+                        message: err.to_string(),
+                        transient: matches!(err, error::AppError::SchemaRegistryTransient(_)),
+                    },
                 };
-                let event =
-                    match kafka::schema_registry::fetch_schema_by_id(&client, &registry_url, schema_id)
-                        .await
-                    {
-                        Ok(schema) => AppEvent::SchemaLoaded { schema_id, schema },
-                        Err(err) => AppEvent::SchemaLoadFailed {
-                            schema_id,
-                            message: err.to_string(),
-                        },
-                    };
                 let _ = tx.send(event);
             });
         }
@@ -937,6 +962,11 @@ async fn run_loop(
     status_dismiss_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     status_dismiss_tick.tick().await;
 
+    // Drives backed-off retries of schema fetches that failed transiently.
+    let mut schema_retry_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    schema_retry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    schema_retry_tick.tick().await;
+
     loop {
         // Drop expired toast status before paint so the toast vanishes on time
         // even if nothing else is driving a redraw.
@@ -1000,6 +1030,11 @@ async fn run_loop(
             }
             _ = banner_tick.tick(), if app.banner_mode != BannerMode::Off => {
                 let _ = app.update(Action::BannerTick);
+            }
+            _ = schema_retry_tick.tick() => {
+                for command in app.update(Action::RetrySchemaFetches) {
+                    handle_command(command, tx, &mut tail_stop);
+                }
             }
             _ = status_dismiss_tick.tick(), if app.status_clear_at.is_some() => {
                 // Wake only; clear runs at the top of the next loop iteration

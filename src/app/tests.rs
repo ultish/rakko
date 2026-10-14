@@ -2459,13 +2459,71 @@ fn avro_message_without_registry_does_not_fetch() {
     assert!(commands.is_empty());
 }
 
+fn app_with_schema_registry() -> App {
+    let mut app = app_in_topic_detail("orders", 1);
+    let mut profile = profile("a");
+    profile.schema_registry_url = Some("http://localhost:8081".into());
+    app.attach_profile(profile);
+    app
+}
+
+fn avro_arrived(id: u32) -> AppEvent {
+    let mut msg = message("k", "v");
+    msg.value = Some(confluent_avro_bytes(id, b"x"));
+    AppEvent::MessageArrived { topic: "orders".into(), partition: 0, message: msg }
+}
+
+#[test]
+fn transient_schema_failure_backs_off_instead_of_refetching_per_message() {
+    let mut app = app_with_schema_registry();
+    assert_eq!(app.apply_event(avro_arrived(7)).len(), 1);
+
+    app.apply_event(AppEvent::SchemaLoadFailed {
+        schema_id: 7,
+        message: "connection refused".into(),
+        transient: true,
+    });
+    // Still inside the backoff window: neither new messages nor the retry tick refetch.
+    assert!(app.apply_event(avro_arrived(7)).is_empty());
+    assert!(app.update(Action::RetrySchemaFetches).is_empty());
+}
+
+#[test]
+fn transient_schema_failure_is_retried_once_backoff_elapses() {
+    let mut app = app_with_schema_registry();
+    app.apply_event(avro_arrived(7));
+    app.apply_event(AppEvent::SchemaLoadFailed {
+        schema_id: 7,
+        message: "HTTP 503".into(),
+        transient: true,
+    });
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let commands = app.update(Action::RetrySchemaFetches);
+    assert!(matches!(commands.as_slice(), [Command::FetchSchema { schema_id: 7, .. }]));
+    // In flight again: a second tick doesn't double-issue.
+    assert!(app.update(Action::RetrySchemaFetches).is_empty());
+}
+
+#[test]
+fn permanent_schema_failure_is_never_retried() {
+    let mut app = app_with_schema_registry();
+    app.apply_event(avro_arrived(7));
+    app.apply_event(AppEvent::SchemaLoadFailed {
+        schema_id: 7,
+        message: "HTTP 404".into(),
+        transient: false,
+    });
+    assert!(app.apply_event(avro_arrived(7)).is_empty());
+    assert!(app.update(Action::RetrySchemaFetches).is_empty());
+}
+
 #[test]
 fn schema_loaded_inserts_into_cache() {
     let mut app = app_in_topic_detail("orders", 1);
     let mut profile = profile("a");
     profile.schema_registry_url = Some("http://localhost:8081".into());
     app.attach_profile(profile);
-    app.schema_fetch_inflight.insert(9);
+    app.schema_fetches.mark_started(9);
 
     let schema = apache_avro::Schema::parse_str(
         r#"{"type":"record","name":"T","fields":[{"name":"n","type":"string"}]}"#,
@@ -2473,9 +2531,9 @@ fn schema_loaded_inserts_into_cache() {
     .unwrap();
     app.apply_event(AppEvent::SchemaLoaded {
         schema_id: 9,
-        schema,
+        schema: crate::kafka::schema_registry::CachedSchema::new(schema),
     });
-    assert!(!app.schema_fetch_inflight.contains(&9));
+    assert!(app.schema_fetches.should_fetch(9, std::time::Instant::now()));
     assert!(app
         .schema_registry
         .as_ref()
@@ -3168,4 +3226,179 @@ fn group_detail_lag_history_resets_when_switching_groups() {
     let g = app.group_detail.as_ref().unwrap();
     assert_eq!(g.name, "group-b");
     assert_eq!(g.lag_history, std::collections::VecDeque::from([99]));
+}
+
+#[test]
+fn switch_to_settings_lists_seek_page_size_theme_and_banner_mode() {
+    let mut app = app_on_topic_list();
+    app.update(Action::SwitchToSettings);
+    assert_eq!(app.screen, Screen::Settings);
+    assert_eq!(SettingId::ALL.len(), 3);
+    assert_eq!(app.selected_setting, 0);
+}
+
+#[test]
+fn settings_selection_clamps_at_bounds() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::Settings;
+    for _ in 0..5 {
+        app.update(Action::MoveSelectionDown);
+    }
+    assert_eq!(app.selected_setting, SettingId::ALL.len() - 1);
+    for _ in 0..5 {
+        app.update(Action::MoveSelectionUp);
+    }
+    assert_eq!(app.selected_setting, 0);
+}
+
+#[test]
+fn settings_back_returns_to_topic_list() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::Settings;
+    app.update(Action::Back);
+    assert_eq!(app.screen, Screen::TopicList);
+}
+
+#[test]
+fn settings_nudge_seek_page_size_persists() {
+    let path = test_config_path();
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            seek_page_size: Some(50),
+            ..Default::default()
+        },
+        path.clone(),
+    );
+    app.active_profile = Some(profile("a"));
+    app.screen = Screen::Settings;
+    app.selected_setting = 0; // SeekPageSize
+    app.update(Action::NudgeSettingRight);
+    assert_eq!(app.config.seek_page_size, Some(60));
+    let loaded = config::load(&path).unwrap();
+    assert_eq!(loaded.seek_page_size, Some(60));
+    app.update(Action::NudgeSettingLeft);
+    assert_eq!(app.config.seek_page_size, Some(50));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn settings_nudge_seek_page_size_never_goes_below_one() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::Settings;
+    app.selected_setting = 0;
+    app.config.seek_page_size = Some(5);
+    for _ in 0..3 {
+        app.update(Action::NudgeSettingLeft);
+    }
+    assert_eq!(app.config.seek_page_size, Some(1));
+}
+
+#[test]
+fn settings_confirm_on_seek_page_size_opens_editor_prefilled() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::Settings;
+    app.config.seek_page_size = Some(42);
+    app.selected_setting = 0; // SeekPageSize
+    app.update(Action::Confirm);
+    let ed = app.settings_editor.as_ref().expect("editor should open");
+    assert_eq!(ed.id, SettingId::SeekPageSize);
+    assert_eq!(ed.text, "42");
+}
+
+#[test]
+fn settings_editor_save_applies_valid_value() {
+    let path = test_config_path();
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            ..Default::default()
+        },
+        path.clone(),
+    );
+    app.screen = Screen::Settings;
+    app.selected_setting = 0;
+    app.update(Action::Confirm);
+    // Replace the prefilled value with "100".
+    for _ in 0..10 {
+        app.update(Action::SettingsEditorBackspace);
+    }
+    for c in "100".chars() {
+        app.update(Action::SettingsEditorChar(c));
+    }
+    app.update(Action::SaveSettingsEditor);
+    assert!(app.settings_editor.is_none());
+    assert_eq!(app.config.seek_page_size, Some(100));
+    let loaded = config::load(&path).unwrap();
+    assert_eq!(loaded.seek_page_size, Some(100));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn settings_editor_save_rejects_non_numeric_and_keeps_editor_open() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::Settings;
+    app.selected_setting = 0;
+    app.update(Action::Confirm);
+    for _ in 0..10 {
+        app.update(Action::SettingsEditorBackspace);
+    }
+    for c in "abc".chars() {
+        app.update(Action::SettingsEditorChar(c));
+    }
+    app.update(Action::SaveSettingsEditor);
+    let ed = app.settings_editor.as_ref().expect("editor stays open on error");
+    assert!(ed.error.is_some());
+}
+
+#[test]
+fn settings_editor_esc_cancels_without_saving() {
+    let mut app = app_on_topic_list();
+    app.screen = Screen::Settings;
+    app.config.seek_page_size = Some(42);
+    app.selected_setting = 0;
+    app.update(Action::Confirm);
+    app.update(Action::CancelSettingsEditor);
+    assert!(app.settings_editor.is_none());
+    assert_eq!(app.config.seek_page_size, Some(42));
+}
+
+#[test]
+fn settings_confirm_on_theme_cycles_theme_and_persists() {
+    let path = test_config_path();
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            ..Default::default()
+        },
+        path.clone(),
+    );
+    app.screen = Screen::Settings;
+    app.selected_setting = 1; // UiTheme
+    let before = app.theme.name;
+    app.update(Action::Confirm);
+    assert_ne!(app.theme.name, before);
+    let loaded = config::load(&path).unwrap();
+    assert_eq!(loaded.ui.theme, app.theme.name);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn settings_confirm_on_banner_mode_cycles_and_persists() {
+    let path = test_config_path();
+    let mut app = App::new(
+        Config {
+            profiles: vec![profile("a")],
+            ..Default::default()
+        },
+        path.clone(),
+    );
+    app.screen = Screen::Settings;
+    app.selected_setting = 2; // UiBannerMode
+    let before = app.banner_mode;
+    app.update(Action::Confirm);
+    assert_ne!(app.banner_mode, before);
+    let loaded = config::load(&path).unwrap();
+    assert_eq!(loaded.ui.banner_mode, app.banner_mode);
+    let _ = std::fs::remove_file(&path);
 }

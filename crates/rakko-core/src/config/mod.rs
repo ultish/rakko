@@ -10,7 +10,31 @@ pub use auth::AuthMode;
 pub use profile::Profile;
 
 use crate::error::{AppError, AppResult};
-use crate::ui::theme::ThemeName;
+
+/// User-facing theme name — stored in `[ui].theme`. Frontends map it to their own palette.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeName {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl ThemeName {
+    pub fn next(self) -> Self {
+        match self {
+            ThemeName::Dark => ThemeName::Light,
+            ThemeName::Light => ThemeName::Dark,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeName::Dark => "dark",
+            ThemeName::Light => "light",
+        }
+    }
+}
 
 /// Top banner animation mode — stored under `[ui].banner_mode` and cycled with `A`.
 ///
@@ -60,7 +84,7 @@ pub struct Config {
     /// the initial page on switching into seek mode, and mode-switch-to-latest).
     /// Not per-profile — this is a browsing preference, unrelated to any one
     /// cluster's connection details. `None` (the field is absent from the TOML)
-    /// falls back to `crate::app::DEFAULT_SEEK_PAGE_SIZE`.
+    /// falls back to the TUI's default seek page size.
     #[serde(default)]
     pub seek_page_size: Option<usize>,
     /// TUI appearance (`theme`, `banner_mode`). Absent section → defaults.

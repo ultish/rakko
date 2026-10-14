@@ -1,35 +1,11 @@
-use apache_avro::Schema;
+use crate::kafka::schema_registry::CachedSchema;
 
 use crate::app::{ExportImportFocus, InspectorFocus, ProducerFocus};
 use crate::kafka::admin::{BrokerConfigEntry, BrokerSummary, ClusterHealth, TopicSummary};
 use crate::kafka::group_offsets::{GroupDetail, GroupSummary, OffsetResetTarget};
 use crate::raw_message::RawMessage;
 
-/// Which end of a topic/partition a seek page request is anchored to. `Forward`/`Backward`
-/// page relative to the current page's edge offset; `Latest` is used the first time a
-/// partition enters seek mode.
-#[derive(Debug, Clone)]
-pub enum SeekPageRequest {
-    Latest { page_size: usize },
-    Forward { from_offset: i64, page_size: usize },
-    Backward { before_offset: i64, page_size: usize },
-}
-
-/// Metadata describing where a loaded seek page sits relative to the partition's
-/// watermarks, so the UI can grey out "page further" keys at either edge.
-#[derive(Debug, Clone)]
-pub struct SeekPageMeta {
-    pub partition: i32,
-    /// Offset of the first message in the page (or the requested start if the page is
-    /// empty), used as the anchor for the next Forward/Backward request.
-    pub page_start_offset: i64,
-    pub at_beginning: bool,
-    pub at_end: bool,
-    /// Partition low watermark (earliest available offset) at load time.
-    pub low_watermark: i64,
-    /// Partition high watermark (next offset to be written) at load time.
-    pub high_watermark: i64,
-}
+pub use crate::kafka::consumer::{BrowseEvent, SeekPageMeta, SeekPageRequest};
 
 /// Events reported from background tasks (Kafka I/O, HTTP calls) back to the render loop.
 /// Never constructed on the render loop thread itself.
@@ -93,13 +69,30 @@ pub enum AppEvent {
     /// Schema Registry returned a schema for Confluent wire-format Avro decode.
     SchemaLoaded {
         schema_id: u32,
-        schema: Schema,
+        schema: CachedSchema,
     },
-    /// Schema fetch failed; app should stop retrying this id until reconnect.
+    /// Schema fetch failed. Permanent failures stop retrying this id until reconnect;
+    /// transient ones are retried with backoff.
     SchemaLoadFailed {
         schema_id: u32,
         message: String,
+        /// Registry unreachable / 5xx: keep the id eligible for a backed-off retry.
+        transient: bool,
     },
+}
+
+impl From<BrowseEvent> for AppEvent {
+    fn from(event: BrowseEvent) -> Self {
+        match event {
+            BrowseEvent::Message { topic, partition, message } => {
+                AppEvent::MessageArrived { topic, partition, message }
+            }
+            BrowseEvent::SeekPage { topic, messages, meta } => {
+                AppEvent::SeekPageLoaded { topic, messages, meta }
+            }
+            BrowseEvent::Failed(message) => AppEvent::BrowseFailed(message),
+        }
+    }
 }
 
 /// User- or timer-driven state transitions, dispatched by the render loop into
@@ -160,11 +153,26 @@ pub enum Action {
     /// one and arms cycling — repeated Tab advances through the rest. No-op unless the
     /// cursor is at the end of the input.
     QueryFilterAutocomplete,
-    /// Jump directly to Topics/Groups/Brokers from any list-level screen (the sole
-    /// navigation mechanism between top-level views — see the persistent switcher bar).
+    /// Jump directly to Topics/Groups/Brokers/Settings from any list-level screen (the
+    /// sole navigation mechanism between top-level views — see the persistent switcher
+    /// bar).
     SwitchToTopics,
     SwitchToGroups,
     SwitchToBrokers,
+    SwitchToSettings,
+    /// Settings screen: nudge the focused Int setting (`seek_page_size`) down/up (←/→).
+    NudgeSettingLeft,
+    NudgeSettingRight,
+    /// Settings screen text editor (`seek_page_size`): save/cancel/edit.
+    SaveSettingsEditor,
+    CancelSettingsEditor,
+    SettingsEditorChar(char),
+    SettingsEditorBackspace,
+    SettingsEditorDelete,
+    SettingsEditorCursorLeft,
+    SettingsEditorCursorRight,
+    SettingsEditorCursorHome,
+    SettingsEditorCursorEnd,
     /// Begin the offset-reset wizard on the group-detail screen.
     StartOffsetReset,
     /// Choose earliest/latest/absolute/timestamp in the offset-reset wizard.
@@ -272,6 +280,8 @@ pub enum Action {
     ProfileCreateCancel,
     /// Advance braille banner animation frame (timer-driven).
     BannerTick,
+    /// Re-issue schema fetches whose transient-failure backoff has elapsed.
+    RetrySchemaFetches,
     /// Cycles the top banner: wave → `ms/frame` → paint-capacity `fps` → off (`A` key).
     CycleBannerMode,
     /// Cycles the color theme (`T` key); persisted to `[ui].theme`.

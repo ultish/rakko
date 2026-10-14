@@ -11,6 +11,49 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- **`rakko-web`: a browser UI** (new `crates/rakko-web` + `web/` frontend), for teams
+  that want rakko without a terminal. First slice: topic list, a message list that
+  scans the **whole topic** newest-first and keeps loading as you scroll, text and
+  structured-query filters with **server-side autocomplete**, and a detail panel that
+  reads even a 20 MiB message in chunks. Each browser session has its own scans, so
+  concurrent users never share a filter. Decodes Avro (including schema references
+  and RecordNameStrategy topics) exactly like the TUI. Run with
+  `rakko-web --config config.toml` after `npm --prefix crates/rakko-web/web run build`.
+
+- **`rakko-web` is feature-complete with the terminal app**: live tail, produce (text /
+  base64 / file, headers, tombstones), replay and edit-and-resend, JSONL export (current
+  filter, whole topic) and import, consumer groups with lag and a confirmed offset
+  reset, and a brokers page. It has no login of its own: put it behind your authenticating proxy.
+
+- **`rakko-web` container image** (`Dockerfile.web`, `scripts/build-web-image.sh`,
+  `.github/workflows/web-image.yml`): UBI 9 based, with an air-gapped `docker save`
+  archive attached to releases and an example `deploy/kubernetes.yaml`.
+
+- Query autocomplete now offers `key` / `value` on an empty query and right after
+  `AND` / `OR` / `(` (web: also when the box is focused), instead of only once you've
+  started typing a root word.
+
+- **Settings tab** (`4`, alongside the existing `1`/`2`/`3` switcher): edit
+  `seek_page_size` and cycle theme/banner mode from a dedicated screen instead
+  of only via the `T`/`A` keys.
+
+### Fixed
+
+- Avro schemas that use Schema Registry **references** (a schema pulling in named
+  types from other subjects) now decode. Previously the schema failed to parse and
+  those messages showed as raw hex. Transitive references are followed.
+- A single `NaN` / `Infinity` in an Avro `float`/`double` field no longer makes the
+  whole message undecodable; it shows as `"NaN"` / `"Infinity"` / `"-Infinity"`.
+- Avro `bytes` / `fixed` fields now show as base64 strings instead of an array of
+  integers (a large blob was ~4x its size as `[12,255,...]`).
+- A Schema Registry blip (unreachable, 5xx, 429) no longer leaves messages undecoded
+  for the rest of the session: the schema fetch is retried with backoff (1s, 2s, ...
+  up to 60s). Genuine failures (404, bad schema) are still not retried.
+- Protobuf / JSON-Schema registry entries now report "only Avro is decoded" rather
+  than a misleading Avro parse error.
+
 ## [0.13.2] - 2026-07-17
 
 ### Fixed

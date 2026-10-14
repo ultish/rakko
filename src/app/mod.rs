@@ -11,6 +11,7 @@ mod export_import;
 mod group_detail;
 mod producer;
 mod profile_create;
+mod settings;
 mod topic_detail;
 
 #[cfg(test)]
@@ -21,6 +22,7 @@ pub use export_import::{ExportImportFocus, ExportImportMode, ExportImportState};
 pub use group_detail::{GroupDetailState, OffsetResetPhase, ResetInputKind};
 pub use producer::{ProducerFocus, ProducerInputMode, ProducerState};
 pub use profile_create::{ProfileCreateAuthChoice, ProfileCreateFocus, ProfileCreateState};
+pub use settings::{SettingId, SettingKind, SettingsEditorState};
 pub use topic_detail::{
     BrowseMode, InspectorFocus, MessageListRowPreview, MessageSort, MessageViewState, ReplayPhase,
     TopicDetailState,
@@ -32,7 +34,6 @@ use group_detail::parse_reset_input;
 use topic_detail::{PageDirection, SeekState};
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -40,7 +41,7 @@ use crate::config::{self, Config, Profile};
 use crate::events::{Action, AppEvent, Command, SeekPageRequest};
 use crate::kafka::admin::{BrokerSummary, ClusterHealth, TopicSummary};
 use crate::kafka::group_offsets::{GroupSummary, OffsetResetTarget};
-use crate::kafka::schema_registry::SchemaRegistry;
+use crate::kafka::schema_registry::{SchemaFetchTracker, SchemaRegistry};
 use crate::raw_message::RawMessage;
 use crate::ring_buffer::RingBuffer;
 use crate::serde_detect::{detect_format, DetectedFormat};
@@ -97,6 +98,7 @@ pub enum Screen {
     BrokerDetail,
     Producer,
     ExportImport,
+    Settings,
 }
 
 pub struct App {
@@ -130,13 +132,16 @@ pub struct App {
     pub broker_detail: Option<BrokerDetailState>,
     pub producer: Option<ProducerState>,
     pub export_import: Option<ExportImportState>,
+    /// Selection cursor for the settings screen (index into `SettingId::ALL`).
+    pub selected_setting: usize,
+    /// Text overlay while editing `seek_page_size`.
+    pub settings_editor: Option<SettingsEditorState>,
     /// Schema Registry client for the active profile (if `schema_registry_url` is set).
     /// Cache is filled by background `FetchSchema` commands as Avro messages are seen.
     pub schema_registry: Option<SchemaRegistry>,
     /// Schema ids with an in-flight HTTP fetch (dedupe concurrent MessageArrived).
-    schema_fetch_inflight: HashSet<u32>,
+    schema_fetches: SchemaFetchTracker,
     /// Schema ids that failed to fetch; not retried until the profile reconnects.
-    schema_fetch_failed: HashSet<u32>,
     /// Path to `config.toml` (used when creating/saving profiles from the TUI).
     pub config_path: PathBuf,
     /// First-run / "n" create-profile form (overlays the profile picker).
@@ -211,9 +216,10 @@ impl App {
             broker_detail: None,
             producer: None,
             export_import: None,
+            selected_setting: 0,
+            settings_editor: None,
             schema_registry: None,
-            schema_fetch_inflight: HashSet::new(),
-            schema_fetch_failed: HashSet::new(),
+            schema_fetches: SchemaFetchTracker::default(),
             config_path,
             // Auto-open create form when there are no profiles yet (after splash).
             profile_create: if empty {
@@ -444,8 +450,7 @@ impl App {
 
     /// Activates a profile and (re)builds the Schema Registry client from its URL.
     fn attach_profile(&mut self, profile: Profile) {
-        self.schema_fetch_inflight.clear();
-        self.schema_fetch_failed.clear();
+        self.schema_fetches.clear();
         self.status_message = None;
         self.schema_registry = match profile.schema_registry_url.as_deref() {
             Some(url) => match SchemaRegistry::new(url) {
@@ -525,9 +530,7 @@ impl App {
         {
             return None;
         }
-        if self.schema_fetch_inflight.contains(&schema_id)
-            || self.schema_fetch_failed.contains(&schema_id)
-        {
+        if !self.schema_fetches.should_fetch(schema_id, Instant::now()) {
             return None;
         }
         let registry_url = self
@@ -535,7 +538,7 @@ impl App {
             .as_ref()?
             .schema_registry_url
             .clone()?;
-        self.schema_fetch_inflight.insert(schema_id);
+        self.schema_fetches.mark_started(schema_id);
         Some(Command::FetchSchema {
             registry_url,
             schema_id,
@@ -807,6 +810,56 @@ impl App {
             Action::SwitchToTopics => self.switch_top_level(Screen::TopicList),
             Action::SwitchToGroups => self.switch_top_level(Screen::GroupList),
             Action::SwitchToBrokers => self.switch_top_level(Screen::BrokerList),
+            Action::SwitchToSettings => self.switch_top_level(Screen::Settings),
+            Action::NudgeSettingLeft => self.nudge_setting_int(-1),
+            Action::NudgeSettingRight => self.nudge_setting_int(1),
+            Action::SaveSettingsEditor => self.save_settings_editor(),
+            Action::CancelSettingsEditor => {
+                self.cancel_settings_editor();
+                vec![]
+            }
+            Action::SettingsEditorChar(c) => {
+                if let Some(ed) = self.settings_editor.as_mut() {
+                    ed.insert_char(c);
+                }
+                vec![]
+            }
+            Action::SettingsEditorBackspace => {
+                if let Some(ed) = self.settings_editor.as_mut() {
+                    ed.backspace();
+                }
+                vec![]
+            }
+            Action::SettingsEditorDelete => {
+                if let Some(ed) = self.settings_editor.as_mut() {
+                    ed.delete_forward();
+                }
+                vec![]
+            }
+            Action::SettingsEditorCursorLeft => {
+                if let Some(ed) = self.settings_editor.as_mut() {
+                    ed.cursor_left();
+                }
+                vec![]
+            }
+            Action::SettingsEditorCursorRight => {
+                if let Some(ed) = self.settings_editor.as_mut() {
+                    ed.cursor_right();
+                }
+                vec![]
+            }
+            Action::SettingsEditorCursorHome => {
+                if let Some(ed) = self.settings_editor.as_mut() {
+                    ed.cursor_home();
+                }
+                vec![]
+            }
+            Action::SettingsEditorCursorEnd => {
+                if let Some(ed) = self.settings_editor.as_mut() {
+                    ed.cursor_end();
+                }
+                vec![]
+            }
             Action::StartOffsetReset => self.start_offset_reset(),
             Action::OffsetResetChooseEarliest => {
                 self.choose_offset_reset_target(OffsetResetTarget::Earliest)
@@ -1100,6 +1153,12 @@ impl App {
                 self.profile_create = None;
                 vec![]
             }
+            Action::RetrySchemaFetches => self
+                .schema_fetches
+                .due_retries(Instant::now())
+                .into_iter()
+                .filter_map(|id| self.queue_schema_fetch(id))
+                .collect(),
             Action::BannerTick => {
                 if self.banner_mode != BannerMode::Off {
                     self.banner_frame = self.banner_frame.wrapping_add(1);
@@ -1176,6 +1235,11 @@ impl App {
     /// Insert `text` into the currently focused editable field. Returns false when
     /// no text surface is active (or the focused producer field rejects input).
     fn paste_into_active_field(&mut self, text: &str) -> bool {
+        if let Some(ed) = self.settings_editor.as_mut() {
+            let before = ed.cursor;
+            ed.insert_str(text);
+            return ed.cursor != before;
+        }
         if self.screen == Screen::Producer {
             if let Some(state) = self.producer.as_ref() {
                 if state.focus == ProducerFocus::Value && state.mode != ProducerInputMode::Inline {
@@ -1209,6 +1273,9 @@ impl App {
         if self.profile_create.is_some() {
             return;
         }
+        if self.settings_editor.is_some() {
+            return;
+        }
         if self
             .group_detail
             .as_ref()
@@ -1240,6 +1307,9 @@ impl App {
         // Same freeze conditions as `move_selection` — a rendered row behind an
         // overlay shouldn't be clickable through it.
         if self.profile_create.is_some() {
+            return;
+        }
+        if self.settings_editor.is_some() {
             return;
         }
         if self
@@ -1306,6 +1376,9 @@ impl App {
                     let len = detail.entries.len();
                     f(&mut detail.selected_index, len);
                 }
+            }
+            Screen::Settings => {
+                f(&mut self.selected_setting, SettingId::ALL.len());
             }
             Screen::Producer | Screen::ExportImport => {
                 // Text-entry screens; no row selection there.
@@ -1460,6 +1533,7 @@ impl App {
             Screen::BrokerDetail => vec![],
             Screen::Producer => vec![],
             Screen::ExportImport => self.export_import_submit(),
+            Screen::Settings => self.activate_setting(),
         }
     }
 
@@ -1557,6 +1631,11 @@ impl App {
                         }];
                     }
                 }
+                vec![]
+            }
+            Screen::Settings => {
+                self.screen = Screen::TopicList;
+                self.status_message = None;
                 vec![]
             }
         }
@@ -2229,9 +2308,9 @@ impl App {
                 vec![]
             }
             AppEvent::SchemaLoaded { schema_id, schema } => {
-                self.schema_fetch_inflight.remove(&schema_id);
+                self.schema_fetches.mark_loaded(schema_id);
                 if let Some(sr) = self.schema_registry.as_mut() {
-                    sr.insert_schema(schema_id, schema);
+                    sr.insert_cached(schema_id, schema);
                     tracing::info!("schema id {schema_id} cached ({} total)", sr.cache_len());
                 }
                 // Quiet status once decode works; clear fetch-related noise.
@@ -2244,9 +2323,8 @@ impl App {
                 }
                 vec![]
             }
-            AppEvent::SchemaLoadFailed { schema_id, message } => {
-                self.schema_fetch_inflight.remove(&schema_id);
-                self.schema_fetch_failed.insert(schema_id);
+            AppEvent::SchemaLoadFailed { schema_id, message, transient } => {
+                self.schema_fetches.mark_failed(schema_id, transient, Instant::now());
                 self.status_message =
                     Some(format!("schema id {schema_id} fetch failed: {message}"));
                 tracing::warn!("schema id {schema_id} fetch failed: {message}");
