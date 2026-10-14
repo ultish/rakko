@@ -223,6 +223,13 @@ exception.
      - `dist/SHA256SUMS` — merged with the RHEL 9 entries, not clobbered
      - `dist/otool-macos-<arch>.txt` — sanity-check no stray dynamic OpenSSL/librdkafka
        links crept in (should be system frameworks + libSystem/libiconv only)
+   - **Web image:** nothing to run by hand. Pushing the `v*` tag triggers
+     `.github/workflows/web-image.yml` (~10 min cold), which pushes
+     `ghcr.io/ultish/rakko-web:<version>` and attaches
+     `rakko-web-<version>-linux-amd64.tar.gz` to the Release **if it already exists** —
+     so create the Release right after pushing the tag, and check the asset appears.
+     Keep `crates/*/Cargo.toml` and `crates/rakko-web/web/package.json` versions in sync
+     with the root `Cargo.toml` when bumping.
 5. **Commit, tag, and cut the GitHub Release** — no CI; releases are 100% manual.
    Committing and pushing does **not** create a release; a Release only exists once
    `gh release create` runs. Every version bump gets a matching git tag *and* a

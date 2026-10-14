@@ -11,6 +11,8 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-15
+
 ### Added
 
 - **`rakko-web`: a browser UI** (new `crates/rakko-web` + `web/` frontend), for teams

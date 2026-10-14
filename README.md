@@ -8,6 +8,8 @@
 
 Browse topics and messages (live tail + seek), inspect consumer groups and lag, reset offsets, produce/replay messages, and export/import JSONL — all from the terminal, all scriptable, all fast.
 
+Prefer a browser, or need something a team can share? The same engine also ships as **`rakko-web`**, a web server + UI you can run in a container next to your cluster — see [Web UI](#web-ui-rakko-web).
+
 **Why rakko over the usual Kafka GUI:**
 
 - **No message-size ceiling on replay.** Replay and export operate on raw wire bytes, never a decode-then-re-encode round trip — resend a message byte-identical, Avro schema ID and all, no matter how large. Most GUI tools quietly cap this around 1MB; rakko doesn't.
@@ -40,6 +42,8 @@ Browse topics and messages (live tail + seek), inspect consumer groups and lag, 
   existing one byte-for-byte back to its topic
 - **Back up and restore topics** — export messages to a file and import them again
   later, byte-identical to the originals
+- **Or use it in a browser** — `rakko-web` serves the same engine as a web app (whole-topic
+  filters, live tail, produce, groups, schemas, topic management) — see [Web UI](#web-ui-rakko-web)
 - **Use a mouse or just the keyboard** — click and scroll, or stay entirely on the
   keyboard — both are fully supported
 
@@ -278,46 +282,141 @@ Offset reset only works reliably when the group has **no active members** — th
 
 ## Web UI (`rakko-web`)
 
-The same engine in a browser, for shared deployments (e.g. inside a cluster where the
-broker is reachable without client certs). It reads the same `config.toml` profiles.
+`rakko-web` is the same engine behind a web UI: one process serves both the API and the
+built frontend (no separate UI server, no Node at runtime). It reads the same
+`config.toml` profiles as the TUI. It is built for shared deployments — typically a
+container inside the cluster that can reach the brokers directly.
+
+**What you can do in it**
+
+| Area | Capabilities |
+|------|--------------|
+| **Topics** | Browse the **whole topic** newest-first; text + structured-query filter (see [Advanced query filter](#advanced-query-filter)) with server-side autocomplete; limit a scan to a **time window** or **one partition's offsets**; **live tail**; create / delete topics; view non-default topic config |
+| **Messages** | Chunked detail view (a 20 MiB message opens instantly); **produce** (text, base64 or file, headers, null value); **replay** byte-identical; edit & produce; **download** raw/decoded key or value, or the whole record as JSONL; key tombstone; delete everything before an offset in a partition |
+| **Export / import** | Stream the current filter + range as JSONL; import a JSONL file (byte-identical) |
+| **Consumer groups** | State, members, per-partition lag; offset reset (earliest / latest / offset / timestamp) with a typed confirmation |
+| **Schemas** | Browse subjects/versions, view a schema, register a subject or version (with a compatibility check and references), delete a version or subject (soft or permanent), set compatibility per subject or globally |
+| **Brokers** | Address, led/replica partitions, cluster health, non-default broker config |
+
+### Run it
+
+**1. Container (recommended).** One image contains the server and the UI.
 
 ```bash
-npm --prefix crates/rakko-web/web ci && npm --prefix crates/rakko-web/web run build
-cargo run -p rakko-web -- --config config.example.toml --static-dir crates/rakko-web/web/dist
-# → http://localhost:8080   (flags also read RAKKO_BIND / RAKKO_CONFIG / RAKKO_STATIC_DIR / RAKKO_SCAN_WINDOW)
+# config.toml: your cluster profiles (see Configuration below)
+docker run --rm -p 8080:8080 \
+  -v $PWD/config.toml:/etc/rakko/config.toml:ro \
+  ghcr.io/ultish/rakko-web:latest
+# → http://localhost:8080
 ```
 
-Filters run over the **whole topic** (or a time window / one partition's offsets, via the Range button) (newest first, in offset windows) and keep finding
-matches as you scroll; autocomplete for the query box comes from the server. Each browser
-session has its own scans. It has no login of its own (and full write access) — run it behind
-your authenticating proxy / on a trusted network.
+If a profile uses TLS/mTLS, mount the certificate files too and reference their
+in-container paths from `config.toml`. The container runs as a non-root user (uid 10001).
 
-Beyond browsing it has **live tail** (server-sent events, filtered server-side), **produce**
-(text, base64 or file; headers; null/tombstone), **replay** and edit-and-resend of a
-message, **JSONL export** (of the current filter, whole topic) and **import**,
-**consumer groups** (lag, members, offset reset with a typed confirmation) and
-**brokers** (health and non-default config), **schema registry management** (browse,
-register with a compatibility check, delete, compatibility level), **topic
-create/delete**, message **download**, and key tombstones / delete-records. It has full write access.
-
-### Container image (air-gapped)
+**2. Air-gapped hosts.** Each release has `rakko-web-<version>-linux-amd64.tar.gz` (a
+`docker save` archive). Copy it across, then:
 
 ```bash
-./scripts/build-web-image.sh     # → dist/rakko-web-<ver>-linux-amd64.tar.gz (docker save)
-# on the air-gapped host:
-docker load -i rakko-web-<ver>-linux-amd64.tar.gz
-docker run --rm -p 8080:8080 -v $PWD/config.toml:/etc/rakko/config.toml:ro rakko-web:<ver>
+docker load -i rakko-web-<version>-linux-amd64.tar.gz
+docker run --rm -p 8080:8080 -v $PWD/config.toml:/etc/rakko/config.toml:ro rakko-web:<version>
 ```
 
-Tagging a release (`v*`) also runs `.github/workflows/web-image.yml`, which pushes
-`ghcr.io/ultish/rakko-web` and attaches the same archive to the GitHub Release.
-`deploy/kubernetes.yaml` is a minimal Deployment/Service/ConfigMap.
+(`podman load` / `podman run` work the same.) To build the archive yourself:
+`./scripts/build-web-image.sh` → `dist/rakko-web-<version>-linux-amd64.tar.gz`
+(`PLATFORM=linux/arm64` for arm64; `PUSH=<registry>/rakko-web` to also push).
+
+**3. Kubernetes.** `deploy/kubernetes.yaml` is a minimal ConfigMap (profiles) +
+Deployment + Service. Edit the profiles and image reference, then
+`kubectl apply -f deploy/kubernetes.yaml`. Expose the Service through your own
+authenticating ingress/proxy (see [Security](#security-and-limits)).
+
+**4. From source.**
+
+```bash
+npm --prefix crates/rakko-web/web ci
+npm --prefix crates/rakko-web/web run build
+cargo run -p rakko-web --release -- \
+  --config config.example.toml --static-dir crates/rakko-web/web/dist
+# → http://localhost:8080
+```
+
+### Configuration
+
+Profiles are exactly the TUI's — see [Configuration](#configuration) (plaintext, TLS with a
+private CA, mTLS, `schema_registry_url`, `message_max_bytes`, …). Without
+`--config`, `rakko-web` reads `~/.config/rakko/config.toml`. Profiles are loaded at
+start-up; restart after editing. Every profile appears in the UI's cluster dropdown.
+
+Server settings (flag or environment variable):
+
+| Flag | Env | Default | Meaning |
+|------|-----|---------|---------|
+| `--bind` | `RAKKO_BIND` | `0.0.0.0:8080` | Listen address |
+| `--config` | `RAKKO_CONFIG` | `~/.config/rakko/config.toml` (`/etc/rakko/config.toml` in the image) | Profiles file |
+| `--static-dir` | `RAKKO_STATIC_DIR` | `web/dist` (`/app/web` in the image) | Built frontend to serve |
+| `--scan-window` | `RAKKO_SCAN_WINDOW` | `1000` | Offsets read per partition per scan step (progress granularity vs. throughput) |
+
+Logging: `RUST_LOG=info` (default) or e.g. `RUST_LOG=rakko_web=debug`.
+
+### Using it
+
+- **Filtering** runs over the whole topic server-side and keeps finding matches as you
+  scroll; the progress bar shows how much of the topic has been scanned. The **Range**
+  button limits the scan to a time window (presets: last 15 min / 1 h / 24 h / 7 d, or
+  any from/to) or one partition's offset window. **Export** downloads the current
+  filter *and* range.
+- **Autocomplete** in the query box completes `key`/`value` and then field paths. For Avro
+  it uses the schema (every field, including optional/nested ones — also on an empty
+  topic); for JSON it uses recently sampled messages.
+- If some messages can't be decoded because their Avro schema isn't available, the UI
+  says how many were skipped — they are never silently treated as non-matches.
+- **Live** tails new messages only (from the log end) and shows the newest first; **Pause**
+  freezes the view, and a notice appears if the browser couldn't keep up.
+- Destructive actions (reset offsets, delete topic / schema / records) ask you to **type
+  the target's name**; the API enforces the same `confirm`.
+
+### Security and limits
+
+- **rakko-web has no login of its own and full write access** (produce, import, replay,
+  delete, offset reset, schema and topic changes). Run it only behind your authenticating
+  proxy / ingress or on a trusted network — never directly on the internet.
+- Each browser has a session (`x-rakko-session`, generated client-side). Scans belong to
+  the session that made them, so several people can filter the same topic at once without
+  affecting each other. Limits: 4 live scans per session, 64 in total, idle scans are
+  dropped after 15 minutes.
+- Scans are a snapshot taken when they start; messages produced afterwards appear on
+  refresh (or in **Live**).
+- Deleting records or a topic cannot be undone. A "tombstone" only deletes a key on a
+  compacted topic.
+
+### Developing the web UI
+
+```bash
+docker compose up -d                      # local Kafka + Schema Registry
+cargo run -p rakko-web -- --config config.example.toml   # API on :8080
+npm --prefix crates/rakko-web/web run dev # UI on :5173, proxies /api to :8080
+cargo test -p rakko-web -- --ignored      # end-to-end API tests against the stack
+npm --prefix crates/rakko-web/web run typecheck
+```
+
+The API is plain JSON under `/api` (`/api/profiles`, `/api/p/<profile>/topics`,
+`.../topics/<topic>/scans`, `.../groups`, `.../schemas`, …) — see
+`crates/rakko-web/src/routes.rs` and `ops.rs`.
+
+### Releases and the image
+
+Pushing a `v*` tag runs `.github/workflows/web-image.yml`: it builds the amd64 image,
+pushes `ghcr.io/ultish/rakko-web:<version>` (and `:latest` for non-pre-release tags), and
+attaches the `docker save` archive to the matching GitHub Release if one exists.
 
 ## Release builds
 
 Prebuilt, statically-linked binaries — no separately-installed librdkafka/OpenSSL
 required. Both scripts write into `dist/` (a shared `SHA256SUMS` is merged, not
 clobbered, so you can run either or both).
+
+The `rakko-web` container image is built separately — see [Container image](#run-it) /
+`./scripts/build-web-image.sh`; its archive is attached to each release by CI.
 
 ### RHEL 9 binary (Linux/amd64)
 
@@ -382,14 +481,18 @@ stack doesn't collide with an unrelated Kafka deployment that may already be run
 on your machine. Stop it with `docker compose down`.
 
 ```bash
-cargo test                     # pure-logic tests (no broker)
-cargo test -- --ignored        # integration tests against the compose stack above
+cargo test --workspace                # pure-logic tests (no broker)
+cargo test --workspace -- --ignored   # integration + web API tests against the compose stack above
 
 # Try the UI against the compose stack:
 mkdir -p ~/.config/rakko
 cp config.example.toml ~/.config/rakko/config.toml
 cargo run -- --profile local
 ```
+
+The repo is a Cargo workspace: the TUI (`src/`), shared engine `crates/rakko-core`, and the
+web server + UI `crates/rakko-web` (see [Web UI](#web-ui-rakko-web) for running and
+developing it).
 
 ### Architecture
 
