@@ -139,6 +139,12 @@ export const urls = {
 };
 
 export const api = {
+  createTopic: (profile: string, body: { name: string; partitions: number; replication_factor: number; configs: Record<string, string> }) =>
+    request<{ name: string }>(`/p/${enc(profile)}/topics`, { method: "POST", body: JSON.stringify(body) }),
+  deleteTopic: (profile: string, topic: string) =>
+    request<unknown>(`/p/${enc(profile)}/topics/${enc(topic)}?confirm=${enc(topic)}`, { method: "DELETE" }),
+  topicConfigs: (profile: string, topic: string) =>
+    request<{ name: string; value: string }[]>(`/p/${enc(profile)}/topics/${enc(topic)}/configs`),
   tombstone: (profile: string, topic: string, s: Summary) =>
     request<{ partition: number; offset: number }>(`${base(profile, topic)}/messages/${s.partition}/${s.offset}/tombstone`, {
       method: "POST",

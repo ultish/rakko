@@ -36,6 +36,16 @@ over dumping raw commit subjects.
   delete a version or subject (soft or permanent, typed confirmation), and set the
   compatibility level per subject or globally.
 
+- **Topic management in the web UI**: create a topic (partitions, replication factor,
+  config overrides with presets), view its non-default config, and delete it (typed
+  confirmation; internal topics are protected).
+
+- **Web query autocomplete now uses the Avro schema**, not just recent messages: it
+  offers every field the topic's schema allows (union branches, optional and nested
+  fields, referenced types), including on an empty topic. Schemas come from the ids in
+  sampled messages and the latest `<topic>-key` / `<topic>-value` subjects; JSON topics
+  still use sampled messages.
+
 - **Delete and download in the web UI**: tombstone a message's key, or permanently
   delete everything before an offset in a partition (Kafka can't delete one message in
   place); download a message's key/value as raw bytes or decoded text, or the whole

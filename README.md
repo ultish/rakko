@@ -296,7 +296,9 @@ Beyond browsing it has **live tail** (server-sent events, filtered server-side),
 (text, base64 or file; headers; null/tombstone), **replay** and edit-and-resend of a
 message, **JSONL export** (of the current filter, whole topic) and **import**,
 **consumer groups** (lag, members, offset reset with a typed confirmation) and
-**brokers** (health and non-default config). It has full write access.
+**brokers** (health and non-default config), **schema registry management** (browse,
+register with a compatibility check, delete, compatibility level), **topic
+create/delete**, message **download**, and key tombstones / delete-records. It has full write access.
 
 ### Container image (air-gapped)
 

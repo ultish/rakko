@@ -224,3 +224,6 @@ code { font-family: var(--mono); color: var(--accent); }
 .narrow { width: 64px; flex: none !important; }
 .sidebar .new { align-self: flex-start; margin: 0 10px 4px; }
 .placeholder .compat { margin-top: 10px; }
+.grow { flex: 1; }
+.presets { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+.dialog .seg { align-self: flex-start; }

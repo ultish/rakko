@@ -69,6 +69,89 @@ impl CachedSchema {
     }
 }
 
+impl CachedSchema {
+    /// A JSON value shaped like a decoded message of this schema, with *every* field
+    /// present (union branches merged, arrays holding one element). Autocomplete walks
+    /// it like a sample message, so it offers all fields the schema allows — including
+    /// optional ones no recent message happened to carry.
+    pub fn skeleton(&self) -> serde_json::Value {
+        let mut named = HashMap::new();
+        for schema in self.schemata.iter().chain(std::iter::once(&self.schema)) {
+            collect_named(schema, &mut named);
+        }
+        skeleton_of(&self.schema, &named, 0)
+    }
+}
+
+fn collect_named<'a>(schema: &'a Schema, out: &mut HashMap<String, &'a Schema>) {
+    match schema {
+        Schema::Record(record) => {
+            out.insert(record.name.fullname(None), schema);
+            for field in &record.fields {
+                collect_named(&field.schema, out);
+            }
+        }
+        Schema::Array(array) => collect_named(&array.items, out),
+        Schema::Map(map) => collect_named(&map.types, out),
+        Schema::Union(union) => union.variants().iter().for_each(|v| collect_named(v, out)),
+        _ => {}
+    }
+}
+
+/// Recursive types (a linked list, a tree) stop expanding at this depth.
+const SKELETON_MAX_DEPTH: usize = 12;
+
+fn skeleton_of(schema: &Schema, named: &HashMap<String, &Schema>, depth: usize) -> serde_json::Value {
+    use serde_json::Value;
+    if depth > SKELETON_MAX_DEPTH {
+        return Value::Null;
+    }
+    match schema {
+        Schema::Record(record) => Value::Object(
+            record
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), skeleton_of(&f.schema, named, depth + 1)))
+                .collect(),
+        ),
+        Schema::Array(array) => Value::Array(vec![skeleton_of(&array.items, named, depth + 1)]),
+        // Map keys are data, not schema: nothing to suggest.
+        Schema::Map(_) => Value::Object(Default::default()),
+        Schema::Union(union) => union
+            .variants()
+            .iter()
+            .map(|v| skeleton_of(v, named, depth + 1))
+            .fold(Value::Null, merge_skeletons),
+        Schema::Ref { name } => named
+            .get(&name.fullname(None))
+            .map(|s| skeleton_of(s, named, depth + 1))
+            .unwrap_or(Value::Null),
+        _ => Value::Null,
+    }
+}
+
+fn merge_skeletons(a: serde_json::Value, b: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Object(mut a), Value::Object(b)) => {
+            for (k, v) in b {
+                let merged = match a.remove(&k) {
+                    Some(existing) => merge_skeletons(existing, v),
+                    None => v,
+                };
+                a.insert(k, merged);
+            }
+            Value::Object(a)
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            let merged = a.into_iter().chain(b).fold(Value::Null, merge_skeletons);
+            Value::Array(vec![merged])
+        }
+        (Value::Null, other) | (other, Value::Null) => other,
+        (a, _) => a,
+    }
+}
+
 /// In-memory schema-id cache for Confluent wire-format Avro decode.
 pub struct SchemaRegistry {
     base_url: String,
@@ -499,6 +582,46 @@ mod tests {
         assert!(sr.cached_schema(42).is_some());
         assert_eq!(sr.cache_len(), 1);
         assert!(sr.cached_schema(99).is_none());
+    }
+
+    #[test]
+    fn skeleton_has_every_field_including_union_and_nested_ones() {
+        let schema = r#"{
+            "type": "record", "name": "Order", "namespace": "t",
+            "fields": [
+                {"name": "id", "type": "string"},
+                {"name": "note", "type": ["null", "string"], "default": null},
+                {"name": "customer", "type": ["null", {
+                    "type": "record", "name": "Customer",
+                    "fields": [{"name": "tier", "type": "string"}, {"name": "vip", "type": ["null", "boolean"], "default": null}]
+                }], "default": null},
+                {"name": "items", "type": {"type": "array", "items": {
+                    "type": "record", "name": "Item", "fields": [{"name": "sku", "type": "string"}]
+                }}},
+                {"name": "backup", "type": ["null", "Customer"], "default": null},
+                {"name": "labels", "type": {"type": "map", "values": "string"}}
+            ]
+        }"#;
+        let skeleton = CachedSchema::parse(schema, &[]).unwrap().skeleton();
+        let keys = |v: &serde_json::Value, path: &[&str]| -> Vec<String> {
+            let path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+            crate::query_complete::candidate_children(v, &path).into_iter().collect()
+        };
+        assert_eq!(keys(&skeleton, &[]), ["backup", "customer", "id", "items", "labels", "note"]);
+        assert_eq!(keys(&skeleton, &["customer"]), ["tier", "vip"]);
+        assert_eq!(keys(&skeleton, &["items"]), ["sku"], "arrays don't consume a path segment");
+        assert_eq!(keys(&skeleton, &["backup"]), ["tier", "vip"], "named reuse resolves");
+        assert!(keys(&skeleton, &["labels"]).is_empty(), "map keys are data");
+    }
+
+    #[test]
+    fn skeleton_of_a_recursive_type_terminates() {
+        let schema = r#"{"type":"record","name":"Node","fields":[
+            {"name":"value","type":"int"},
+            {"name":"next","type":["null","Node"],"default":null}]}"#;
+        let skeleton = CachedSchema::parse(schema, &[]).unwrap().skeleton();
+        assert_eq!(skeleton["value"], serde_json::Value::Null);
+        assert!(skeleton["next"]["next"]["next"].is_object());
     }
 }
 

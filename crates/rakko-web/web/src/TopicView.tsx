@@ -4,6 +4,7 @@ import { formatCount } from "./format";
 import { Messages } from "./Messages";
 import { ProduceDialog } from "./ProduceDialog";
 import { Tail } from "./Tail";
+import { DeleteTopicDialog, TopicConfigDialog } from "./TopicAdmin";
 
 type Props = {
   profile: string;
@@ -12,6 +13,7 @@ type Props = {
   selected: Summary | null;
   onSelect: (s: Summary) => void;
   onChanged: () => void;
+  onDeleted: () => void;
   produceFrom: ProduceInitial | null;
   onProduceFrom: (v: ProduceInitial | null) => void;
 };
@@ -19,10 +21,11 @@ type Props = {
 export type ProduceInitial = { key?: string; value?: string; headers?: [string, string][] };
 
 /** One topic: browse/filter the whole topic or follow it live, plus produce/export/import. */
-export function TopicView({ profile, topic, info, selected, onSelect, onChanged, produceFrom, onProduceFrom }: Props) {
+export function TopicView({ profile, topic, info, selected, onSelect, onChanged, onDeleted, produceFrom, onProduceFrom }: Props) {
   const [mode, setMode] = useState<"browse" | "live">("browse");
   const [applied, setApplied] = useState({ text: "", query: "" });
   const [producing, setProducing] = useState(false);
+  const [admin, setAdmin] = useState<"config" | "delete" | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -77,6 +80,13 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
           Export{filtered ? " matches" : ""}
         </a>
         <button onClick={() => fileInput.current?.click()}>Import…</button>
+        <details className="menu">
+          <summary>⋯</summary>
+          <div>
+            <button onClick={() => setAdmin("config")}>Topic config…</button>
+            <button onClick={() => setAdmin("delete")}>Delete topic…</button>
+          </div>
+        </details>
         <input
           ref={fileInput}
           type="file"
@@ -102,6 +112,8 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
       ) : (
         <Tail profile={profile} topic={topic} selected={selected} onSelect={onSelect} initialText={applied.text} initialQuery={applied.query} />
       )}
+      {admin === "config" && <TopicConfigDialog profile={profile} topic={topic} onClose={() => setAdmin(null)} />}
+      {admin === "delete" && <DeleteTopicDialog profile={profile} topic={topic} onClose={() => setAdmin(null)} onDone={onDeleted} />}
       {(producing || produceFrom) && (
         <ProduceDialog
           profile={profile}

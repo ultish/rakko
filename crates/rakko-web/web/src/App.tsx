@@ -5,6 +5,7 @@ import { Detail } from "./Detail";
 import { formatCount } from "./format";
 import { GroupList, GroupView } from "./Groups";
 import { RegisterDialog, SchemasHome, SubjectList, SubjectView } from "./Schemas";
+import { CreateTopicDialog } from "./TopicAdmin";
 import { TopicView, type ProduceInitial } from "./TopicView";
 
 type View = "topics" | "groups" | "schemas" | "brokers";
@@ -34,6 +35,20 @@ export function App() {
   const [produceFrom, setProduceFrom] = useState<ProduceInitial | null>(null);
   const [subjectsKey, setSubjectsKey] = useState(0);
   const [newSubject, setNewSubject] = useState(false);
+  const [newTopic, setNewTopic] = useState(false);
+
+  // <details> menus close when you click elsewhere (or pick an item).
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      document.querySelectorAll<HTMLDetailsElement>("details.menu[open]").forEach((d) => {
+        const inside = d.contains(e.target as Node);
+        const item = inside && (e.target as HTMLElement).closest("summary") === null;
+        if (!inside || item) d.open = false;
+      });
+    };
+    document.addEventListener("click", onClick);
+    return () => document.removeEventListener("click", onClick);
+  }, []);
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute());
@@ -103,6 +118,9 @@ export function App() {
           {route.view === "topics" ? (
             <>
               <input placeholder="filter topics…" value={topicFilter} onChange={(e) => setTopicFilter(e.target.value)} spellCheck={false} />
+              <button className="link new" onClick={() => setNewTopic(true)}>
+                + new topic
+              </button>
               {error && <div className="err pad">{error}</div>}
               {!topics && !error && <div className="dim pad">loading topics…</div>}
               <ul>
@@ -162,6 +180,10 @@ export function App() {
             selected={selected}
             onSelect={setSelected}
             onChanged={loadTopics}
+            onDeleted={() => {
+              loadTopics();
+              go("topics");
+            }}
             produceFrom={produceFrom}
             onProduceFrom={setProduceFrom}
           />
@@ -169,6 +191,17 @@ export function App() {
           <Placeholder text="Pick a topic." />
         )}
       </main>
+
+      {newTopic && route.profile && (
+        <CreateTopicDialog
+          profile={route.profile}
+          onClose={() => setNewTopic(false)}
+          onDone={(name) => {
+            loadTopics();
+            go("topics", name);
+          }}
+        />
+      )}
 
       {newSubject && route.profile && (
         <RegisterDialog

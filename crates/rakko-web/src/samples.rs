@@ -91,11 +91,22 @@ async fn load(rt: &Arc<ProfileRuntime>, topic: &str) -> AppResult<Samples> {
     });
     let ids: Vec<u32> = messages.iter().flat_map(schema_ids).collect();
     rt.ensure_schemas(ids).await;
+    // Schema-derived fields too: the latest TopicNameStrategy schemas (this also covers an
+    // empty topic) on top of whatever ids the sampled messages carried.
+    let (key_schema_ids, value_schema_ids) = topic_schema_ids(rt, topic, &messages).await;
+    rt.ensure_schemas(key_schema_ids.iter().chain(&value_schema_ids).copied()).await;
 
     let rt = rt.clone();
     tokio::task::spawn_blocking(move || {
         rt.with_registry(|reg| {
             let mut out = Samples::default();
+            if let Some(reg) = reg {
+                let skeletons = |ids: &[u32]| -> Vec<Value> {
+                    ids.iter().filter_map(|id| reg.cached_schema(*id)).map(|s| s.skeleton()).collect()
+                };
+                out.keys.extend(skeletons(&key_schema_ids));
+                out.values.extend(skeletons(&value_schema_ids));
+            }
             for m in &messages {
                 if let Some(v) = m.key.as_deref().and_then(|b| decode_json_value(b, reg)) {
                     out.keys.push(v);
@@ -109,4 +120,31 @@ async fn load(rt: &Arc<ProfileRuntime>, topic: &str) -> AppResult<Samples> {
     })
     .await
     .map_err(|e| rakko_core::error::AppError::Other(format!("sample decode panicked: {e}")))
+}
+
+/// Schema ids behind the key and value of this topic: those carried by the sampled
+/// messages, plus the latest version of the `<topic>-key` / `<topic>-value` subjects.
+async fn topic_schema_ids(
+    rt: &Arc<ProfileRuntime>,
+    topic: &str,
+    messages: &[rakko_core::raw_message::RawMessage],
+) -> (Vec<u32>, Vec<u32>) {
+    use rakko_core::serde_detect::avro_schema_id;
+    let mut keys: Vec<u32> = messages.iter().filter_map(|m| m.key.as_deref().and_then(avro_schema_id)).collect();
+    let mut values: Vec<u32> = messages.iter().filter_map(|m| m.value.as_deref().and_then(avro_schema_id)).collect();
+    if let Some(base) = rt.profile.schema_registry_url.as_deref() {
+        for (suffix, ids) in [("key", &mut keys), ("value", &mut values)] {
+            // 404 just means this topic doesn't use that strategy/side.
+            if let Ok(v) = rakko_core::kafka::schema_admin::get_version(base, &format!("{topic}-{suffix}"), "latest").await {
+                if let Ok(id) = u32::try_from(v.id) {
+                    ids.push(id);
+                }
+            }
+        }
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    values.sort_unstable();
+    values.dedup();
+    (keys, values)
 }

@@ -188,7 +188,11 @@ require an explicit confirmation naming the target.
 register, compatibility check/level, soft/permanent delete) + Schemas tab; message
 download (raw/decoded/JSONL), key tombstone, and `delete_records_before` (AdminClient
 DeleteRecords) behind a typed topic-name confirmation.
-Not yet built: topic create/delete, topic-level time/offset range for scans.
+Topic create/delete/config (`admin.rs`, typed-name confirmation, internal topics
+protected). Autocomplete candidates also come from `CachedSchema::skeleton()` (every
+field of the Avro schema, unions merged) for ids seen in samples plus the latest
+`<topic>-key/-value` subjects, so optional fields and empty topics complete.
+Not yet built: topic-level time/offset range for scans.
 
 **Container image.** `Dockerfile.web` (Node UI build → Rocky 9 build with vendored
 librdkafka/OpenSSL → UBI 9 minimal runtime, non-root 10001, config at

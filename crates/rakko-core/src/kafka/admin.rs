@@ -232,6 +232,106 @@ fn fetch_broker_configs_blocking(profile: &Profile, broker_id: i32) -> AppResult
     Ok(entries)
 }
 
+/// Topic names Kafka accepts: 1–249 of `[a-zA-Z0-9._-]`, and not `.` or `..`.
+pub fn validate_topic_name(name: &str) -> AppResult<()> {
+    let ok = !name.is_empty()
+        && name.len() <= 249
+        && name != "."
+        && name != ".."
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(AppError::Other(format!(
+            "invalid topic name '{name}': use 1-249 of letters, digits, '.', '_' or '-'"
+        )))
+    }
+}
+
+/// Creates a topic. `configs` are per-topic overrides such as `retention.ms`.
+pub async fn create_topic(
+    profile: &Profile,
+    name: &str,
+    partitions: i32,
+    replication_factor: i32,
+    configs: Vec<(String, String)>,
+) -> AppResult<()> {
+    validate_topic_name(name)?;
+    if partitions < 1 || replication_factor < 1 {
+        return Err(AppError::Other("partitions and replication factor must be at least 1".into()));
+    }
+    let (profile, name) = (profile.clone(), name.to_string());
+    tokio::task::spawn_blocking(move || {
+        use rdkafka::admin::{NewTopic, TopicReplication};
+        let admin_client: AdminClient<DefaultClientContext> =
+            consumer_client_config(&profile, ADMIN_GROUP_ID).create()?;
+        let mut topic = NewTopic::new(&name, partitions, TopicReplication::Fixed(replication_factor));
+        for (k, v) in &configs {
+            topic = topic.set(k, v);
+        }
+        let opts = AdminOptions::new().request_timeout(Some(DESCRIBE_CONFIGS_TIMEOUT));
+        let results = futures::executor::block_on(admin_client.create_topics([&topic], &opts))?;
+        match results.into_iter().next() {
+            Some(Ok(_)) => Ok(()),
+            Some(Err((_, code))) => Err(AppError::Other(format!("create topic '{name}' failed: {code}"))),
+            None => Err(AppError::Other("broker returned no result".into())),
+        }
+    })
+    .await
+    .map_err(|err| AppError::Other(format!("create topic task panicked: {err}")))?
+}
+
+/// Deletes a topic and all its data.
+pub async fn delete_topic(profile: &Profile, name: &str) -> AppResult<()> {
+    if is_internal_topic(name) {
+        return Err(AppError::Other("internal topics cannot be deleted from here".into()));
+    }
+    let (profile, name) = (profile.clone(), name.to_string());
+    tokio::task::spawn_blocking(move || {
+        let admin_client: AdminClient<DefaultClientContext> =
+            consumer_client_config(&profile, ADMIN_GROUP_ID).create()?;
+        let opts = AdminOptions::new().request_timeout(Some(DESCRIBE_CONFIGS_TIMEOUT));
+        let results = futures::executor::block_on(admin_client.delete_topics(&[name.as_str()], &opts))?;
+        match results.into_iter().next() {
+            Some(Ok(_)) => Ok(()),
+            Some(Err((_, code))) => Err(AppError::Other(format!("delete topic '{name}' failed: {code}"))),
+            None => Err(AppError::Other("broker returned no result".into())),
+        }
+    })
+    .await
+    .map_err(|err| AppError::Other(format!("delete topic task panicked: {err}")))?
+}
+
+/// A topic's non-default config (same filtering as the broker view).
+pub async fn fetch_topic_configs(profile: &Profile, topic: &str) -> AppResult<Vec<BrokerConfigEntry>> {
+    let (profile, topic) = (profile.clone(), topic.to_string());
+    tokio::task::spawn_blocking(move || {
+        let admin_client: AdminClient<DefaultClientContext> =
+            consumer_client_config(&profile, ADMIN_GROUP_ID).create()?;
+        let specifier = ResourceSpecifier::Topic(&topic);
+        let opts = AdminOptions::new().request_timeout(Some(DESCRIBE_CONFIGS_TIMEOUT));
+        let results = futures::executor::block_on(admin_client.describe_configs([&specifier], &opts))?;
+        let resource = results
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::Other(format!("no config returned for topic {topic}")))?
+            .map_err(|err| AppError::Other(format!("describe_configs failed for topic {topic}: {err}")))?;
+        let mut entries: Vec<BrokerConfigEntry> = resource
+            .entries
+            .into_iter()
+            .filter(|e| !e.is_default)
+            .map(|e| BrokerConfigEntry {
+                name: e.name,
+                value: if e.is_sensitive { "<sensitive>".to_string() } else { e.value.unwrap_or_default() },
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
+    })
+    .await
+    .map_err(|err| AppError::Other(format!("topic config task panicked: {err}")))?
+}
+
 /// Deletes every record in `partition` with an offset below `before_offset` (Kafka's
 /// DeleteRecords). There is no way to delete one record in the middle of a log — this
 /// moves the partition's start forward, permanently. Returns the new low watermark.

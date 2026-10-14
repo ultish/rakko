@@ -20,7 +20,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use futures::stream::{self, Stream};
 use rakko_core::export::{message_to_jsonl_line, parse_jsonl_line};
-use rakko_core::kafka::admin::{delete_records_before, fetch_broker_configs, list_brokers};
+use rakko_core::kafka::admin::{create_topic as admin_create_topic, delete_records_before, delete_topic as admin_delete_topic, fetch_topic_configs, fetch_broker_configs, list_brokers};
 use rakko_core::kafka::schema_admin::{self, SchemaReference};
 use rakko_core::kafka::consumer::{fetch_message, run_tail, BrowseEvent};
 use rakko_core::kafka::group_offsets::{describe_group, list_groups, reset_group_offsets, OffsetResetTarget};
@@ -65,6 +65,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/p/{profile}/topics/{topic}/messages/{partition}/{offset}/download", get(download))
         .route("/p/{profile}/topics/{topic}/messages/{partition}/{offset}/tombstone", post(tombstone))
         .route("/p/{profile}/topics/{topic}/delete-records", post(delete_records))
+        .route("/p/{profile}/topics", post(create_topic))
+        .route("/p/{profile}/topics/{topic}", axum::routing::delete(delete_topic))
+        .route("/p/{profile}/topics/{topic}/configs", get(topic_configs))
         .route("/p/{profile}/schemas", get(schema_subjects))
         .route(
             "/p/{profile}/schemas/{subject}",
@@ -746,4 +749,60 @@ async fn schema_config_set(
     Json(b): Json<CompatBody>,
 ) -> ApiResult<Value> {
     compat_set(&state, &p, Some(&subject), &b.level).await
+}
+
+// ---------------------------------------------------------------- topic management
+
+#[derive(Deserialize)]
+struct CreateTopicBody {
+    name: String,
+    partitions: i32,
+    replication_factor: i32,
+    /// Per-topic overrides, e.g. `{"retention.ms": "86400000", "cleanup.policy": "compact"}`.
+    #[serde(default)]
+    configs: std::collections::BTreeMap<String, String>,
+}
+
+async fn create_topic(State(state): Shared, Path(p): Path<String>, Json(b): Json<CreateTopicBody>) -> ApiResult<Value> {
+    let rt = profile(&state, &p)?;
+    if b.partitions > 10_000 {
+        return Err(ApiError::bad_request("partitions must be at most 10000"));
+    }
+    if b.configs.keys().any(|k| k.trim().is_empty()) {
+        return Err(ApiError::bad_request("config names must not be empty"));
+    }
+    let configs = b.configs.into_iter().collect();
+    admin_create_topic(&rt.profile, &b.name, b.partitions, b.replication_factor, configs)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    tracing::info!("created topic {} on profile {p}", b.name);
+    Ok(Json(json!({ "name": b.name })))
+}
+
+#[derive(Deserialize)]
+struct ConfirmQuery {
+    /// Must equal the topic name.
+    confirm: String,
+}
+
+async fn delete_topic(
+    State(state): Shared,
+    Path((p, topic)): Path<(String, String)>,
+    Query(q): Query<ConfirmQuery>,
+) -> ApiResult<Value> {
+    if q.confirm != topic {
+        return Err(ApiError::bad_request("confirm must equal the topic name"));
+    }
+    let rt = profile(&state, &p)?;
+    admin_delete_topic(&rt.profile, &topic).await.map_err(|e| ApiError::bad_request(e.to_string()))?;
+    tracing::info!("deleted topic {topic} on profile {p}");
+    state.details.clear();
+    state.samples.sweep();
+    Ok(Json(json!({ "deleted": true })))
+}
+
+async fn topic_configs(State(state): Shared, Path((p, topic)): Path<(String, String)>) -> ApiResult<Vec<Value>> {
+    let rt = profile(&state, &p)?;
+    let entries = fetch_topic_configs(&rt.profile, &topic).await?;
+    Ok(Json(entries.into_iter().map(|e| json!({ "name": e.name, "value": e.value })).collect()))
 }

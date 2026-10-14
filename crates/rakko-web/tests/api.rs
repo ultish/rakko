@@ -497,3 +497,61 @@ async fn delete_records_tombstone_download_and_schema_management() {
     let (_, subjects) = call(&app, Method::GET, "/api/p/local/schemas", None, None).await;
     assert!(!subjects.as_array().unwrap().iter().any(|x| *x == subject.as_str()));
 }
+
+#[tokio::test]
+#[ignore = "requires `docker compose up -d`"]
+async fn topic_create_configs_and_delete() {
+    let app = app();
+    let name = unique("mgmt");
+    let body = json!({"name": name, "partitions": 2, "replication_factor": 1, "configs": {"retention.ms": "86400000"}});
+    let (st, b) = call(&app, Method::POST, "/api/p/local/topics", None, Some(body.clone())).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let (st, _) = call(&app, Method::POST, "/api/p/local/topics", None, Some(body)).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "creating it twice fails");
+    let bad = json!({"name": "no spaces!", "partitions": 1, "replication_factor": 1});
+    let (st, _) = call(&app, Method::POST, "/api/p/local/topics", None, Some(bad)).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let (_, topics) = call(&app, Method::GET, "/api/p/local/topics", None, None).await;
+    let ours = topics.as_array().unwrap().iter().find(|t| t["name"] == name.as_str()).expect("listed");
+    assert_eq!(ours["partitions"], 2);
+    let (_, cfg) = call(&app, Method::GET, &format!("/api/p/local/topics/{name}/configs"), None, None).await;
+    assert!(cfg.as_array().unwrap().iter().any(|c| c["name"] == "retention.ms" && c["value"] == "86400000"), "{cfg}");
+
+    let (st, _) = call(&app, Method::DELETE, &format!("/api/p/local/topics/{name}?confirm=nope"), None, None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, b) = call(&app, Method::DELETE, &format!("/api/p/local/topics/{name}?confirm={name}"), None, None).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    let (st, _) = call(&app, Method::DELETE, "/api/p/local/topics/__consumer_offsets?confirm=__consumer_offsets", None, None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "internal topics are protected");
+    for _ in 0..20 {
+        let (_, topics) = call(&app, Method::GET, "/api/p/local/topics", None, None).await;
+        if !topics.as_array().unwrap().iter().any(|t| t["name"] == name.as_str()) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!("topic still listed after delete");
+}
+
+#[tokio::test]
+#[ignore = "requires `docker compose up -d`"]
+async fn autocomplete_comes_from_the_registered_schema_even_on_an_empty_topic() {
+    let app = app();
+    let topic = unique("schema-ac");
+    create_topic(&topic, 1).await;
+    let schema = r#"{"type":"record","name":"Evt","fields":[
+        {"name":"id","type":"string"},
+        {"name":"rare","type":["null",{"type":"record","name":"Rare","fields":[{"name":"deep","type":"int"}]}],"default":null}]}"#;
+    let (st, body) =
+        call(&app, Method::POST, &format!("/api/p/local/schemas/{topic}-value"), None, Some(json!({"schema": schema}))).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+
+    let complete = |input: &str| {
+        let (app, uri, input) = (app.clone(), format!("/api/p/local/topics/{topic}/complete"), input.to_string());
+        async move { call(&app, Method::POST, &uri, None, Some(json!({ "input": input }))).await.1 }
+    };
+    assert_eq!(complete("value.").await["candidates"], json!(["id", "rare"]));
+    assert_eq!(complete("value.rare.").await["candidates"], json!(["deep"]));
+    assert_eq!(complete("key.").await["candidates"], json!([]), "no key schema, no key suggestions");
+}
