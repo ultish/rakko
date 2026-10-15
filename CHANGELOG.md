@@ -11,6 +11,9 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Changed
+- **Web:** Lists refresh themselves — topics every 30 s, consumer groups, schema subjects/versions and partitions every 15 s, brokers every 30 s, ACLs every minute — and immediately when you return to the tab, so new topics, schemas and groups appear without F5. Message lists don't change under you; use Refresh, or Live for a stream.
+
 ### Added
 - **Web:** **Delete group…** on a consumer group's page (typed confirmation; Kafka refuses while the group has active members, and the message says so).
 - **Web:** **Clear all messages…** in a topic's ⋯ menu: removes every message but keeps the topic, its settings and its consumer groups (typed confirmation).

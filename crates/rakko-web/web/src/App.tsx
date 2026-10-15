@@ -9,6 +9,7 @@ import { RegisterDialog, SchemasHome, SubjectList, SubjectView } from "./Schemas
 import { CreateTopicDialog } from "./TopicAdmin";
 import { TopicView, type ProduceInitial } from "./TopicView";
 import { readParams, setParams } from "./urlState";
+import { usePolling } from "./usePolling";
 
 type View = "topics" | "groups" | "schemas" | "brokers" | "acls";
 type Route = { profile: string; view: View; item: string };
@@ -130,6 +131,11 @@ export function App() {
     setError(null);
     loadTopics();
   }, [loadTopics]);
+
+  // New or deleted topics show up without F5. Listing is not free on a big cluster, so not too often.
+  usePolling(() => {
+    if (route.profile) api.topics(route.profile).then(setTopics).catch(() => {});
+  }, 30_000);
 
   // A link can name the open message (?msg=partition:offset); the detail panel loads it by coordinates.
   useEffect(() => {

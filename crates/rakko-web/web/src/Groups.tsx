@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Group, type GroupDetail, type LagSample, type ResetTarget } from "./api";
 import { LagChart } from "./LagChart";
+import { usePolling } from "./usePolling";
 import { Dialog } from "./Dialog";
 import { formatCount } from "./format";
 
@@ -19,6 +20,10 @@ export function GroupList({ profile, selected, onSelect, refreshKey = 0 }: { pro
     setGroups(null);
     load();
   }, [load, refreshKey]);
+
+  usePolling(() => {
+    api.groups(profile).then(setGroups).catch(() => {});
+  }, 15_000);
 
   const needle = filter.trim().toLowerCase();
   return (

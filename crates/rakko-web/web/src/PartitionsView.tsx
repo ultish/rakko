@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type PartitionDetail } from "./api";
 import { formatCount } from "./format";
+import { usePolling } from "./usePolling";
 
 /** Where each partition lives: leader, replicas, in-sync replicas, and how much data it holds. */
 export function PartitionsView({ profile, topic }: { profile: string; topic: string }) {
@@ -16,6 +17,10 @@ export function PartitionsView({ profile, topic }: { profile: string; topic: str
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, topic]);
+
+  usePolling(() => {
+    api.partitionDetails(profile, topic).then(setParts).catch(() => {});
+  }, 15_000);
 
   const unhealthy = (p: PartitionDetail) => p.leader < 0 || p.isr.length < p.replicas.length;
 

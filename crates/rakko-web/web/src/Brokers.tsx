@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Brokers as BrokersT } from "./api";
+import { usePolling } from "./usePolling";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -15,6 +16,10 @@ export function Brokers({ profile }: { profile: string }) {
     setOpen(null);
     api.brokers(profile).then(setData).catch((e: unknown) => setError(message(e)));
   }, [profile]);
+
+  usePolling(() => {
+    api.brokers(profile).then(setData).catch(() => {});
+  }, 30_000);
 
   useEffect(() => {
     if (open === null) return;

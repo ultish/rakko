@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { readParams, setParams } from "./urlState";
+import { usePolling } from "./usePolling";
 import { api, type SchemaDraft, type SchemaReference, type SubjectVersion } from "./api";
 import { Dialog } from "./Dialog";
 
@@ -35,6 +36,10 @@ export function SubjectList({
     setError(null);
     api.subjects(profile).then(setSubjects).catch((e: unknown) => setError(message(e)));
   }, [profile, refreshKey]);
+
+  usePolling(() => {
+    api.subjects(profile).then(setSubjects).catch(() => {});
+  }, 15_000);
 
   const needle = filter.trim().toLowerCase();
   return (
@@ -309,6 +314,14 @@ export function SubjectView({ profile, subject, onChanged, onGone }: { profile: 
     },
     [profile, subject],
   );
+
+  // A new version registered elsewhere appears in the list; what you're viewing stays put.
+  usePolling(() => {
+    api
+      .versions(profile, subject)
+      .then((v) => setVersions((old) => (old && old.length === v.length && old.every((x, i) => x === v[i]) ? old : v)))
+      .catch(() => {});
+  }, 15_000);
 
   useEffect(() => {
     setVersions(null);

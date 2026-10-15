@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type AclEntry } from "./api";
 import { setParams, readParams } from "./urlState";
+import { usePolling } from "./usePolling";
 
 /** Read-only view of every ACL on the cluster. */
 export function Acls({ profile }: { profile: string }) {
@@ -13,6 +14,10 @@ export function Acls({ profile }: { profile: string }) {
     setError(null);
     api.acls(profile).then(setAcls).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, [profile]);
+
+  usePolling(() => {
+    api.acls(profile).then(setAcls).catch(() => {});
+  }, 60_000);
 
   const shown = useMemo(() => {
     const needle = filter.trim().toLowerCase();
