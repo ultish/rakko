@@ -121,6 +121,9 @@ struct ScanRequest {
     /// Limit the scan to a time window or one partition's offset window.
     #[serde(default)]
     range: ScanRange,
+    /// Read the topic as a table: only the latest record per key, tombstoned keys removed.
+    #[serde(default)]
+    table: bool,
 }
 
 async fn create_scan(
@@ -133,7 +136,7 @@ async fn create_scan(
     let rt = profile(&state, &profile_name)?;
     let filter = MessageFilter::parse(body.text.as_deref(), body.query.as_deref()).map_err(ApiError::bad_request)?;
     body.range.validate().map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let scan = ScanSession::open(owner, rt, topic, filter, body.range, state.scan_window).await?;
+    let scan = ScanSession::open(owner, rt, topic, filter, body.range, state.scan_window, body.table).await?;
     let (id, total) = (scan.id.clone(), scan.total_offsets());
     state
         .scans

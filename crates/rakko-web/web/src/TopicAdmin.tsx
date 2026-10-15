@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api } from "./api";
+import { useCallback, useEffect, useState } from "react";
+import { api, type TopicConfig } from "./api";
 import { Dialog } from "./Dialog";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -99,29 +99,132 @@ export function CreateTopicDialog({ profile, onClose, onDone }: { profile: strin
 }
 
 export function TopicConfigDialog({ profile, topic, onClose }: { profile: string; topic: string; onClose: () => void }) {
-  const [entries, setEntries] = useState<{ name: string; value: string }[] | null>(null);
+  const [entries, setEntries] = useState<TopicConfig[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    api.topicConfigs(profile, topic).then(setEntries).catch((e: unknown) => setError(message(e)));
+  const [filter, setFilter] = useState("");
+  const [onlyOverrides, setOnlyOverrides] = useState(false);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [resets, setResets] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+  const internal = topic.startsWith("__");
+
+  const load = useCallback(() => {
+    setEntries(null);
+    api.topicConfigsAll(profile, topic).then(setEntries).catch((e: unknown) => setError(message(e)));
   }, [profile, topic]);
+  useEffect(load, [load]);
+
+  const changes = Object.keys(edits).length + resets.size;
+  const needle = filter.trim().toLowerCase();
+  const shown = (entries ?? []).filter((e) => (!onlyOverrides || e.overridden) && e.name.toLowerCase().includes(needle));
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    setSaved(null);
+    try {
+      await api.alterTopicConfigs(profile, topic, edits, [...resets]);
+      setEdits({});
+      setResets(new Set());
+      setSaved(`Saved ${changes} change${changes === 1 ? "" : "s"}.`);
+      load();
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <Dialog title={`${topic} — non-default config`} onClose={onClose} wide>
+    <Dialog title={`${topic} — config`} onClose={onClose} wide>
       <div className="dialog-body">
+        <div className="header-row">
+          <input placeholder="filter settings…" value={filter} onChange={(e) => setFilter(e.target.value)} spellCheck={false} autoFocus />
+          <label className="check">
+            <input type="checkbox" checked={onlyOverrides} onChange={(e) => setOnlyOverrides(e.target.checked)} />
+            set on this topic only
+          </label>
+        </div>
         {error && <div className="err">{error}</div>}
+        {saved && <div className="ok">{saved}</div>}
         {!entries && !error && <div className="dim">loading…</div>}
-        {entries && entries.length === 0 && <div className="dim">Everything uses the broker defaults.</div>}
-        {entries && entries.length > 0 && (
-          <table className="grid">
-            <tbody>
-              {entries.map((c) => (
-                <tr key={c.name}>
-                  <td className="dim">{c.name}</td>
-                  <td className="mono-wrap">{c.value}</td>
+        {entries && (
+          <div className="config-scroll">
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th>setting</th>
+                  <th>value</th>
+                  <th>from</th>
+                  <th />
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {shown.map((c) => {
+                  const edited = edits[c.name] !== undefined;
+                  const reset = resets.has(c.name);
+                  const locked = internal || c.read_only || c.sensitive;
+                  return (
+                    <tr key={c.name} className={edited || reset ? "selected" : undefined}>
+                      <td className="mono-wrap">{c.name}</td>
+                      <td>
+                        {locked ? (
+                          <span className="mono-wrap">{c.sensitive ? "<sensitive>" : (c.value ?? "")}</span>
+                        ) : (
+                          <input
+                            className="config-input"
+                            value={reset ? "(default)" : (edits[c.name] ?? c.value ?? "")}
+                            disabled={reset}
+                            spellCheck={false}
+                            onChange={(e) => setEdits({ ...edits, [c.name]: e.target.value })}
+                          />
+                        )}
+                      </td>
+                      <td className="dim">{c.source}</td>
+                      <td>
+                        {!locked && c.overridden && !reset && (
+                          <button
+                            className="link"
+                            title="Remove the override so the broker default applies"
+                            onClick={() => {
+                              const { [c.name]: _drop, ...rest } = edits;
+                              setEdits(rest);
+                              setResets(new Set(resets).add(c.name));
+                            }}
+                          >
+                            reset
+                          </button>
+                        )}
+                        {(edited || reset) && (
+                          <button
+                            className="link"
+                            onClick={() => {
+                              const { [c.name]: _drop, ...rest } = edits;
+                              setEdits(rest);
+                              const next = new Set(resets);
+                              next.delete(c.name);
+                              setResets(next);
+                            }}
+                          >
+                            undo
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {shown.length === 0 && <div className="dim pad">No matching settings.</div>}
+          </div>
         )}
+        <footer>
+          <button onClick={onClose}>Close</button>
+          <button className="primary" disabled={busy || changes === 0 || internal} onClick={() => void save()}>
+            {busy ? "Saving…" : changes ? `Save ${changes} change${changes === 1 ? "" : "s"}` : "Save"}
+          </button>
+        </footer>
       </div>
     </Dialog>
   );

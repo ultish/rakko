@@ -312,14 +312,23 @@ export function SubjectView({ profile, subject, onChanged, onGone }: { profile: 
     setVersions(null);
     setVersion(null);
     setDetail(null);
+    setError(null);
     loadVersions();
   }, [loadVersions]);
 
   useEffect(() => {
-    if (version === null) return;
+    // `version` can briefly belong to the previous subject; only fetch once this subject's list says it exists.
+    if (version === null || !versions?.includes(version)) return;
+    let stale = false;
     setDetail(null);
-    api.schemaVersion(profile, subject, version).then(setDetail).catch((e: unknown) => setError(message(e)));
-  }, [profile, subject, version]);
+    api
+      .schemaVersion(profile, subject, version)
+      .then((d) => !stale && setDetail(d))
+      .catch((e: unknown) => !stale && setError(message(e)));
+    return () => {
+      stale = true;
+    };
+  }, [profile, subject, version, versions]);
 
   return (
     <>

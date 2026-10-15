@@ -23,6 +23,10 @@ type Props = {
   onSelect: (s: Summary) => void;
   /** Reports the filter the visible results were produced with (for export / live tail). */
   onApplied?: (text: string, query: string, range: Range) => void;
+  /** Latest value per key (a compacted topic read as a table). */
+  table?: boolean;
+  /** Reports how many messages the topic really holds once an unfiltered scan completes. */
+  onStored?: (count: number | null) => void;
 };
 
 /**
@@ -30,7 +34,7 @@ type Props = {
  * optionally filtered. The list is virtualized and pulls more matches from the scan as
  * you scroll, so a filter keeps finding results without ever loading the topic here.
  */
-export function Messages({ profile, topic, selected, onSelect, onApplied }: Props) {
+export function Messages({ profile, topic, selected, onSelect, onApplied, table = false, onStored }: Props) {
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Summary[]>([]);
@@ -95,7 +99,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
       setError(null);
       setEpoch((e) => e + 1);
       try {
-        const created = await api.createScan(profile, topic, filterText, filterQuery, range);
+        const created = await api.createScan(profile, topic, filterText, filterQuery, range, table);
         if (gen !== generation.current) {
           api.deleteScan(created.scan_id).catch(() => {});
           return;
@@ -111,7 +115,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
         if (gen === generation.current) setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [profile, topic, pump, onApplied],
+    [profile, topic, pump, onApplied, table],
   );
 
   // New topic: forget filters and browse the whole topic.
@@ -148,6 +152,8 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
   const pct = status && status.total > 0 ? Math.min(100, Math.round((status.scanned / status.total) * 100)) : status ? 100 : 0;
   const rangeLabel = describeRange(applied);
   const filtered = text.trim() !== "" || query.trim() !== "" || rangeLabel !== "";
+  const stored = !table && !filtered && status?.done && !status.error && !error ? rows.length : null;
+  useEffect(() => onStored?.(stored), [stored, onStored]);
 
   return (
     <div className="messages">
@@ -189,7 +195,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
         </div>
         <span>
           {status
-            ? `${formatCount(rows.length)}${status.done ? "" : "+"} ${filtered ? "matches" : "messages"} · scanned ${pct}% of ${formatCount(status.total)} offsets${status.done ? " · complete" : ""}`
+            ? `${formatCount(rows.length)}${status.done ? "" : "+"} ${filtered ? "matches" : table ? "keys" : "messages"} · scanned ${pct}% of ${formatCount(status.total)} offsets${status.done ? " · complete" : ""}`
             : error
               ? ""
               : "starting scan…"}
@@ -210,7 +216,8 @@ export function Messages({ profile, topic, selected, onSelect, onApplied }: Prop
         loading={status ? !status.done && !status.error : !error}
         onVisibleEnd={onVisibleEnd}
         resetKey={epoch}
-        empty={filtered ? "No messages match this filter." : "This topic is empty."}
+        table={table}
+        empty={filtered ? "No messages match this filter." : table ? "No live keys: the topic is empty or every key was deleted." : "This topic is empty."}
       />
     </div>
   );

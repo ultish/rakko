@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type Field } from "./api";
 import { Dialog } from "./Dialog";
 
@@ -7,12 +7,12 @@ type Props = {
   topic: string;
   onClose: () => void;
   /** Pre-fills the form (replay-and-edit). */
-  initial?: { key?: string; value?: string; headers?: [string, string][] };
+  initial?: { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean };
 };
 
-type Mode = "text" | "base64" | "file" | "null";
+type Mode = "text" | "avro" | "base64" | "file" | "null";
 
-type Side = { mode: Mode; text: string; file: File | null };
+type Side = { mode: Mode; text: string; file: File | null; subject: string };
 
 function toBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -29,6 +29,9 @@ async function toField(side: Side): Promise<Field | undefined> {
       return undefined;
     case "text":
       return { text: side.text };
+    case "avro":
+      if (!side.subject.trim()) throw new Error("choose the Avro subject to encode with");
+      return { avro: { subject: side.subject.trim(), json: side.text } };
     case "base64":
       return { base64: side.text };
     case "file":
@@ -37,12 +40,47 @@ async function toField(side: Side): Promise<Field | undefined> {
   }
 }
 
-function SideEditor({ label, side, onChange, rows }: { label: string; side: Side; onChange: (s: Side) => void; rows: number }) {
+function SideEditor({
+  profile,
+  label,
+  side,
+  onChange,
+  rows,
+  subjects,
+}: {
+  profile: string;
+  label: string;
+  side: Side;
+  onChange: (s: Side) => void;
+  rows: number;
+  /** Registry subjects; `null` when the profile has no (reachable) registry. */
+  subjects: string[] | null;
+}) {
+  const [note, setNote] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const modes: Mode[] = subjects ? ["text", "avro", "base64", "file", "null"] : ["text", "base64", "file", "null"];
+
+  const generate = async (subject: string, replace: boolean) => {
+    if (!subject.trim()) return;
+    try {
+      const t = await api.avroTemplate(profile, subject.trim());
+      setNote({ kind: "ok", text: `template from ${t.subject} v${t.version} (schema id ${t.id})` });
+      if (replace) onChange({ ...side, mode: "avro", subject: subject.trim(), text: JSON.stringify(t.template, null, 2) });
+    } catch (e) {
+      setNote({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  // Entering Avro mode on an empty editor starts from the schema's template.
+  useEffect(() => {
+    if (side.mode === "avro" && side.subject && !side.text.trim()) void generate(side.subject, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [side.mode]);
+
   return (
     <fieldset>
       <legend>{label}</legend>
       <div className="seg" role="radiogroup">
-        {(["text", "base64", "file", "null"] as Mode[]).map((m) => (
+        {modes.map((m) => (
           <button
             key={m}
             type="button"
@@ -51,19 +89,40 @@ function SideEditor({ label, side, onChange, rows }: { label: string; side: Side
             className={side.mode === m ? "on" : undefined}
             onClick={() => onChange({ ...side, mode: m })}
           >
-            {m === "null" ? "null" : m}
+            {m}
           </button>
         ))}
       </div>
-      {(side.mode === "text" || side.mode === "base64") && (
+      {side.mode === "avro" && (
+        <div className="header-row">
+          <input
+            list={`subjects-${label}`}
+            value={side.subject}
+            placeholder="subject, e.g. orders-value"
+            spellCheck={false}
+            onChange={(e) => onChange({ ...side, subject: e.target.value })}
+            onBlur={() => side.subject && !side.text.trim() && void generate(side.subject, true)}
+          />
+          <datalist id={`subjects-${label}`}>
+            {subjects?.map((s) => (
+              <option key={s} value={s} />
+            ))}
+          </datalist>
+          <button type="button" disabled={!side.subject.trim()} onClick={() => void generate(side.subject, true)} title="Replace the text with a template of the subject's latest schema">
+            Generate template
+          </button>
+        </div>
+      )}
+      {(side.mode === "text" || side.mode === "base64" || side.mode === "avro") && (
         <textarea
           rows={rows}
           value={side.text}
           spellCheck={false}
           onChange={(e) => onChange({ ...side, text: e.target.value })}
-          placeholder={side.mode === "base64" ? "base64-encoded bytes" : label.toLowerCase()}
+          placeholder={side.mode === "base64" ? "base64-encoded bytes" : side.mode === "avro" ? "JSON matching the schema" : label.toLowerCase()}
         />
       )}
+      {side.mode === "avro" && note && <div className={note.kind === "ok" ? "dim small" : "err small"}>{note.text}</div>}
       {side.mode === "file" && (
         <input type="file" onChange={(e) => onChange({ ...side, file: e.target.files?.[0] ?? null })} />
       )}
@@ -74,8 +133,17 @@ function SideEditor({ label, side, onChange, rows }: { label: string; side: Side
 
 /** Produce one message: text, raw base64 bytes, or a file (up to ~20 MiB). */
 export function ProduceDialog({ profile, topic, onClose, initial }: Props) {
-  const [key, setKey] = useState<Side>({ mode: initial?.key !== undefined ? "text" : "null", text: initial?.key ?? "", file: null });
-  const [value, setValue] = useState<Side>({ mode: "text", text: initial?.value ?? "", file: null });
+  const [key, setKey] = useState<Side>({ mode: initial?.key !== undefined ? "text" : "null", text: initial?.key ?? "", file: null, subject: `${topic}-key` });
+  const [value, setValue] = useState<Side>({
+    mode: initial?.valueAvro ? "avro" : "text",
+    text: initial?.value ?? "",
+    file: null,
+    subject: `${topic}-value`,
+  });
+  const [subjects, setSubjects] = useState<string[] | null>(null);
+  useEffect(() => {
+    api.subjects(profile).then(setSubjects).catch(() => setSubjects(null));
+  }, [profile]);
   const [headers, setHeaders] = useState<{ key: string; value: string }[]>(
     (initial?.headers ?? []).map(([k, v]) => ({ key: k, value: v })),
   );
@@ -107,8 +175,8 @@ export function ProduceDialog({ profile, topic, onClose, initial }: Props) {
           void send();
         }}
       >
-        <SideEditor label="Key" side={key} onChange={setKey} rows={2} />
-        <SideEditor label="Value" side={value} onChange={setValue} rows={10} />
+        <SideEditor profile={profile} label="Key" side={key} onChange={setKey} rows={2} subjects={subjects} />
+        <SideEditor profile={profile} label="Value" side={value} onChange={setValue} rows={10} subjects={subjects} />
         <fieldset>
           <legend>Headers</legend>
           {headers.map((h, i) => (

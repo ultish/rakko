@@ -57,10 +57,10 @@ button.link:hover { text-decoration: underline; }
 
 /* Layout: topbar over [sidebar | main | detail] */
 .app {
-  height: 100%; display: grid; grid-template-rows: auto 1fr; grid-template-columns: 260px minmax(0, 1fr);
+  height: 100%; display: grid; grid-template-rows: auto 1fr; grid-template-columns: var(--side-w, 260px) minmax(0, 1fr);
   grid-template-areas: "top top" "side main";
 }
-.app.with-detail { grid-template-columns: 260px minmax(0, 1fr) minmax(320px, 40%); grid-template-areas: "top top top" "side main detail"; }
+.app.with-detail { grid-template-columns: var(--side-w, 260px) minmax(0, 1fr) minmax(320px, 40%); grid-template-areas: "top top top" "side main detail"; }
 
 .topbar {
   grid-area: top; display: flex; align-items: center; gap: 12px; padding: 8px 14px;
@@ -235,3 +235,18 @@ code { font-family: var(--mono); color: var(--accent); }
 .narrow-num { width: 96px; flex: none; }
 button.toggle.on { border-color: var(--accent); color: var(--accent); }
 .range-tag { color: var(--title); font-family: var(--mono); font-size: 12px; }
+
+/* resizable sidebar, topic sort, tags */
+.sidebar { position: relative; }
+.resize { position: absolute; top: 0; right: -3px; bottom: 0; width: 7px; cursor: col-resize; z-index: 4; touch-action: none; }
+.resize:hover, .resize:active { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.sort-row { display: flex; gap: 6px; align-items: center; margin: 0 10px 6px; }
+.sort-row select { flex: 1; }
+.sort-row .new { margin: 0; }
+.tag { flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--title); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.sortable { cursor: pointer; user-select: none; }
+.sortable:hover { color: var(--accent); }
+.menu.flip > div { left: auto; right: 0; }
+.topic-head .menu > div { max-width: calc(100vw - 32px); }
+.config-scroll { max-height: 55vh; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.config-input { width: 100%; font-family: var(--mono); font-size: 12.5px; padding: 3px 6px; }

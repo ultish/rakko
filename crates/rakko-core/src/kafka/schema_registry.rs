@@ -70,6 +70,69 @@ impl CachedSchema {
 }
 
 impl CachedSchema {
+    fn all_schemata(&self) -> Vec<&Schema> {
+        self.schemata.iter().chain(std::iter::once(&self.schema)).collect()
+    }
+
+    /// Encodes `json` as one Avro datum (no Confluent header) using this schema. Plain JSON
+    /// is enough: union branches are picked by shape, enums by symbol name.
+    pub fn encode_json(&self, json: serde_json::Value) -> AppResult<Vec<u8>> {
+        let fail = |what: &str, err: apache_avro::Error| AppError::SchemaRegistry(format!("{what}: {err}"));
+        let value = AvroValue::from(json);
+        if self.schemata.is_empty() {
+            let value = value.resolve(&self.schema).map_err(|e| fail("value does not match the schema", e))?;
+            return apache_avro::to_avro_datum(&self.schema, value).map_err(|e| fail("could not encode", e));
+        }
+        let value = value
+            .resolve_schemata(&self.schema, self.all_schemata())
+            .map_err(|e| fail("value does not match the schema", e))?;
+        apache_avro::to_avro_datum_schemata(&self.schema, self.all_schemata(), value).map_err(|e| fail("could not encode", e))
+    }
+
+    /// An editable starting point for producing this schema: every field present, filled with
+    /// the field's default when it has one, otherwise a type-appropriate placeholder.
+    pub fn template(&self) -> serde_json::Value {
+        let mut named = HashMap::new();
+        for schema in self.schemata.iter().chain(std::iter::once(&self.schema)) {
+            collect_named(schema, &mut named);
+        }
+        template_of(&self.schema, &named, 0)
+    }
+}
+
+fn template_of(schema: &Schema, named: &HashMap<String, &Schema>, depth: usize) -> serde_json::Value {
+    use serde_json::{json, Value};
+    if depth > SKELETON_MAX_DEPTH {
+        return Value::Null;
+    }
+    match schema {
+        Schema::Null => Value::Null,
+        Schema::Boolean => json!(false),
+        Schema::Int | Schema::Long => json!(0),
+        Schema::Float | Schema::Double => json!(0.0),
+        Schema::Bytes | Schema::String | Schema::Fixed(_) | Schema::Uuid | Schema::Decimal(_) => json!(""),
+        Schema::Enum(e) => e.symbols.first().map_or(Value::Null, |s| json!(s)),
+        Schema::Array(_) => json!([]),
+        Schema::Map(_) => json!({}),
+        Schema::Record(record) => Value::Object(
+            record
+                .fields
+                .iter()
+                .map(|f| (f.name.clone(), f.default.clone().unwrap_or_else(|| template_of(&f.schema, named, depth + 1))))
+                .collect(),
+        ),
+        // Prefer a real branch over null so the template shows what the field holds.
+        Schema::Union(union) => union
+            .variants()
+            .iter()
+            .find(|v| !matches!(v, Schema::Null))
+            .map_or(Value::Null, |v| template_of(v, named, depth + 1)),
+        Schema::Ref { name } => named.get(&name.fullname(None)).map_or(Value::Null, |s| template_of(s, named, depth + 1)),
+        _ => json!(""),
+    }
+}
+
+impl CachedSchema {
     /// A JSON value shaped like a decoded message of this schema, with *every* field
     /// present (union branches merged, arrays holding one element). Autocomplete walks
     /// it like a sample message, so it offers all fields the schema allows — including
@@ -612,6 +675,29 @@ mod tests {
         assert_eq!(keys(&skeleton, &["items"]), ["sku"], "arrays don't consume a path segment");
         assert_eq!(keys(&skeleton, &["backup"]), ["tier", "vip"], "named reuse resolves");
         assert!(keys(&skeleton, &["labels"]).is_empty(), "map keys are data");
+    }
+
+    #[test]
+    fn template_fills_defaults_and_encodes_back_to_the_same_json() {
+        let schema = r#"{"type":"record","name":"Order","fields":[
+            {"name":"id","type":"string"},
+            {"name":"qty","type":"int","default":3},
+            {"name":"note","type":["null","string"],"default":null},
+            {"name":"tier","type":{"type":"enum","name":"Tier","symbols":["GOLD","BASIC"]}},
+            {"name":"tags","type":{"type":"array","items":"string"}}]}"#;
+        let cached = CachedSchema::parse(schema, &[]).unwrap();
+        let template = cached.template();
+        assert_eq!(template["id"], "");
+        assert_eq!(template["qty"], 3);
+        assert_eq!(template["tier"], "GOLD");
+        let mut edited = template;
+        edited["id"] = "o-1".into();
+        edited["note"] = "hello".into();
+        edited["tags"] = serde_json::json!(["a", "b"]);
+        let bytes = cached.encode_json(edited.clone()).unwrap();
+        let decoded = cached.decode_datum(&bytes).unwrap();
+        assert_eq!(serde_json::Value::try_from(decoded).unwrap()["id"], "o-1");
+        assert!(cached.encode_json(serde_json::json!({"nope": 1})).is_err());
     }
 
     #[test]

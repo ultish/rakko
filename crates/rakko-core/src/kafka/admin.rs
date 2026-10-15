@@ -332,6 +332,166 @@ pub async fn fetch_topic_configs(profile: &Profile, topic: &str) -> AppResult<Ve
     .map_err(|err| AppError::Other(format!("topic config task panicked: {err}")))?
 }
 
+/// One topic config entry with everything the editor needs.
+#[derive(Debug, Clone)]
+pub struct TopicConfigEntry {
+    pub name: String,
+    pub value: Option<String>,
+    /// Set on the topic itself (as opposed to inherited from the broker or a default).
+    pub overridden: bool,
+    pub read_only: bool,
+    pub sensitive: bool,
+    /// Where the effective value comes from, e.g. `DynamicTopic`, `StaticBroker`, `Default`.
+    pub source: String,
+}
+
+/// Every config the topic has, defaults included.
+pub async fn fetch_topic_configs_all(profile: &Profile, topic: &str) -> AppResult<Vec<TopicConfigEntry>> {
+    use rdkafka::admin::ConfigSource;
+    let (profile, topic) = (profile.clone(), topic.to_string());
+    tokio::task::spawn_blocking(move || {
+        let admin_client: AdminClient<DefaultClientContext> =
+            consumer_client_config(&profile, ADMIN_GROUP_ID).create()?;
+        let specifier = ResourceSpecifier::Topic(&topic);
+        let opts = AdminOptions::new().request_timeout(Some(DESCRIBE_CONFIGS_TIMEOUT));
+        let results = futures::executor::block_on(admin_client.describe_configs([&specifier], &opts))?;
+        let resource = results
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::Other(format!("no config returned for topic {topic}")))?
+            .map_err(|err| AppError::Other(format!("describe_configs failed for topic {topic}: {err}")))?;
+        let mut entries: Vec<TopicConfigEntry> = resource
+            .entries
+            .into_iter()
+            .map(|e| TopicConfigEntry {
+                overridden: matches!(e.source, ConfigSource::DynamicTopic),
+                source: match e.source {
+                    ConfigSource::DynamicTopic => "topic",
+                    ConfigSource::DynamicBroker | ConfigSource::DynamicDefaultBroker => "broker (dynamic)",
+                    ConfigSource::StaticBroker => "broker",
+                    ConfigSource::Default => "default",
+                    _ => "unknown",
+                }
+                .to_string(),
+                read_only: e.is_read_only,
+                sensitive: e.is_sensitive,
+                value: if e.is_sensitive { None } else { e.value },
+                name: e.name,
+            })
+            .collect();
+        entries.sort_by(|a, b| b.overridden.cmp(&a.overridden).then_with(|| a.name.cmp(&b.name)));
+        Ok(entries)
+    })
+    .await
+    .map_err(|err| AppError::Other(format!("topic config task panicked: {err}")))?
+}
+
+/// Changes topic configs with IncrementalAlterConfigs: `set` entries are written, `unset`
+/// entries revert to the broker default, everything else is left alone. (rdkafka's safe
+/// `alter_configs` is the legacy full-replace call, which would silently reset every
+/// override not resent, and brokers on Kafka 4 no longer accept it.)
+pub async fn alter_topic_configs(
+    profile: &Profile,
+    topic: &str,
+    set: Vec<(String, String)>,
+    unset: Vec<String>,
+) -> AppResult<()> {
+    if is_internal_topic(topic) {
+        return Err(AppError::Other("internal topics cannot be changed from here".into()));
+    }
+    if set.is_empty() && unset.is_empty() {
+        return Ok(());
+    }
+    let (profile, topic) = (profile.clone(), topic.to_string());
+    tokio::task::spawn_blocking(move || alter_topic_configs_blocking(&profile, &topic, &set, &unset))
+        .await
+        .map_err(|err| AppError::Other(format!("alter config task panicked: {err}")))?
+}
+
+fn alter_topic_configs_blocking(
+    profile: &Profile,
+    topic: &str,
+    set: &[(String, String)],
+    unset: &[String],
+) -> AppResult<()> {
+    use rdkafka::bindings as sys;
+    use std::ffi::{CStr, CString};
+
+    let cstr = |s: &str| CString::new(s).map_err(|_| AppError::Other(format!("'{s}' contains a NUL byte")));
+    let admin_client: AdminClient<DefaultClientContext> =
+        consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+    let rk = admin_client.inner().native_ptr();
+    let topic_c = cstr(topic)?;
+
+    // SAFETY: every pointer below is created and destroyed in this function; `rk` stays
+    // valid because `admin_client` outlives all of it.
+    unsafe {
+        let resource = sys::rd_kafka_ConfigResource_new(sys::rd_kafka_ResourceType_t::RD_KAFKA_RESOURCE_TOPIC, topic_c.as_ptr());
+        let mut result: AppResult<()> = Ok(());
+        let ops = set
+            .iter()
+            .map(|(k, v)| (k.as_str(), Some(v.as_str()), sys::rd_kafka_AlterConfigOpType_t::RD_KAFKA_ALTER_CONFIG_OP_TYPE_SET))
+            .chain(unset.iter().map(|k| (k.as_str(), None, sys::rd_kafka_AlterConfigOpType_t::RD_KAFKA_ALTER_CONFIG_OP_TYPE_DELETE)));
+        for (name, value, op) in ops {
+            let (name_c, value_c) = (cstr(name)?, value.map(cstr).transpose()?);
+            let err = sys::rd_kafka_ConfigResource_add_incremental_config(
+                resource,
+                name_c.as_ptr(),
+                op,
+                value_c.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()),
+            );
+            if !err.is_null() {
+                result = Err(AppError::Other(format!(
+                    "bad config '{name}': {}",
+                    CStr::from_ptr(sys::rd_kafka_error_string(err)).to_string_lossy()
+                )));
+                sys::rd_kafka_error_destroy(err);
+                break;
+            }
+        }
+        if result.is_ok() {
+            let options = sys::rd_kafka_AdminOptions_new(rk, sys::rd_kafka_admin_op_t::RD_KAFKA_ADMIN_OP_INCREMENTALALTERCONFIGS);
+            let mut errstr = [0 as std::os::raw::c_char; 256];
+            sys::rd_kafka_AdminOptions_set_request_timeout(options, 15_000, errstr.as_mut_ptr(), errstr.len());
+            let queue = sys::rd_kafka_queue_new(rk);
+            let mut resources = [resource];
+            sys::rd_kafka_IncrementalAlterConfigs(rk, resources.as_mut_ptr(), 1, options, queue);
+            let event = sys::rd_kafka_queue_poll(queue, 20_000);
+            if event.is_null() {
+                result = Err(AppError::Other("timed out waiting for the broker".into()));
+            } else {
+                let top = sys::rd_kafka_event_error(event);
+                if top != sys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+                    result = Err(AppError::Other(format!(
+                        "alter configs failed: {}",
+                        CStr::from_ptr(sys::rd_kafka_event_error_string(event)).to_string_lossy()
+                    )));
+                } else {
+                    let res = sys::rd_kafka_event_IncrementalAlterConfigs_result(event);
+                    let mut count = 0usize;
+                    let items = sys::rd_kafka_IncrementalAlterConfigs_result_resources(res, &mut count);
+                    for i in 0..count {
+                        let item = *items.add(i);
+                        if sys::rd_kafka_ConfigResource_error(item) != sys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+                            let msg = sys::rd_kafka_ConfigResource_error_string(item);
+                            result = Err(AppError::Other(if msg.is_null() {
+                                "the broker rejected the change".to_string()
+                            } else {
+                                CStr::from_ptr(msg).to_string_lossy().into_owned()
+                            }));
+                        }
+                    }
+                }
+                sys::rd_kafka_event_destroy(event);
+            }
+            sys::rd_kafka_queue_destroy(queue);
+            sys::rd_kafka_AdminOptions_destroy(options);
+        }
+        sys::rd_kafka_ConfigResource_destroy(resource);
+        result
+    }
+}
+
 /// Deletes every record in `partition` with an offset below `before_offset` (Kafka's
 /// DeleteRecords). There is no way to delete one record in the middle of a log — this
 /// moves the partition's start forward, permanently. Returns the new low watermark.

@@ -7,7 +7,7 @@ use rakko_core::raw_message::RawMessage;
 use serde::Serialize;
 
 /// Preview text per list row — the client shows one line, so this is generous.
-const ROW_PREVIEW_CHARS: usize = 400;
+pub const ROW_PREVIEW_CHARS: usize = 400;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Payload {
@@ -28,10 +28,10 @@ pub struct MessageSummary {
     pub header_count: usize,
 }
 
-fn payload(bytes: Option<&[u8]>, registry: Option<&SchemaRegistry>) -> Payload {
+fn payload(bytes: Option<&[u8]>, registry: Option<&SchemaRegistry>, max_chars: usize) -> Payload {
     let (format, preview) = bytes_display(bytes, registry);
-    let preview = if preview.chars().count() > ROW_PREVIEW_CHARS {
-        let cut: String = preview.chars().take(ROW_PREVIEW_CHARS).collect();
+    let preview = if preview.chars().count() > max_chars {
+        let cut: String = preview.chars().take(max_chars).collect();
         format!("{cut}…")
     } else {
         preview
@@ -39,13 +39,13 @@ fn payload(bytes: Option<&[u8]>, registry: Option<&SchemaRegistry>) -> Payload {
     Payload { format, preview, size: bytes.map(<[u8]>::len) }
 }
 
-pub fn summarize(message: &RawMessage, registry: Option<&SchemaRegistry>) -> MessageSummary {
+pub fn summarize(message: &RawMessage, registry: Option<&SchemaRegistry>, max_chars: usize) -> MessageSummary {
     MessageSummary {
         partition: message.partition,
         offset: message.offset,
         timestamp_ms: message.timestamp_millis,
-        key: payload(message.key.as_deref(), registry),
-        value: payload(message.value.as_deref(), registry),
+        key: payload(message.key.as_deref(), registry, max_chars),
+        value: payload(message.value.as_deref(), registry, max_chars),
         header_count: message.headers.len(),
     }
 }
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn summary_carries_coordinates_sizes_and_labels() {
-        let s = summarize(&msg(Some(b"k1"), Some(br#"{"a":1}"#)), None);
+        let s = summarize(&msg(Some(b"k1"), Some(br#"{"a":1}"#)), None, ROW_PREVIEW_CHARS);
         assert_eq!((s.partition, s.offset, s.header_count), (2, 7, 1));
         assert_eq!(s.key, Payload { format: "raw".into(), preview: "k1".into(), size: Some(2) });
         assert_eq!(s.value.format, "json");
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn null_value_is_a_tombstone_with_no_size() {
-        let s = summarize(&msg(Some(b"k"), None), None);
+        let s = summarize(&msg(Some(b"k"), None), None, ROW_PREVIEW_CHARS);
         assert_eq!(s.value.size, None);
         assert_eq!(s.value.preview, "<null>");
     }
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn long_previews_are_capped() {
         let big = format!("\"{}\"", "x".repeat(5_000));
-        let s = summarize(&msg(None, Some(big.as_bytes())), None);
+        let s = summarize(&msg(None, Some(big.as_bytes())), None, ROW_PREVIEW_CHARS);
         assert!(s.value.preview.chars().count() <= ROW_PREVIEW_CHARS + 1);
         assert!(s.value.preview.ends_with('…'));
         assert_eq!(s.value.size, Some(5_002));

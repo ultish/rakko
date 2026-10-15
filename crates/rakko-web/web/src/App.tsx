@@ -30,6 +30,43 @@ export function App() {
   const [profiles, setProfiles] = useState<Profile[] | null>(null);
   const [topics, setTopics] = useState<Topic[] | null>(null);
   const [topicFilter, setTopicFilter] = useState("");
+  const [sort, setSort] = useState<{ key: "name" | "messages" | "partitions"; dir: 1 | -1 }>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("rakko-topic-sort") ?? "null");
+      if (saved && ["name", "messages", "partitions"].includes(saved.key) && (saved.dir === 1 || saved.dir === -1)) return saved;
+    } catch {
+      /* no saved preference */
+    }
+    return { key: "name", dir: 1 };
+  });
+  const [sideWidth, setSideWidth] = useState(() => {
+    try {
+      const n = Number(localStorage.getItem("rakko-side-width"));
+      if (n >= 180 && n <= 900) return n;
+    } catch {
+      /* default */
+    }
+    return 260;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("rakko-topic-sort", JSON.stringify(sort));
+      localStorage.setItem("rakko-side-width", String(sideWidth));
+    } catch {
+      /* storage unavailable */
+    }
+  }, [sort, sideWidth]);
+
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const move = (ev: PointerEvent) => setSideWidth(Math.min(Math.max(ev.clientX, 180), Math.min(900, window.innerWidth - 320)));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Summary | null>(null);
   const [produceFrom, setProduceFrom] = useState<ProduceInitial | null>(null);
@@ -46,8 +83,20 @@ export function App() {
         if (!inside || item) d.open = false;
       });
     };
+    // A menu that would run off the right edge opens towards the left instead.
+    const onToggle = (e: Event) => {
+      const d = e.target as HTMLElement;
+      if (!(d instanceof HTMLDetailsElement) || !d.classList.contains("menu") || !d.open) return;
+      d.classList.remove("flip");
+      const panel = d.querySelector<HTMLElement>(":scope > div");
+      if (panel && panel.getBoundingClientRect().right > window.innerWidth - 8) d.classList.add("flip");
+    };
     document.addEventListener("click", onClick);
-    return () => document.removeEventListener("click", onClick);
+    document.addEventListener("toggle", onToggle, true);
+    return () => {
+      document.removeEventListener("click", onClick);
+      document.removeEventListener("toggle", onToggle, true);
+    };
   }, []);
 
   useEffect(() => {
@@ -82,15 +131,16 @@ export function App() {
 
   const visibleTopics = useMemo(() => {
     const needle = topicFilter.trim().toLowerCase();
-    return (topics ?? []).filter((t) => t.name.toLowerCase().includes(needle));
-  }, [topics, topicFilter]);
+    const list = (topics ?? []).filter((t) => t.name.toLowerCase().includes(needle));
+    return list.sort((a, b) => (sort.key === "name" ? a.name.localeCompare(b.name) : a[sort.key] - b[sort.key] || a.name.localeCompare(b.name)) * sort.dir);
+  }, [topics, topicFilter, sort]);
 
   const go = (view: View, item = "") => writeRoute({ profile: route.profile, view, item });
   const showTopic = route.view === "topics" && route.item;
   const hasSidebar = route.view !== "brokers";
 
   return (
-    <div className={`app${selected && showTopic ? " with-detail" : ""}${hasSidebar ? "" : " no-side"}`}>
+    <div style={{ "--side-w": `${sideWidth}px` } as React.CSSProperties} className={`app${selected && showTopic ? " with-detail" : ""}${hasSidebar ? "" : " no-side"}`}>
       <header className="topbar">
         <img className="logo" src="/otter.jpg" alt="" />
         <span className="brand">rakko</span>
@@ -118,9 +168,23 @@ export function App() {
           {route.view === "topics" ? (
             <>
               <input placeholder="filter topics…" value={topicFilter} onChange={(e) => setTopicFilter(e.target.value)} spellCheck={false} />
-              <button className="link new" onClick={() => setNewTopic(true)}>
-                + new topic
-              </button>
+              <div className="sort-row">
+                <select
+                  value={sort.key}
+                  onChange={(e) => setSort({ key: e.target.value as typeof sort.key, dir: e.target.value === "name" ? 1 : -1 })}
+                  aria-label="sort topics by"
+                >
+                  <option value="name">sort: name</option>
+                  <option value="messages">sort: messages</option>
+                  <option value="partitions">sort: partitions</option>
+                </select>
+                <button onClick={() => setSort({ ...sort, dir: sort.dir === 1 ? -1 : 1 })} aria-label="reverse sort order" title="reverse order">
+                  {sort.dir === 1 ? "▲" : "▼"}
+                </button>
+                <button className="link new" onClick={() => setNewTopic(true)}>
+                  + new
+                </button>
+              </div>
               {error && <div className="err pad">{error}</div>}
               {!topics && !error && <div className="dim pad">loading topics…</div>}
               <ul>
@@ -128,7 +192,10 @@ export function App() {
                   <li key={t.name}>
                     <button className={t.name === route.item ? "topic active" : "topic"} onClick={() => go("topics", t.name)}>
                       <span className="name">{t.name}</span>
-                      <span className="count">{formatCount(t.messages)}</span>
+                      {t.name.startsWith("__strimzi") && <span className="tag" title="Internal topic of a Strimzi operator">strimzi</span>}
+                      <span className="count" title="offsets: an upper bound on the messages kept (compaction and retention remove some)">
+                        {formatCount(t.messages)}
+                      </span>
                     </button>
                   </li>
                 ))}
@@ -147,6 +214,7 @@ export function App() {
           ) : (
             route.profile && <GroupList profile={route.profile} selected={route.item} onSelect={(g) => go("groups", g)} />
           )}
+          {route.view === "topics" && <div className="resize" onPointerDown={startResize} role="separator" aria-orientation="vertical" aria-label="resize topic list" />}
         </nav>
       )}
 

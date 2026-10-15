@@ -67,7 +67,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/p/{profile}/topics/{topic}/delete-records", post(delete_records))
         .route("/p/{profile}/topics", post(create_topic))
         .route("/p/{profile}/topics/{topic}", axum::routing::delete(delete_topic))
-        .route("/p/{profile}/topics/{topic}/configs", get(topic_configs))
+        .route("/p/{profile}/topics/{topic}/configs", get(topic_configs).put(topic_configs_alter))
+        .route("/p/{profile}/topics/{topic}/configs/all", get(topic_configs_all))
+        .route("/p/{profile}/schemas/{subject}/template", get(schema_template))
         .route("/p/{profile}/schemas", get(schema_subjects))
         .route(
             "/p/{profile}/schemas/{subject}",
@@ -219,11 +221,20 @@ async fn broker_configs(State(state): Shared, Path((p, id)): Path<(String, i32)>
 struct Field {
     text: Option<String>,
     base64: Option<String>,
+    /// Avro: JSON encoded with the latest schema of `subject`, in Confluent wire format.
+    avro: Option<AvroField>,
+}
+
+#[derive(Deserialize)]
+struct AvroField {
+    subject: String,
+    json: String,
 }
 
 impl Field {
     fn bytes(self, what: &str) -> Result<Option<Vec<u8>>, ApiError> {
         match (self.text, self.base64) {
+            _ if self.avro.is_some() => Err(ApiError::bad_request(format!("{what}: avro fields are encoded by the server"))),
             (Some(_), Some(_)) => Err(ApiError::bad_request(format!("{what}: give text or base64, not both"))),
             (Some(t), None) => Ok(Some(t.into_bytes())),
             (None, Some(b)) => B64
@@ -250,14 +261,33 @@ struct ProduceBody {
     headers: Vec<HeaderPair>,
 }
 
+/// Bytes for a produce field; Avro fields are encoded against their subject's latest schema.
+async fn resolve_field(rt: &crate::runtime::ProfileRuntime, field: Option<Field>, what: &str) -> Result<Option<Vec<u8>>, ApiError> {
+    let Some(mut field) = field else { return Ok(None) };
+    let Some(avro) = field.avro.take() else { return field.bytes(what) };
+    let base = registry_url(rt)?;
+    let latest = schema_admin::get_version(&base, &avro.subject, "latest")
+        .await
+        .map_err(|e| ApiError::bad_request(format!("{what}: schema for '{}': {e}", avro.subject)))?;
+    let id = u32::try_from(latest.id).map_err(|_| ApiError::bad_request("schema id out of range"))?;
+    let schema = rakko_core::kafka::schema_registry::fetch_schema(&base, id).await?;
+    let json: Value = serde_json::from_str(&avro.json).map_err(|e| ApiError::bad_request(format!("{what}: not valid JSON: {e}")))?;
+    let datum = schema.encode_json(json).map_err(|e| ApiError::bad_request(format!("{what}: {e}")))?;
+    let mut wire = Vec::with_capacity(datum.len() + 5);
+    wire.push(0);
+    wire.extend_from_slice(&id.to_be_bytes());
+    wire.extend(datum);
+    Ok(Some(wire))
+}
+
 async fn produce(
     State(state): Shared,
     Path((p, topic)): Path<(String, String)>,
     Json(body): Json<ProduceBody>,
 ) -> ApiResult<Value> {
     let rt = profile(&state, &p)?;
-    let key = body.key.map(|f| f.bytes("key")).transpose()?.flatten();
-    let value = body.value.map(|f| f.bytes("value")).transpose()?.flatten();
+    let key = resolve_field(&rt, body.key, "key").await?;
+    let value = resolve_field(&rt, body.value, "value").await?;
     if key.is_none() && value.is_none() {
         return Err(ApiError::bad_request("a message needs a key or a value"));
     }
@@ -487,7 +517,7 @@ async fn tail(
                 if dropped > 0 && tx.try_send(TailItem::Dropped(dropped)).is_ok() {
                     dropped = 0;
                 }
-                let summary = summarize_loaded(&rt, &handle, &message);
+                let summary = summarize_loaded(&rt, &handle, &message, crate::dto::ROW_PREVIEW_CHARS);
                 match tx.try_send(TailItem::Message(Box::new(summary))) {
                     Ok(()) => true,
                     Err(mpsc::error::TrySendError::Full(_)) => {
@@ -829,4 +859,53 @@ async fn topic_configs(State(state): Shared, Path((p, topic)): Path<(String, Str
     let rt = profile(&state, &p)?;
     let entries = fetch_topic_configs(&rt.profile, &topic).await?;
     Ok(Json(entries.into_iter().map(|e| json!({ "name": e.name, "value": e.value })).collect()))
+}
+
+async fn topic_configs_all(State(state): Shared, Path((p, topic)): Path<(String, String)>) -> ApiResult<Vec<Value>> {
+    let rt = profile(&state, &p)?;
+    let entries = rakko_core::kafka::admin::fetch_topic_configs_all(&rt.profile, &topic).await?;
+    Ok(Json(
+        entries
+            .into_iter()
+            .map(|e| {
+                json!({ "name": e.name, "value": e.value, "overridden": e.overridden, "read_only": e.read_only, "sensitive": e.sensitive, "source": e.source })
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+struct AlterConfigsBody {
+    #[serde(default)]
+    set: std::collections::BTreeMap<String, String>,
+    /// Names whose topic override is removed (back to the broker default).
+    #[serde(default)]
+    unset: Vec<String>,
+}
+
+async fn topic_configs_alter(
+    State(state): Shared,
+    Path((p, topic)): Path<(String, String)>,
+    Json(b): Json<AlterConfigsBody>,
+) -> ApiResult<Value> {
+    let rt = profile(&state, &p)?;
+    let (n_set, n_unset) = (b.set.len(), b.unset.len());
+    rakko_core::kafka::admin::alter_topic_configs(&rt.profile, &topic, b.set.into_iter().collect(), b.unset)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    tracing::info!("changed {n_set} and reset {n_unset} config(s) of topic {topic} on profile {p}");
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Latest schema of a subject plus an editable JSON template of it (for the producer).
+async fn schema_template(State(state): Shared, Path((p, subject)): Path<(String, String)>) -> ApiResult<Value> {
+    let rt = profile(&state, &p)?;
+    let base = registry_url(&rt)?;
+    let latest = schema_admin::get_version(&base, &subject, "latest").await?;
+    if !latest.schema_type.eq_ignore_ascii_case("avro") {
+        return Err(ApiError::bad_request(format!("subject '{subject}' is {}, only Avro can be produced here", latest.schema_type)));
+    }
+    let id = u32::try_from(latest.id).map_err(|_| ApiError::bad_request("schema id out of range"))?;
+    let schema = rakko_core::kafka::schema_registry::fetch_schema(&base, id).await?;
+    Ok(Json(json!({ "subject": subject, "version": latest.version, "id": id, "template": schema.template() })))
 }

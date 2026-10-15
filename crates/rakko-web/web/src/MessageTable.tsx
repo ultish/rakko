@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Summary } from "./api";
 import { formatBytes, formatTime } from "./format";
@@ -16,10 +16,71 @@ type Props = {
   /** Scrolls back to the top whenever this changes (new filter / new topic). */
   resetKey?: unknown;
   empty?: string;
+  /** Show the value as columns (one per JSON field) instead of a single preview. */
+  table?: boolean;
 };
 
+type SortKey = "time" | "partition" | "offset" | "key" | "value" | "fmt";
+
+const sortValue = (r: Summary, k: SortKey): string | number => {
+  switch (k) {
+    case "time":
+      return r.timestamp_ms ?? -1;
+    case "partition":
+      return r.partition;
+    case "offset":
+      return r.offset;
+    case "key":
+      return r.key.preview;
+    case "value":
+      return r.value.preview;
+    case "fmt":
+      return r.value.format;
+  }
+};
+
+const MAX_COLUMNS = 12;
+
+/** Parses a row's value preview as a JSON object, when it is one (and not truncated). */
+function valueObject(r: Summary): Record<string, unknown> | null {
+  try {
+    const v: unknown = JSON.parse(r.value.preview);
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+const cell = (v: unknown): string => (v === undefined ? "" : typeof v === "string" ? v : JSON.stringify(v));
+
 /** Virtualized message rows, shared by the scan view and the live tail. */
-export function MessageTable({ rows, selected, onSelect, loading, onVisibleEnd, resetKey, empty }: Props) {
+export function MessageTable({ rows: unsorted, selected, onSelect, loading, onVisibleEnd, resetKey, empty, table }: Props) {
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
+  // Sorting orders what has been loaded so far; the scan itself always walks newest first.
+  const rows = useMemo(() => {
+    if (!sort) return unsorted;
+    return [...unsorted].sort((a, b) => {
+      const x = sortValue(a, sort.key);
+      const y = sortValue(b, sort.key);
+      return (x < y ? -1 : x > y ? 1 : 0) * sort.dir;
+    });
+  }, [unsorted, sort]);
+  const parsed = useMemo(() => (table ? rows.map(valueObject) : []), [table, rows]);
+  const columns = useMemo(() => {
+    if (!table) return [];
+    const seen = new Map<string, number>();
+    for (const o of parsed.slice(0, 300)) for (const k of Object.keys(o ?? {})) seen.set(k, (seen.get(k) ?? 0) + 1);
+    return [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_COLUMNS).map(([k]) => k);
+  }, [table, parsed]);
+  const asColumns = table && columns.length > 0;
+  const template = asColumns ? `minmax(90px, 200px) ${columns.map(() => "minmax(80px, 1fr)").join(" ")}` : undefined;
+  const toggle = (key: SortKey) => setSort((s) => (s?.key !== key ? { key, dir: 1 } : s.dir === 1 ? { key, dir: -1 } : null));
+  const head = (key: SortKey, label: string) => (
+    <span className="sortable" onClick={() => toggle(key)} title="Sort the loaded messages (click again to reverse, once more to clear)">
+      {label}
+      {sort?.key === key ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
+    </span>
+  );
   const scroller = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: rows.length + (loading ? 1 : 0),
@@ -40,19 +101,33 @@ export function MessageTable({ rows, selected, onSelect, loading, onVisibleEnd, 
 
   return (
     <div className="table">
-      <div className="row head">
-        <span>time</span>
-        <span>p</span>
-        <span>offset</span>
-        <span>key</span>
-        <span>value</span>
-        <span>fmt</span>
+      <div className="row head" style={template ? { gridTemplateColumns: template } : undefined}>
+        {asColumns ? (
+          <>
+            {head("key", "key")}
+            {columns.map((c) => (
+              <span key={c} className="clip">
+                {c}
+              </span>
+            ))}
+          </>
+        ) : (
+          <>
+            {head("time", "time")}
+            {head("partition", "p")}
+            {head("offset", "offset")}
+            {head("key", "key")}
+            {head("value", "value")}
+            {head("fmt", "fmt")}
+          </>
+        )}
       </div>
       <div className="scroller" ref={scroller}>
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {items.map((item) => {
             const row = rows[item.index];
-            const style = { position: "absolute" as const, top: 0, left: 0, width: "100%", height: item.size, transform: `translateY(${item.start}px)` };
+            const obj = asColumns ? parsed[item.index] : null;
+            const style = { ...(template ? { gridTemplateColumns: template } : {}), position: "absolute" as const, top: 0, left: 0, width: "100%", height: item.size, transform: `translateY(${item.start}px)` };
             if (!row) {
               return (
                 <div key="loading" className="row loading" style={style}>
@@ -68,16 +143,31 @@ export function MessageTable({ rows, selected, onSelect, loading, onVisibleEnd, 
                 style={style}
                 onClick={() => onSelect(row)}
               >
-                <span className="dim">{formatTime(row.timestamp_ms)}</span>
-                <span>{row.partition}</span>
-                <span>{row.offset}</span>
-                <span className="clip" title={row.key.preview}>
-                  {row.key.preview}
-                </span>
-                <span className="clip" title={`${formatBytes(row.value.size)}`}>
-                  {row.value.preview}
-                </span>
-                <span className="fmt">{row.value.format}</span>
+                {asColumns ? (
+                  <>
+                    <span className="clip" title={row.key.preview}>
+                      {row.key.preview}
+                    </span>
+                    {columns.map((c) => (
+                      <span key={c} className="clip" title={cell(obj?.[c])}>
+                        {cell(obj?.[c])}
+                      </span>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    <span className="dim">{formatTime(row.timestamp_ms)}</span>
+                    <span>{row.partition}</span>
+                    <span>{row.offset}</span>
+                    <span className="clip" title={row.key.preview}>
+                      {row.key.preview}
+                    </span>
+                    <span className="clip" title={`${formatBytes(row.value.size)}`}>
+                      {row.value.preview}
+                    </span>
+                    <span className="fmt">{row.value.format}</span>
+                  </>
+                )}
               </div>
             );
           })}

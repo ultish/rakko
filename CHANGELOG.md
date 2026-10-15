@@ -11,6 +11,24 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-15
+
+### Added
+- **Web:** Avro producing — pick the **avro** mode for the key or value, choose a subject (defaults to `<topic>-key` / `<topic>-value`), and get an editable JSON template of its latest schema; the server encodes it in Confluent wire format.
+- **Web:** Topic settings dialog now lists every setting (not just overrides), with filter, inline editing and per-setting reset to the broker default.
+- **Web:** **Table** view for a topic — the latest value of every key (deleted keys removed), with JSON fields as columns.
+- **Web:** Topics can be sorted by name, message count or partitions; the topic list can be resized by dragging its edge (both remembered).
+- **Web:** Click a column header in the message list to sort the loaded messages.
+- **Web:** Strimzi operator internal topics (`__strimzi*`) are tagged.
+
+### Changed
+- **Web:** *Edit & produce* now loads the full message when clicked (including Avro, which is re-encoded), instead of staying disabled until you had paged through it.
+- **Web:** Topic message counts are labelled as an upper bound ("up to N messages"); once an unfiltered scan completes the real count is shown next to the offset count.
+
+### Fixed
+- **Web:** Switching between schemas no longer shows a "version not found" error left over from the previous schema.
+- **Web:** The ⋯ and Download menus open towards the left when they would run off the screen, instead of forcing a horizontal scrollbar.
+
 ## [0.14.0] - 2026-10-15
 
 ### Added

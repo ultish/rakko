@@ -66,7 +66,11 @@ export type Brokers = {
   brokers: { id: number; host: string; port: number; leader_partitions: number; replica_partitions: number }[];
 };
 
-export type Field = { text?: string; base64?: string };
+export type Field = { text?: string; base64?: string; avro?: { subject: string; json: string } };
+
+export type TopicConfig = { name: string; value: string | null; overridden: boolean; read_only: boolean; sensitive: boolean; source: string };
+
+export type AvroTemplate = { subject: string; version: number; id: number; template: unknown };
 export type ProduceBody = { key?: Field; value?: Field; headers: { key: string; value: string }[] };
 
 export type SchemaReference = { name: string; subject: string; version: number };
@@ -161,6 +165,10 @@ export const api = {
     request<{ name: string }>(`/p/${enc(profile)}/topics`, { method: "POST", body: JSON.stringify(body) }),
   deleteTopic: (profile: string, topic: string) =>
     request<unknown>(`/p/${enc(profile)}/topics/${enc(topic)}?confirm=${enc(topic)}`, { method: "DELETE" }),
+  topicConfigsAll: (profile: string, topic: string) => request<TopicConfig[]>(`/p/${enc(profile)}/topics/${enc(topic)}/configs/all`),
+  alterTopicConfigs: (profile: string, topic: string, set: Record<string, string>, unset: string[]) =>
+    request<{ ok: boolean }>(`/p/${enc(profile)}/topics/${enc(topic)}/configs`, { method: "PUT", body: JSON.stringify({ set, unset }) }),
+  avroTemplate: (profile: string, subject: string) => request<AvroTemplate>(`/p/${enc(profile)}/schemas/${enc(subject)}/template`),
   topicConfigs: (profile: string, topic: string) =>
     request<{ name: string; value: string }[]>(`/p/${enc(profile)}/topics/${enc(topic)}/configs`),
   tombstone: (profile: string, topic: string, s: Summary) =>
@@ -221,10 +229,10 @@ export const api = {
   profiles: () => request<Profile[]>("/profiles"),
   topics: (profile: string) => request<Topic[]>(`/p/${enc(profile)}/topics`),
   partitions: (profile: string, topic: string) => request<PartitionInfo[]>(`${base(profile, topic)}/partitions`),
-  createScan: (profile: string, topic: string, text: string, query: string, range: Range = {}) =>
+  createScan: (profile: string, topic: string, text: string, query: string, range: Range = {}, table = false) =>
     request<{ scan_id: string; total_offsets: number }>(`/p/${enc(profile)}/topics/${enc(topic)}/scans`, {
       method: "POST",
-      body: JSON.stringify({ text, query, range: rangeBody(range) }),
+      body: JSON.stringify({ text, query, range: rangeBody(range), table }),
     }),
   matches: (scanId: string, from: number, limit: number, signal?: AbortSignal) =>
     request<MatchesPage>(`/scans/${enc(scanId)}/matches?from=${from}&limit=${limit}&wait_ms=2500`, { signal }),

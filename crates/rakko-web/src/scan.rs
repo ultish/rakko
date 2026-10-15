@@ -7,7 +7,7 @@
 //! just wait (briefly) on that list. Closing the tab or dropping a request never
 //! corrupts or restarts a scan.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,6 +23,8 @@ use crate::runtime::{schema_ids, ProfileRuntime};
 /// A session may have this many live scans; the oldest is dropped past it.
 pub const MAX_SCANS_PER_SESSION: usize = 4;
 pub const MAX_SCANS_TOTAL: usize = 64;
+/// Table rows carry more of the value so the UI can split it into columns.
+const TABLE_PREVIEW_CHARS: usize = 6_000;
 const IDLE_TTL: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Default)]
@@ -43,6 +45,11 @@ pub struct ScanSession {
     profile: Arc<ProfileRuntime>,
     filter: Arc<MessageFilter>,
     range: ScanRange,
+    /// Table mode: only the newest record of each key counts (a tombstone removes the key),
+    /// i.e. the topic read as a KTable. Applied before the filter, so a filter can't resurrect
+    /// an older version of a key whose newest version it rejects.
+    latest_per_key: Option<Arc<Mutex<HashSet<Vec<u8>>>>>,
+    preview_chars: usize,
     scan: Mutex<Option<TopicScan>>,
     state: Mutex<ScanState>,
     /// How many matches the client has asked to see so far (`from + limit`).
@@ -90,11 +97,12 @@ pub fn summarize_loaded(
     profile: &ProfileRuntime,
     handle: &tokio::runtime::Handle,
     message: &rakko_core::raw_message::RawMessage,
+    preview_chars: usize,
 ) -> MessageSummary {
     for id in schema_ids(message) {
         profile.ensure_schema_blocking(handle, id);
     }
-    profile.with_registry(|reg| summarize(message, reg))
+    profile.with_registry(|reg| summarize(message, reg, preview_chars))
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -110,6 +118,7 @@ impl ScanSession {
         filter: MessageFilter,
         range: ScanRange,
         window: usize,
+        table: bool,
     ) -> Result<Arc<Self>, AppError> {
         let (p, t, r) = (profile.profile.clone(), topic.clone(), range.clone());
         let scan = tokio::task::spawn_blocking(move || TopicScan::open_range(&p, &t, window, &r))
@@ -124,6 +133,8 @@ impl ScanSession {
             profile,
             filter: Arc::new(filter),
             range,
+            latest_per_key: table.then(Default::default),
+            preview_chars: if table { TABLE_PREVIEW_CHARS } else { crate::dto::ROW_PREVIEW_CHARS },
             scan: Mutex::new(Some(scan)),
             state: Mutex::new(state),
             want: AtomicUsize::new(0),
@@ -171,23 +182,37 @@ impl ScanSession {
         while self.needs_more() {
             let Some(mut scan) = lock(&self.scan).take() else { return };
             let (profile, filter, range) = (self.profile.clone(), self.filter.clone(), self.range.clone());
+            let (latest, chars) = (self.latest_per_key.clone(), self.preview_chars);
             let handle = tokio::runtime::Handle::current();
             let result = tokio::task::spawn_blocking(move || {
                 let mut found: Vec<MessageSummary> = Vec::new();
                 let mut skipped = 0u64;
+                let mut window: Vec<rakko_core::raw_message::RawMessage> = Vec::new();
                 let outcome = scan.scan_next(&mut |message| {
                     // Timestamps aren't monotonic, so the window is only approximate at the edges.
-                    if !range.contains_timestamp(message.timestamp_millis) {
-                        return;
+                    if range.contains_timestamp(message.timestamp_millis) {
+                        window.push(message);
+                    }
+                });
+                if latest.is_some() {
+                    // Newest first per partition, so the first record seen for a key is its current state.
+                    window.sort_by(|a, b| a.partition.cmp(&b.partition).then(b.offset.cmp(&a.offset)));
+                }
+                for message in window {
+                    if let (Some(seen), Some(key)) = (&latest, message.key.as_ref()) {
+                        let first = lock(seen).insert(key.clone());
+                        if !first || message.value.is_none() {
+                            continue;
+                        }
                     }
                     let (matched, undecodable) = evaluate(&profile, &handle, &filter, &message);
                     if undecodable && !matched {
                         skipped += 1;
                     }
                     if matched {
-                        found.push(summarize_loaded(&profile, &handle, &message));
+                        found.push(summarize_loaded(&profile, &handle, &message, chars));
                     }
-                });
+                }
                 (scan, found, skipped, outcome)
             })
             .await;

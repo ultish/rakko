@@ -9,7 +9,7 @@ type Props = {
   message: Summary;
   onClose: () => void;
   /** Opens the produce dialog pre-filled with this message (edit & resend). */
-  onProduceFrom: (v: { key?: string; value?: string; headers?: [string, string][] }) => void;
+  onProduceFrom: (v: { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean }) => void;
   onReplayed: () => void;
 };
 
@@ -93,12 +93,36 @@ export function Detail({ profile, topic, message, onClose, onProduceFrom, onRepl
     }
   };
 
-  // Edit & resend needs the whole decoded value, and only makes sense for text.
-  const textOf = (s: PartState) => {
-    const last = s.chunks[s.chunks.length - 1];
-    return last && last.present && last.end >= last.total && !last.format.startsWith("avro") ? s.chunks.map((c) => c.text).join("") : undefined;
+  // Edit & resend works on the decoded text. Anything not loaded yet is fetched when you click.
+  const [preparing, setPreparing] = useState(false);
+  const editable = [key, value].every((s) => {
+    const f = s.chunks[0];
+    return !f || !f.present || !f.format.endsWith("?");
+  }) && !key.loading && !value.loading && !key.error && !value.error;
+
+  const fullText = async (part: "key" | "value", state: PartState): Promise<string | undefined> => {
+    const first = state.chunks[0];
+    if (!first || !first.present) return undefined;
+    const chunks = [...state.chunks];
+    for (;;) {
+      const last = chunks[chunks.length - 1];
+      if (last.end >= last.total) break;
+      chunks.push(await api.detail(profile, topic, message, part, last.end));
+    }
+    return chunks.map((c) => c.text).join("");
   };
-  const editable = textOf(value) !== undefined || (value.chunks[0] && !value.chunks[0].present);
+
+  const edit = async () => {
+    setPreparing(true);
+    try {
+      const [k, v] = await Promise.all([fullText("key", key), fullText("value", value)]);
+      onProduceFrom({ key: k, value: v, headers, valueAvro: value.chunks[0]?.format.startsWith("avro") });
+    } catch (e) {
+      setNotice({ kind: "err", text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setPreparing(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -152,11 +176,15 @@ export function Detail({ profile, topic, message, onClose, onProduceFrom, onRepl
           Replay
         </button>
         <button
-          disabled={!editable}
-          onClick={() => onProduceFrom({ key: textOf(key), value: textOf(value), headers })}
-          title={editable ? "Open the producer pre-filled with this message" : "Only fully-loaded text messages can be edited (Avro/binary: use Replay)"}
+          disabled={!editable || preparing}
+          onClick={() => void edit()}
+          title={
+            editable
+              ? "Open the producer pre-filled with the full message (Avro is re-encoded with the topic's latest schema)"
+              : "The Avro schema for this message isn't available, so it can't be edited (use Replay to re-send the exact bytes)"
+          }
         >
-          Edit &amp; produce…
+          {preparing ? "Loading…" : "Edit & produce…"}
         </button>
         <details className="menu">
           <summary>Download ▾</summary>
