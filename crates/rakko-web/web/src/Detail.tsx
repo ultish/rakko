@@ -167,7 +167,7 @@ export function Detail({ profile, topic, message, onClose, onProduceFrom, onRepl
           <strong>
             {topic}/{message.partition}@{message.offset}
           </strong>
-          <div className="dim">{formatTime(message.timestamp_ms)}</div>
+          <div className="dim">{formatTime(key.chunks[0]?.timestamp_ms ?? value.chunks[0]?.timestamp_ms ?? message.timestamp_ms)}</div>
         </div>
         <button className="link" onClick={onClose} aria-label="close">
           ✕

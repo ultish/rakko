@@ -36,11 +36,6 @@ fn avro() -> String {
     "AVRO".into()
 }
 
-fn client() -> AppResult<reqwest::Client> {
-    reqwest::Client::builder()
-        .build()
-        .map_err(|err| AppError::SchemaRegistry(format!("http client: {err}")))
-}
 
 fn url(base_url: &str, segments: &[&str]) -> AppResult<reqwest::Url> {
     let mut url = reqwest::Url::parse(base_url.trim().trim_end_matches('/'))
@@ -65,7 +60,7 @@ async fn send(builder: reqwest::RequestBuilder) -> AppResult<(reqwest::StatusCod
         .header("accept", CONTENT_TYPE)
         .send()
         .await
-        .map_err(|err| AppError::SchemaRegistryTransient(format!("schema registry request failed: {err}")))?;
+        .map_err(|err| AppError::SchemaRegistryTransient(format!("schema registry request failed: {}", error_chain(&err))))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -79,26 +74,39 @@ async fn send(builder: reqwest::RequestBuilder) -> AppResult<(reqwest::StatusCod
     Ok((status, serde_json::from_str(&body).unwrap_or(Value::Null)))
 }
 
+/// An error with its causes appended (`error sending request: … : certificate verify failed`);
+/// reqwest's own Display stops at the top, which hides the TLS reason.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
 fn from_value<T: for<'de> Deserialize<'de>>(value: Value, what: &str) -> AppResult<T> {
     serde_json::from_value(value).map_err(|err| AppError::SchemaRegistry(format!("{what}: unexpected response: {err}")))
 }
 
 pub async fn list_subjects(base_url: &str) -> AppResult<Vec<String>> {
-    let (_, v) = send(client()?.get(url(base_url, &["subjects"])?)).await?;
+    let (_, v) = send(crate::kafka::schema_registry::http_client(base_url)?.get(url(base_url, &["subjects"])?)).await?;
     let mut subjects: Vec<String> = from_value(v, "subjects")?;
     subjects.sort();
     Ok(subjects)
 }
 
 pub async fn list_versions(base_url: &str, subject: &str) -> AppResult<Vec<i64>> {
-    let (_, v) = send(client()?.get(url(base_url, &["subjects", subject, "versions"])?)).await?;
+    let (_, v) = send(crate::kafka::schema_registry::http_client(base_url)?.get(url(base_url, &["subjects", subject, "versions"])?)).await?;
     from_value(v, "versions")
 }
 
 /// Subjects a schema id is registered under (`GET /schemas/ids/{id}/versions`). With
 /// RecordNameStrategy this is how a message's schema maps back to a subject name.
 pub async fn subjects_for_id(base_url: &str, id: u32) -> AppResult<Vec<String>> {
-    let (_, v) = send(client()?.get(url(base_url, &["schemas", "ids", &id.to_string(), "versions"])?)).await?;
+    let (_, v) = send(crate::kafka::schema_registry::http_client(base_url)?.get(url(base_url, &["schemas", "ids", &id.to_string(), "versions"])?)).await?;
     let pairs: Vec<Value> = from_value(v, "schema subjects")?;
     let mut subjects: Vec<String> =
         pairs.iter().filter_map(|p| p.get("subject")?.as_str().map(str::to_string)).collect();
@@ -109,7 +117,7 @@ pub async fn subjects_for_id(base_url: &str, id: u32) -> AppResult<Vec<String>> 
 
 /// `version` is a number or `latest`.
 pub async fn get_version(base_url: &str, subject: &str, version: &str) -> AppResult<SubjectVersion> {
-    let (_, v) = send(client()?.get(url(base_url, &["subjects", subject, "versions", version])?)).await?;
+    let (_, v) = send(crate::kafka::schema_registry::http_client(base_url)?.get(url(base_url, &["subjects", subject, "versions", version])?)).await?;
     from_value(v, "schema version")
 }
 
@@ -130,7 +138,7 @@ pub async fn register(
     schema: &str,
     references: &[SchemaReference],
 ) -> AppResult<i64> {
-    let request = client()?
+    let request = crate::kafka::schema_registry::http_client(base_url)?
         .post(url(base_url, &["subjects", subject, "versions"])?)
         .header("content-type", CONTENT_TYPE)
         .body(schema_body(schema, schema_type, references).to_string());
@@ -147,7 +155,7 @@ pub async fn check_compatibility(
     schema: &str,
     references: &[SchemaReference],
 ) -> AppResult<bool> {
-    let request = client()?
+    let request = crate::kafka::schema_registry::http_client(base_url)?
         .post(url(base_url, &["compatibility", "subjects", subject, "versions", "latest"])?)
         .header("content-type", CONTENT_TYPE)
         .body(schema_body(schema, schema_type, references).to_string());
@@ -167,7 +175,7 @@ pub async fn get_compatibility(base_url: &str, subject: Option<&str>) -> AppResu
         None => url(base_url, &["config"])?,
     };
     endpoint.query_pairs_mut().append_pair("defaultToGlobal", "true");
-    let (_, v) = send(client()?.get(endpoint)).await?;
+    let (_, v) = send(crate::kafka::schema_registry::http_client(base_url)?.get(endpoint)).await?;
     v.get("compatibilityLevel")
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -179,7 +187,7 @@ pub async fn set_compatibility(base_url: &str, subject: Option<&str>, level: &st
         Some(s) => url(base_url, &["config", s])?,
         None => url(base_url, &["config"])?,
     };
-    let request = client()?
+    let request = crate::kafka::schema_registry::http_client(base_url)?
         .put(endpoint)
         .header("content-type", CONTENT_TYPE)
         .body(json!({ "compatibility": level }).to_string());
@@ -190,7 +198,7 @@ pub async fn set_compatibility(base_url: &str, subject: Option<&str>, level: &st
 /// Deletes one version. Soft by default (the registry keeps it hidden but recoverable);
 /// `permanent` soft-deletes first if needed, then removes it for good.
 pub async fn delete_version(base_url: &str, subject: &str, version: &str, permanent: bool) -> AppResult<()> {
-    let client = client()?;
+    let client = crate::kafka::schema_registry::http_client(base_url)?;
     let endpoint = url(base_url, &["subjects", subject, "versions", version])?;
     if permanent {
         // Already soft-deleted is fine; the hard delete below is the point.
@@ -206,7 +214,7 @@ pub async fn delete_version(base_url: &str, subject: &str, version: &str, perman
 
 /// Deletes a subject and all its versions (soft, or permanent as above).
 pub async fn delete_subject(base_url: &str, subject: &str, permanent: bool) -> AppResult<()> {
-    let client = client()?;
+    let client = crate::kafka::schema_registry::http_client(base_url)?;
     let endpoint = url(base_url, &["subjects", subject])?;
     if permanent {
         let _ = send(client.delete(endpoint.clone())).await;

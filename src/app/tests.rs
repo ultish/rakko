@@ -25,6 +25,7 @@ fn profile(name: &str) -> Profile {
         tls_enabled: false,
         auth: AuthMode::None,
         schema_registry_url: None,
+        schema_registry_tls: Default::default(),
         message_max_bytes: None,
         extra_producer_config: HashMap::new(),
     }
@@ -226,6 +227,7 @@ fn start_edit_profile_prefills_form() {
                 tls_enabled: true,
                 auth: AuthMode::None,
                 schema_registry_url: Some("http://sr:8081".into()),
+                schema_registry_tls: Default::default(),
                 message_max_bytes: Some(2_000_000),
                 extra_producer_config: HashMap::from([(
                     "compression.type".into(),
@@ -260,6 +262,7 @@ fn submit_profile_edit_preserves_advanced_fields() {
                     ca_path: "/certs/ca.pem".into(),
                 },
                 schema_registry_url: None,
+                schema_registry_tls: Default::default(),
                 message_max_bytes: Some(20_971_520),
                 extra_producer_config: HashMap::from([(
                     "compression.type".into(),

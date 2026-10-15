@@ -3,6 +3,7 @@ import { api, urls, type Range, type Summary, type Topic } from "./api";
 import { formatCount } from "./format";
 import { Messages } from "./Messages";
 import { ProduceDialog } from "./ProduceDialog";
+import { PartitionsView } from "./PartitionsView";
 import { Tail } from "./Tail";
 import { readParams, setParams } from "./urlState";
 import { DeleteTopicDialog, TopicConfigDialog } from "./TopicAdmin";
@@ -23,7 +24,7 @@ export type ProduceInitial = { key?: string; value?: string; headers?: [string, 
 
 /** One topic: browse/filter the whole topic or follow it live, plus produce/export/import. */
 export function TopicView({ profile, topic, info, selected, onSelect, onChanged, onDeleted, produceFrom, onProduceFrom }: Props) {
-  const [mode, setMode] = useState<"browse" | "table" | "live">("browse");
+  const [mode, setMode] = useState<"browse" | "table" | "live" | "partitions">("browse");
   const [applied, setApplied] = useState<{ text: string; query: string; range: Range }>({ text: "", query: "", range: {} });
   const [producing, setProducing] = useState(false);
   const [admin, setAdmin] = useState<"config" | "delete" | null>(null);
@@ -31,7 +32,7 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const changeMode = (m: "browse" | "table" | "live") => {
+  const changeMode = (m: "browse" | "table" | "live" | "partitions") => {
     setMode(m);
     // Switching view starts fresh; the new view writes its own filters back.
     setParams({ mode: m === "browse" ? undefined : m, text: undefined, query: undefined, range: undefined, sort: undefined });
@@ -39,7 +40,7 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
 
   useEffect(() => {
     const m = readParams().get("mode");
-    setMode(m === "table" || m === "live" ? m : "browse");
+    setMode(m === "table" || m === "live" || m === "partitions" ? m : "browse");
     setApplied({ text: "", query: "", range: {} });
     setNotice(null);
     setStored(null);
@@ -91,6 +92,9 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
           >
             Table
           </button>
+          <button role="tab" aria-selected={mode === "partitions"} className={mode === "partitions" ? "on" : undefined} onClick={() => changeMode("partitions")} title="Leaders, replicas and in-sync replicas of each partition">
+            Partitions
+          </button>
           <button role="tab" aria-selected={mode === "live"} className={mode === "live" ? "on" : undefined} onClick={() => changeMode("live")}>
             Live
           </button>
@@ -132,7 +136,9 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
           </button>
         </div>
       )}
-      {mode !== "live" ? (
+      {mode === "partitions" ? (
+        <PartitionsView profile={profile} topic={topic} />
+      ) : mode !== "live" ? (
         <Messages
           key={mode}
           profile={profile}

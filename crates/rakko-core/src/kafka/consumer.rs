@@ -276,19 +276,47 @@ pub async fn fetch_message(
         .map_err(|err| AppError::Other(format!("fetch message task panicked: {err}")))?
 }
 
+/// Idle consumers kept for single-message fetches, so opening a message doesn't pay a
+/// fresh connection and group-less consumer setup (~0.3 s) every time.
+static FETCH_POOL: std::sync::Mutex<Vec<(Profile, BaseConsumer, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+const FETCH_POOL_MAX: usize = 4;
+const FETCH_POOL_IDLE: Duration = Duration::from_secs(300);
+
 fn fetch_message_blocking(
     profile: &Profile,
     topic: &str,
     partition: i32,
     offset: i64,
 ) -> AppResult<Option<RawMessage>> {
+    let pooled = {
+        let mut pool = FETCH_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        pool.retain(|(_, _, at)| at.elapsed() < FETCH_POOL_IDLE);
+        pool.iter().position(|(p, _, _)| p == profile).map(|i| pool.swap_remove(i).1)
+    };
+    let consumer = match pooled {
+        Some(c) => c,
+        None => {
+            let mut config = consumer_client_config(profile, BROWSE_GROUP_ID);
+            config.set("enable.partition.eof", "true");
+            config.set("auto.offset.reset", "error");
+            config.create()?
+        }
+    };
+    let result = fetch_message_with(&consumer, topic, partition, offset);
+    // A consumer that just failed may be in a bad state; only healthy ones go back.
+    if result.is_ok() {
+        let _ = consumer.unassign();
+        let mut pool = FETCH_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if pool.len() < FETCH_POOL_MAX {
+            pool.push((profile.clone(), consumer, std::time::Instant::now()));
+        }
+    }
+    result
+}
+
+fn fetch_message_with(consumer: &BaseConsumer, topic: &str, partition: i32, offset: i64) -> AppResult<Option<RawMessage>> {
     use rdkafka::error::KafkaError;
     use rdkafka::types::RDKafkaErrorCode;
-
-    let mut config = consumer_client_config(profile, BROWSE_GROUP_ID);
-    config.set("enable.partition.eof", "true");
-    config.set("auto.offset.reset", "error");
-    let consumer: BaseConsumer = config.create()?;
 
     // Outside the retained range there is nothing to wait for.
     let (low, high) = consumer.fetch_watermarks(topic, partition, WATERMARK_TIMEOUT)?;

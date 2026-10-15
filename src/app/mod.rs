@@ -452,6 +452,7 @@ impl App {
     fn attach_profile(&mut self, profile: Profile) {
         self.schema_fetches.clear();
         self.status_message = None;
+        crate::kafka::schema_registry::register_tls(&profile);
         self.schema_registry = match profile.schema_registry_url.as_deref() {
             Some(url) => match SchemaRegistry::new(url) {
                 Ok(sr) => {

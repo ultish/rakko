@@ -347,6 +347,7 @@ impl ProfileCreateState {
             tls_enabled,
             auth,
             schema_registry_url,
+            schema_registry_tls: Default::default(),
             message_max_bytes: None,
             extra_producer_config: std::collections::HashMap::new(),
         })
@@ -358,6 +359,7 @@ impl ProfileCreateState {
         let mut profile = self.to_profile()?;
         profile.message_max_bytes = base.message_max_bytes;
         profile.extra_producer_config = base.extra_producer_config.clone();
+        profile.schema_registry_tls = base.schema_registry_tls.clone();
         Ok(profile)
     }
 }

@@ -193,6 +193,15 @@ Set `schema_registry_url` on the profile (see example above). When browsing mess
 
 No `schema_registry_url` → Avro is still detected, but not decoded (hex/raw fallback).
 
+An `https://` registry signed by a private CA uses the profile's own TLS material by default (the `ca_path` of a `tls`/`mtls` auth, plus the mTLS client cert). To give the registry different files, add:
+
+```toml
+[profiles.schema_registry_tls]
+ca_path = "/etc/rakko/registry-ca.pem"
+client_cert_path = "/etc/rakko/registry-client.pem"   # only if the registry requires mTLS
+client_key_path = "/etc/rakko/registry-client.key"
+```
+
 ### Advanced query filter
 
 The plain `/` filter is a substring search. **`Q`** opens a second, independent filter
@@ -291,12 +300,13 @@ container inside the cluster that can reach the brokers directly.
 
 | Area | Capabilities |
 |------|--------------|
-| **Topics** | Browse the **whole topic** newest-first; text + structured-query filter (see [Advanced query filter](#advanced-query-filter)) with server-side autocomplete; limit a scan to a **time window** or **one partition's offsets**; **live tail**; create / delete topics; view non-default topic config |
+| **Topics** | Browse the **whole topic** (newest-first by default, or sorted by any column on the server — oldest-first streams); text + structured-query filter (see [Advanced query filter](#advanced-query-filter)) with server-side autocomplete; **saved searches**; limit a scan to a **time window** or **one partition's offsets**; **Table** view (latest value per key); **Partitions** view (leader / replicas / in-sync); **live tail**; create / delete topics; view and **edit every topic setting**. The current view (mode, filters, sort, open message) is kept in the URL |
 | **Messages** | Chunked detail view (a 20 MiB message opens instantly); **produce** (text, base64 or file, headers, null value); **replay** byte-identical; edit & produce; **download** raw/decoded key or value, or the whole record as JSONL; key tombstone; delete everything before an offset in a partition |
 | **Export / import** | Stream the current filter + range as JSONL; import a JSONL file (byte-identical) |
-| **Consumer groups** | State, members, per-partition lag; offset reset (earliest / latest / offset / timestamp) with a typed confirmation |
+| **Consumer groups** | State, members, per-partition lag, **lag over time** (sampled every 30 s while the group is open, kept in the server's memory); offset reset (earliest / latest / offset / timestamp) with a typed confirmation |
 | **Schemas** | Browse subjects/versions, view a schema, register a subject or version (with a compatibility check and references), delete a version or subject (soft or permanent), set compatibility per subject or globally |
 | **Brokers** | Address, led/replica partitions, cluster health, non-default broker config |
+| **ACLs** | Read-only list of every ACL on the cluster (needs an authorizer; otherwise the list is empty) |
 
 ### Run it
 

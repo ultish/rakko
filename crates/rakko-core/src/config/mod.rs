@@ -144,6 +144,7 @@ mod tests {
                     tls_enabled: false,
                     auth: AuthMode::None,
                     schema_registry_url: None,
+                    schema_registry_tls: Default::default(),
                     message_max_bytes: None,
                     extra_producer_config: HashMap::new(),
                 },
@@ -157,6 +158,7 @@ mod tests {
                         ca_path: "/certs/ca.pem".into(),
                     },
                     schema_registry_url: Some("https://schema.example.com".into()),
+                    schema_registry_tls: Default::default(),
                     message_max_bytes: Some(20_000_000),
                     extra_producer_config: HashMap::from([(
                         "compression.type".to_string(),
@@ -171,6 +173,7 @@ mod tests {
                         ca_path: "/certs/private-ca.pem".into(),
                     },
                     schema_registry_url: None,
+                    schema_registry_tls: Default::default(),
                     message_max_bytes: None,
                     extra_producer_config: HashMap::new(),
                 },

@@ -3,6 +3,7 @@
 pub mod details;
 pub mod dto;
 pub mod error;
+pub mod lag;
 pub mod ops;
 pub mod routes;
 pub mod runtime;

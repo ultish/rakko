@@ -49,7 +49,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/p/{profile}/groups", get(groups))
         .route("/p/{profile}/groups/{group}", get(group))
         .route("/p/{profile}/groups/{group}/reset", post(reset_group))
+        .route("/p/{profile}/groups/{group}/lag-history", get(lag_history))
         .route("/p/{profile}/brokers", get(brokers))
+        .route("/p/{profile}/acls", get(acls))
         .route("/p/{profile}/brokers/{id}/configs", get(broker_configs))
         .route(
             "/p/{profile}/topics/{topic}/produce",
@@ -71,6 +73,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/p/{profile}/topics/{topic}/configs/all", get(topic_configs_all))
         .route("/p/{profile}/schemas/{subject}/template", get(schema_template))
         .route("/p/{profile}/topics/{topic}/avro-subjects", get(avro_subjects))
+        .route("/p/{profile}/topics/{topic}/partition-details", get(partition_detail_list))
         .route("/p/{profile}/schema-ids/{id}/subjects", get(schema_id_subjects))
         .route("/p/{profile}/schemas", get(schema_subjects))
         .route(
@@ -941,4 +944,50 @@ async fn avro_subjects(State(state): Shared, Path((p, topic)): Path<(String, Str
 async fn schema_id_subjects(State(state): Shared, Path((p, id)): Path<(String, u32)>) -> ApiResult<Vec<String>> {
     let rt = profile(&state, &p)?;
     Ok(Json(subjects_of(&registry_url(&rt)?, &[id]).await))
+}
+
+async fn partition_detail_list(State(state): Shared, Path((p, topic)): Path<(String, String)>) -> ApiResult<Vec<Value>> {
+    let rt = profile(&state, &p)?;
+    let parts = rakko_core::kafka::admin::partition_details(&rt.profile, &topic).await?;
+    Ok(Json(
+        parts
+            .into_iter()
+            .map(|d| {
+                json!({
+                    "partition": d.partition, "leader": d.leader, "replicas": d.replicas, "isr": d.isr,
+                    "low": d.low, "high": d.high, "messages": (d.high - d.low).max(0),
+                })
+            })
+            .collect(),
+    ))
+}
+
+/// Lag samples for a group (see `lag.rs`). The first view also takes a sample straight away
+/// so the chart isn't empty until the next tick.
+async fn lag_history(State(state): Shared, Path((p, g)): Path<(String, String)>) -> ApiResult<Value> {
+    profile(&state, &p)?;
+    let mut samples = state.lag.view(&p, &g);
+    if samples.is_empty() {
+        if let Some(s) = crate::lag::sample(&state, &p, &g).await {
+            state.lag.record(&p, &g, s.clone());
+            samples.push(s);
+        }
+    }
+    Ok(Json(json!({ "interval_s": crate::lag::SAMPLE_EVERY.as_secs(), "samples": samples })))
+}
+
+async fn acls(State(state): Shared, Path(p): Path<String>) -> ApiResult<Vec<Value>> {
+    let rt = profile(&state, &p)?;
+    let entries = rakko_core::kafka::admin::list_acls(&rt.profile).await?;
+    Ok(Json(
+        entries
+            .into_iter()
+            .map(|a| {
+                json!({
+                    "resource_type": a.resource_type, "resource_name": a.resource_name, "pattern": a.pattern,
+                    "principal": a.principal, "host": a.host, "operation": a.operation, "permission": a.permission,
+                })
+            })
+            .collect(),
+    ))
 }

@@ -36,6 +36,7 @@ fn unpoison<T>(r: Result<T, std::sync::PoisonError<T>>) -> T {
 
 impl ProfileRuntime {
     pub fn new(profile: Profile) -> Self {
+        rakko_core::kafka::schema_registry::register_tls(&profile);
         let registry = profile.schema_registry_url.as_deref().and_then(|url| match SchemaRegistry::new(url) {
             Ok(sr) => Some(RwLock::new(sr)),
             Err(err) => {

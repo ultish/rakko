@@ -40,6 +40,7 @@ async fn main() -> anyhow_free::Result<()> {
 
     let state = AppState::new(cfg, args.scan_window);
     rakko_web::spawn_sweeper(state.clone());
+    rakko_web::lag::spawn_sampler(state.clone());
     let app = rakko_web::build_router(state, Some(&args.static_dir));
 
     let listener = tokio::net::TcpListener::bind(&args.bind).await?;

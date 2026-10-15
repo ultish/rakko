@@ -1,0 +1,70 @@
+import { useEffect, useState } from "react";
+import { api, type PartitionDetail } from "./api";
+import { formatCount } from "./format";
+
+/** Where each partition lives: leader, replicas, in-sync replicas, and how much data it holds. */
+export function PartitionsView({ profile, topic }: { profile: string; topic: string }) {
+  const [parts, setParts] = useState<PartitionDetail[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => {
+    setError(null);
+    api.partitionDetails(profile, topic).then(setParts).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  };
+  useEffect(() => {
+    setParts(null);
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile, topic]);
+
+  const unhealthy = (p: PartitionDetail) => p.leader < 0 || p.isr.length < p.replicas.length;
+
+  return (
+    <div className="panel-scroll">
+      {error && <div className="err pad">{error}</div>}
+      {!parts && !error && <div className="dim pad">loading…</div>}
+      {parts && (
+        <>
+          <div className="actions">
+            <span className={parts.some(unhealthy) ? "warn" : "dim"}>
+              {parts.length} partitions · {parts.filter(unhealthy).length} under-replicated or offline
+            </span>
+            <span className="spacer" />
+            <button onClick={load}>Refresh</button>
+          </div>
+          <table className="grid">
+            <thead>
+              <tr>
+                <th>partition</th>
+                <th>leader</th>
+                <th>replicas</th>
+                <th>in-sync</th>
+                <th className="num">oldest offset</th>
+                <th className="num">next offset</th>
+                <th className="num">messages</th>
+              </tr>
+            </thead>
+            <tbody>
+              {parts.map((p) => (
+                <tr key={p.partition}>
+                  <td>{p.partition}</td>
+                  <td className={p.leader < 0 ? "err" : undefined}>{p.leader < 0 ? "none (offline)" : `broker ${p.leader}`}</td>
+                  <td>{p.replicas.join(", ")}</td>
+                  <td className={unhealthy(p) ? "warn" : undefined}>
+                    {p.isr.join(", ") || "—"}
+                    {p.isr.length < p.replicas.length && ` (missing ${p.replicas.filter((r) => !p.isr.includes(r)).join(", ")})`}
+                  </td>
+                  <td className="num">{formatCount(p.low)}</td>
+                  <td className="num">{formatCount(p.high)}</td>
+                  <td className="num" title="offsets between oldest and next; compaction can make the real count lower">
+                    {formatCount(p.messages)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  );
+}

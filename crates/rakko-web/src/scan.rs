@@ -88,6 +88,10 @@ struct ScanState {
     /// Messages the filter could not be evaluated on because their Avro schema was
     /// unavailable. They are *not* matches — surfaced so the UI never hides that.
     skipped_undecodable: u64,
+    /// Oldest-first merge: matches read but not yet safe to release, and per partition the
+    /// largest sort key read so far (over *every* message, not just matches).
+    pending: Vec<MessageSummary>,
+    max_seen: HashMap<i32, i64>,
 }
 
 pub struct ScanSession {
@@ -101,6 +105,8 @@ pub struct ScanSession {
     /// i.e. the topic read as a KTable. Applied before the filter, so a filter can't resurrect
     /// an older version of a key whose newest version it rejects.
     sort: Option<Sort>,
+    /// Set for time/offset ascending: the scan walks oldest-first and merges partitions by this key.
+    ascending: Option<SortKey>,
     latest_per_key: Option<Arc<Mutex<HashSet<Vec<u8>>>>>,
     preview_chars: usize,
     scan: Mutex<Option<TopicScan>>,
@@ -174,7 +180,13 @@ impl ScanSession {
     ) -> Result<Arc<Self>, AppError> {
         let ScanOptions { window, table, sort } = options;
         let (p, t, r) = (profile.profile.clone(), topic.clone(), range.clone());
-        let scan = tokio::task::spawn_blocking(move || TopicScan::open_range(&p, &t, window, &r))
+        let ascending = match sort {
+            Some(Sort { key: key @ (SortKey::Time | SortKey::Offset), desc: false }) if !table => Some(key),
+            _ => None,
+        };
+        let scan = tokio::task::spawn_blocking(move || {
+            TopicScan::open_range(&p, &t, window, &r).map(|s| if ascending.is_some() { s.ascending() } else { s })
+        })
             .await
             .map_err(|e| AppError::Other(format!("scan open panicked: {e}")))??;
         let progress = scan.progress();
@@ -187,6 +199,7 @@ impl ScanSession {
             filter: Arc::new(filter),
             range,
             sort,
+            ascending,
             latest_per_key: table.then(Default::default),
             preview_chars: if table { TABLE_PREVIEW_CHARS } else { crate::dto::ROW_PREVIEW_CHARS },
             scan: Mutex::new(Some(scan)),
@@ -210,13 +223,18 @@ impl ScanSession {
         lock(&self.last_used).elapsed()
     }
 
+    /// A sorted scan that can't stream has to read everything before showing anything.
+    fn must_finish_first(&self) -> bool {
+        self.sort.is_some() && self.ascending.is_none()
+    }
+
     fn needs_more(&self) -> bool {
         if self.cancelled.load(Ordering::SeqCst) {
             return false;
         }
         let state = lock(&self.state);
         // A sorted scan has to finish before anything can be shown.
-        !state.done && state.error.is_none() && (self.sort.is_some() || state.matches.len() < self.want.load(Ordering::SeqCst))
+        !state.done && state.error.is_none() && (self.must_finish_first() || state.matches.len() < self.want.load(Ordering::SeqCst))
     }
 
     /// Starts the runner if none is active and there is something to do.
@@ -237,13 +255,22 @@ impl ScanSession {
         while self.needs_more() {
             let Some(mut scan) = lock(&self.scan).take() else { return };
             let (profile, filter, range) = (self.profile.clone(), self.filter.clone(), self.range.clone());
-            let (latest, chars) = (self.latest_per_key.clone(), self.preview_chars);
+            let (latest, chars, ascending) = (self.latest_per_key.clone(), self.preview_chars, self.ascending);
             let handle = tokio::runtime::Handle::current();
             let result = tokio::task::spawn_blocking(move || {
                 let mut found: Vec<MessageSummary> = Vec::new();
                 let mut skipped = 0u64;
                 let mut window: Vec<rakko_core::raw_message::RawMessage> = Vec::new();
+                let mut seen: HashMap<i32, i64> = HashMap::new();
                 let outcome = scan.scan_next(&mut |message| {
+                    if let Some(key) = ascending {
+                        let k = match key {
+                            SortKey::Offset => message.offset,
+                            _ => message.timestamp_millis.unwrap_or(-1),
+                        };
+                        let slot = seen.entry(message.partition).or_insert(i64::MIN);
+                        *slot = (*slot).max(k);
+                    }
                     // Timestamps aren't monotonic, so the window is only approximate at the edges.
                     if range.contains_timestamp(message.timestamp_millis) {
                         window.push(message);
@@ -268,12 +295,13 @@ impl ScanSession {
                         found.push(summarize_loaded(&profile, &handle, &message, chars));
                     }
                 }
-                (scan, found, skipped, outcome)
+                let unfinished: Vec<i32> = scan.partitions().into_iter().filter(|p| !scan.partition_done(*p)).collect();
+                (scan, found, skipped, outcome, seen, unfinished)
             })
             .await;
 
             match result {
-                Ok((scan, mut found, skipped, outcome)) => {
+                Ok((scan, mut found, skipped, outcome, seen, unfinished)) => {
                     // Windows are fetched per partition, so order within one by time.
                     found.sort_by(|a, b| {
                         b.timestamp_ms.cmp(&a.timestamp_ms).then(b.offset.cmp(&a.offset)).then(a.partition.cmp(&b.partition))
@@ -281,19 +309,42 @@ impl ScanSession {
                     let progress = scan.progress();
                     *lock(&self.scan) = Some(scan);
                     let mut state = lock(&self.state);
-                    state.matches.extend(found);
+                    match self.ascending {
+                        None => state.matches.extend(found),
+                        Some(key) => {
+                            // Oldest-first across partitions: a match is only final once every partition
+                            // still being read has gone past it, otherwise a slower partition could
+                            // still produce something older.
+                            for (partition, k) in seen {
+                                let slot = state.max_seen.entry(partition).or_insert(i64::MIN);
+                                *slot = (*slot).max(k);
+                            }
+                            state.pending.extend(found);
+                            let order = |m: &MessageSummary| match key {
+                                SortKey::Offset => m.offset,
+                                _ => m.timestamp_ms.unwrap_or(-1),
+                            };
+                            let mut pending = std::mem::take(&mut state.pending);
+                            pending.sort_by(|a, b| order(a).cmp(&order(b)).then(a.partition.cmp(&b.partition)).then(a.offset.cmp(&b.offset)));
+                            let threshold = unfinished.iter().map(|p| state.max_seen.get(p).copied().unwrap_or(i64::MIN)).min();
+                            let ready = threshold.map_or(pending.len(), |t| pending.partition_point(|m| order(m) <= t));
+                            let held = pending.split_off(ready);
+                            state.matches.extend(pending);
+                            state.pending = held;
+                        }
+                    }
                     state.skipped_undecodable += skipped;
                     state.progress = Some(progress);
                     state.done = progress.done();
                     if let Err(err) = outcome {
                         state.error = Some(err.to_string());
                     }
-                    if let Some(sort) = self.sort {
+                    if let (Some(sort), true) = (self.sort, self.must_finish_first()) {
                         if state.matches.len() > MAX_SORT_MATCHES {
                             state.error = Some(format!(
                                 "more than {MAX_SORT_MATCHES} matches — too many to sort; narrow the filter or range, or use the default order"
                             ));
-                        } else if state.done {
+                        } else if state.done && self.ascending.is_none() {
                             sort_matches(&mut state.matches, sort);
                         }
                     }
@@ -309,7 +360,7 @@ impl ScanSession {
     fn snapshot(&self, from: usize, limit: usize) -> MatchesPage {
         let state = lock(&self.state);
         // Rows of a sorted scan are only meaningful once the scan is complete.
-        let hidden = self.sort.is_some() && !state.done;
+        let hidden = self.must_finish_first() && !state.done;
         let end = if hidden { 0 } else { (from + limit).min(state.matches.len()) };
         let progress = state.progress.unwrap_or(ScanProgress { total_offsets: 0, scanned_offsets: 0 });
         MatchesPage {

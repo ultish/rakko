@@ -54,6 +54,152 @@ pub struct BrokerConfigEntry {
     pub value: String,
 }
 
+/// One ACL binding as the cluster reports it.
+#[derive(Debug, Clone)]
+pub struct AclEntry {
+    /// `TOPIC`, `GROUP`, `BROKER` (the cluster resource shows as `BROKER`), `TRANSACTIONAL_ID`.
+    pub resource_type: String,
+    pub resource_name: String,
+    /// `LITERAL` or `PREFIXED`.
+    pub pattern: String,
+    pub principal: String,
+    pub host: String,
+    pub operation: String,
+    /// `ALLOW` or `DENY`.
+    pub permission: String,
+}
+
+/// Every ACL on the cluster (read-only). Errors with `SecurityDisabled` when the cluster has
+/// no authorizer. Uses librdkafka's DescribeAcls directly; rdkafka's safe admin client has no
+/// binding for it.
+pub async fn list_acls(profile: &Profile) -> AppResult<Vec<AclEntry>> {
+    let profile = profile.clone();
+    tokio::task::spawn_blocking(move || list_acls_blocking(&profile))
+        .await
+        .map_err(|err| AppError::Other(format!("acl listing task panicked: {err}")))?
+}
+
+fn list_acls_blocking(profile: &Profile) -> AppResult<Vec<AclEntry>> {
+    use rdkafka::bindings as sys;
+    use std::ffi::CStr;
+
+    let text = |p: *const std::os::raw::c_char| {
+        if p.is_null() {
+            String::new()
+        } else {
+            // SAFETY: librdkafka returns NUL-terminated strings owned by the result.
+            unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+    };
+    let admin_client: AdminClient<DefaultClientContext> =
+        consumer_client_config(profile, ADMIN_GROUP_ID).create()?;
+    let rk = admin_client.inner().native_ptr();
+
+    // SAFETY: all pointers are created and released inside this block; `rk` outlives them.
+    unsafe {
+        let mut errstr = [0 as std::os::raw::c_char; 256];
+        let filter = sys::rd_kafka_AclBindingFilter_new(
+            sys::rd_kafka_ResourceType_t::RD_KAFKA_RESOURCE_ANY,
+            std::ptr::null(),
+            sys::rd_kafka_ResourcePatternType_t::RD_KAFKA_RESOURCE_PATTERN_ANY,
+            std::ptr::null(),
+            std::ptr::null(),
+            sys::rd_kafka_AclOperation_t::RD_KAFKA_ACL_OPERATION_ANY,
+            sys::rd_kafka_AclPermissionType_t::RD_KAFKA_ACL_PERMISSION_TYPE_ANY,
+            errstr.as_mut_ptr(),
+            errstr.len(),
+        );
+        if filter.is_null() {
+            return Err(AppError::Other(format!("acl filter: {}", text(errstr.as_ptr()))));
+        }
+        let options = sys::rd_kafka_AdminOptions_new(rk, sys::rd_kafka_admin_op_t::RD_KAFKA_ADMIN_OP_DESCRIBEACLS);
+        sys::rd_kafka_AdminOptions_set_request_timeout(options, 15_000, errstr.as_mut_ptr(), errstr.len());
+        let queue = sys::rd_kafka_queue_new(rk);
+        sys::rd_kafka_DescribeAcls(rk, filter, options, queue);
+        let event = sys::rd_kafka_queue_poll(queue, 20_000);
+        let result = if event.is_null() {
+            Err(AppError::Other("timed out waiting for the broker".into()))
+        } else {
+            let top = sys::rd_kafka_event_error(event);
+            let out = if top != sys::rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+                Err(AppError::Other(format!("listing ACLs failed: {:?}: {}", top, text(sys::rd_kafka_event_error_string(event)))))
+            } else {
+                let res = sys::rd_kafka_event_DescribeAcls_result(event);
+                let mut count = 0usize;
+                let acls = sys::rd_kafka_DescribeAcls_result_acls(res, &mut count);
+                let mut entries = Vec::with_capacity(count);
+                for i in 0..count {
+                    let a = *acls.add(i);
+                    entries.push(AclEntry {
+                        resource_type: text(sys::rd_kafka_ResourceType_name(sys::rd_kafka_AclBinding_restype(a))).to_ascii_uppercase(),
+                        resource_name: text(sys::rd_kafka_AclBinding_name(a)),
+                        pattern: text(sys::rd_kafka_ResourcePatternType_name(sys::rd_kafka_AclBinding_resource_pattern_type(a))).to_ascii_uppercase(),
+                        principal: text(sys::rd_kafka_AclBinding_principal(a)),
+                        host: text(sys::rd_kafka_AclBinding_host(a)),
+                        operation: text(sys::rd_kafka_AclOperation_name(sys::rd_kafka_AclBinding_operation(a))).to_ascii_uppercase(),
+                        permission: text(sys::rd_kafka_AclPermissionType_name(sys::rd_kafka_AclBinding_permission_type(a))).to_ascii_uppercase(),
+                    });
+                }
+                entries.sort_by(|a, b| {
+                    (&a.resource_type, &a.resource_name, &a.principal, &a.operation).cmp(&(&b.resource_type, &b.resource_name, &b.principal, &b.operation))
+                });
+                Ok(entries)
+            };
+            sys::rd_kafka_event_destroy(event);
+            out
+        };
+        sys::rd_kafka_queue_destroy(queue);
+        sys::rd_kafka_AdminOptions_destroy(options);
+        sys::rd_kafka_AclBinding_destroy(filter as *mut _);
+        result
+    }
+}
+
+/// One partition's placement and extent.
+#[derive(Debug, Clone)]
+pub struct PartitionDetail {
+    pub partition: i32,
+    /// Broker id of the leader, `-1` when there is none (offline).
+    pub leader: i32,
+    pub replicas: Vec<i32>,
+    pub isr: Vec<i32>,
+    pub low: i64,
+    pub high: i64,
+}
+
+/// Leader / replicas / in-sync replicas and watermarks for every partition of `topic`.
+pub async fn partition_details(profile: &Profile, topic: &str) -> AppResult<Vec<PartitionDetail>> {
+    let (profile, topic) = (profile.clone(), topic.to_string());
+    tokio::task::spawn_blocking(move || {
+        let consumer: BaseConsumer = consumer_client_config(&profile, ADMIN_GROUP_ID).create()?;
+        let metadata = consumer.fetch_metadata(Some(&topic), METADATA_TIMEOUT)?;
+        let topic_md = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == topic)
+            .ok_or_else(|| AppError::Other(format!("topic {topic} not found")))?;
+        let mut out: Vec<PartitionDetail> = topic_md
+            .partitions()
+            .iter()
+            .map(|p| {
+                let (low, high) = consumer.fetch_watermarks(&topic, p.id(), WATERMARK_TIMEOUT).unwrap_or((0, 0));
+                PartitionDetail {
+                    partition: p.id(),
+                    leader: p.leader(),
+                    replicas: p.replicas().to_vec(),
+                    isr: p.isr().to_vec(),
+                    low,
+                    high,
+                }
+            })
+            .collect();
+        out.sort_by_key(|p| p.partition);
+        Ok(out)
+    })
+    .await
+    .map_err(|err| AppError::Other(format!("partition details task panicked: {err}")))?
+}
+
 /// Kafka/librdkafka convention: internal topics (e.g. `__consumer_offsets`,
 /// `__transaction_state`) are prefixed with `__` and shouldn't show up in a
 /// user-facing topic list.

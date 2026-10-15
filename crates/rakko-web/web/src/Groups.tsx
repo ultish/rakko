@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Group, type GroupDetail, type ResetTarget } from "./api";
+import { api, type Group, type GroupDetail, type LagSample, type ResetTarget } from "./api";
+import { LagChart } from "./LagChart";
 import { Dialog } from "./Dialog";
 import { formatCount } from "./format";
 
@@ -125,6 +126,23 @@ export function GroupView({ profile, group, onOpenTopic }: { profile: string; gr
   const [detail, setDetail] = useState<GroupDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [history, setHistory] = useState<{ interval_s: number; samples: LagSample[] } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setHistory(null);
+    const pull = () =>
+      api
+        .lagHistory(profile, group)
+        .then((h) => !cancelled && setHistory(h))
+        .catch(() => {});
+    void pull();
+    const t = window.setInterval(pull, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+  }, [profile, group]);
 
   const load = useCallback(() => {
     setError(null);
@@ -156,6 +174,7 @@ export function GroupView({ profile, group, onOpenTopic }: { profile: string; gr
       {!detail && !error && <div className="dim">loading…</div>}
       {detail && (
         <div className="panel-scroll">
+          {history && <LagChart samples={history.samples} intervalS={history.interval_s} />}
           <table className="grid">
             <thead>
               <tr>

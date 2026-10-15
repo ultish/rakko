@@ -10,7 +10,55 @@ use apache_avro::types::Value as AvroValue;
 use apache_avro::Schema;
 use serde::Deserialize;
 
+use std::sync::{Mutex, OnceLock};
+
+use crate::config::Profile;
 use crate::error::{AppError, AppResult};
+
+/// `(ca, client cert, client key)` PEM paths per registry base URL. The registry helpers take
+/// only a URL, so a profile announces its TLS material here (see [`register_tls`]) and every
+/// client built for that URL picks it up.
+type TlsPaths = (Option<String>, Option<(String, String)>);
+static REGISTRY_TLS: OnceLock<Mutex<HashMap<String, TlsPaths>>> = OnceLock::new();
+
+fn tls_key(base_url: &str) -> String {
+    base_url.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Remembers the TLS settings `profile` wants for its (https) Schema Registry.
+pub fn register_tls(profile: &Profile) {
+    let Some(url) = profile.schema_registry_url.as_deref() else { return };
+    let paths = profile.registry_tls_paths();
+    let mut map = REGISTRY_TLS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if paths.0.is_none() && paths.1.is_none() {
+        map.remove(&tls_key(url));
+    } else {
+        map.insert(tls_key(url), paths);
+    }
+}
+
+/// An HTTP client for the registry at `base_url`, trusting the profile's private CA and
+/// presenting its client certificate when configured.
+pub fn http_client(base_url: &str) -> AppResult<reqwest::Client> {
+    let fail = |what: &str, err: &dyn std::fmt::Display| AppError::SchemaRegistry(format!("{what}: {err}"));
+    let mut builder = reqwest::Client::builder();
+    let tls = REGISTRY_TLS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).get(&tls_key(base_url)).cloned();
+    if let (Some((ca, pair)), true) = (tls, base_url.trim().to_ascii_lowercase().starts_with("https://")) {
+        if let Some(ca) = ca {
+            let pem = std::fs::read(&ca).map_err(|e| fail(&format!("reading registry CA '{ca}'"), &e))?;
+            for cert in reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| fail(&format!("registry CA '{ca}'"), &e))? {
+                builder = builder.add_root_certificate(cert);
+            }
+        }
+        if let Some((cert, key)) = pair {
+            let mut pem = std::fs::read(&cert).map_err(|e| fail(&format!("reading registry client cert '{cert}'"), &e))?;
+            pem.push(b'\n');
+            pem.extend(std::fs::read(&key).map_err(|e| fail(&format!("reading registry client key '{key}'"), &e))?);
+            builder = builder.identity(reqwest::Identity::from_pem(&pem).map_err(|e| fail("registry client certificate", &e))?);
+        }
+    }
+    builder.build().map_err(|e| fail("http client", &e))
+}
 
 /// Upper bound on distinct referenced schemas fetched for one schema id — guards
 /// against a pathological or cyclic reference graph hammering the registry.
@@ -421,9 +469,7 @@ fn registry_url(base_url: &str, segments: &[&str]) -> AppResult<reqwest::Url> {
 
 /// [`fetch_schema_by_id`] with a fresh HTTP client — for callers that don't keep one.
 pub async fn fetch_schema(base_url: &str, id: u32) -> AppResult<CachedSchema> {
-    let client = reqwest::Client::builder()
-        .build()
-        .map_err(|err| AppError::SchemaRegistry(format!("http client: {err}")))?;
+    let client = http_client(base_url)?;
     fetch_schema_by_id(&client, base_url, id).await
 }
 
@@ -627,6 +673,47 @@ mod tests {
     fn new_rejects_empty_url() {
         assert!(SchemaRegistry::new("").is_err());
         assert!(SchemaRegistry::new("   ").is_err());
+    }
+
+    #[test]
+    fn registry_tls_falls_back_to_the_cluster_material_unless_overridden() {
+        use crate::config::{AuthMode, Profile};
+        let mut p = Profile {
+            name: "p".into(),
+            bootstrap_servers: "b:9093".into(),
+            tls_enabled: true,
+            auth: AuthMode::Mtls { cert_path: "c.pem".into(), key_path: "k.pem".into(), ca_path: "ca.pem".into() },
+            schema_registry_url: Some("https://r".into()),
+            schema_registry_tls: Default::default(),
+            message_max_bytes: None,
+            extra_producer_config: Default::default(),
+        };
+        assert_eq!(p.registry_tls_paths(), (Some("ca.pem".into()), Some(("c.pem".into(), "k.pem".into()))));
+        p.schema_registry_tls.ca_path = Some("reg-ca.pem".into());
+        assert_eq!(p.registry_tls_paths().0.as_deref(), Some("reg-ca.pem"));
+        p.auth = AuthMode::None;
+        assert_eq!(p.registry_tls_paths().1, None);
+    }
+
+    #[test]
+    fn missing_registry_ca_file_is_reported_not_ignored() {
+        use crate::config::Profile;
+        let mut p = Profile {
+            name: "p".into(),
+            bootstrap_servers: "b:9092".into(),
+            tls_enabled: false,
+            auth: Default::default(),
+            schema_registry_url: Some("https://tls-test.invalid".into()),
+            schema_registry_tls: Default::default(),
+            message_max_bytes: None,
+            extra_producer_config: Default::default(),
+        };
+        p.schema_registry_tls.ca_path = Some("/nonexistent/ca.pem".into());
+        register_tls(&p);
+        let err = http_client("https://tls-test.invalid").unwrap_err().to_string();
+        assert!(err.contains("/nonexistent/ca.pem"), "{err}");
+        // plain http never uses the TLS material
+        assert!(http_client("http://tls-test.invalid").is_ok());
     }
 
     #[test]

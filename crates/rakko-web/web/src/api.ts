@@ -94,6 +94,20 @@ export type SortKey = "time" | "offset" | "partition" | "key" | "value";
 /** `undefined` = newest first (streamed). Anything else scans the whole topic before showing rows. */
 export type ScanSort = { key: SortKey; desc: boolean };
 
+export type PartitionDetail = { partition: number; leader: number; replicas: number[]; isr: number[]; low: number; high: number; messages: number };
+
+export type LagSample = { t: number; total: number; topics: Record<string, number> };
+
+export type AclEntry = {
+  resource_type: string;
+  resource_name: string;
+  pattern: string;
+  principal: string;
+  host: string;
+  operation: string;
+  permission: string;
+};
+
 export type PartitionInfo = { partition: number; low: number; high: number; messages: number };
 
 export type Completion = { prefix: string; candidates: string[] };
@@ -175,6 +189,10 @@ export const api = {
     request<{ ok: boolean }>(`/p/${enc(profile)}/topics/${enc(topic)}/configs`, { method: "PUT", body: JSON.stringify({ set, unset }) }),
   avroSubjects: (profile: string, topic: string) => request<{ key: string[]; value: string[] }>(`/p/${enc(profile)}/topics/${enc(topic)}/avro-subjects`),
   schemaIdSubjects: (profile: string, id: number) => request<string[]>(`/p/${enc(profile)}/schema-ids/${id}/subjects`),
+  partitionDetails: (profile: string, topic: string) => request<PartitionDetail[]>(`${base(profile, topic)}/partition-details`),
+  lagHistory: (profile: string, group: string) =>
+    request<{ interval_s: number; samples: LagSample[] }>(`/p/${enc(profile)}/groups/${enc(group)}/lag-history`),
+  acls: (profile: string) => request<AclEntry[]>(`/p/${enc(profile)}/acls`),
   avroTemplate: (profile: string, subject: string) => request<AvroTemplate>(`/p/${enc(profile)}/schemas/${enc(subject)}/template`),
   topicConfigs: (profile: string, topic: string) =>
     request<{ name: string; value: string }[]>(`/p/${enc(profile)}/topics/${enc(topic)}/configs`),

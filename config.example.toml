@@ -56,3 +56,10 @@ tls_enabled = true
 [profiles.auth]
 type = "tls"
 ca_path = "/path/to/private-ca.pem"
+
+# Optional: TLS files for an https:// Schema Registry. Unset values fall back to the
+# cluster's own CA / client cert from [profiles.auth].
+# [profiles.schema_registry_tls]
+# ca_path = "/etc/rakko/registry-ca.pem"
+# client_cert_path = "/etc/rakko/registry-client.pem"
+# client_key_path = "/etc/rakko/registry-client.key"

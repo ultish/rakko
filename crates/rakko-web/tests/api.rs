@@ -31,6 +31,7 @@ fn app() -> Router {
         tls_enabled: false,
         auth: AuthMode::None,
         schema_registry_url: Some(REGISTRY.into()),
+        schema_registry_tls: Default::default(),
         message_max_bytes: None,
         extra_producer_config: HashMap::new(),
     };

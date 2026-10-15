@@ -17,6 +17,19 @@ type Status = {
 const PAGE = 100;
 const PREFETCH = 150;
 
+type SavedSearch = { name: string; text: string; query: string; draft: RangeDraft; sort: ScanSort | null };
+
+const savedKey = (profile: string, topic: string) => `rakko-saved:${profile}:${topic}`;
+
+function loadSaved(profile: string, topic: string): SavedSearch[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(savedKey(profile, topic)) ?? "[]");
+    return Array.isArray(raw) ? (raw as SavedSearch[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 type Props = {
   profile: string;
   topic: string;
@@ -53,6 +66,16 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
   const [rangeOpen, setRangeOpen] = useState(false);
   const [applied, setApplied] = useState<Range>({});
   const [sort, setSort] = useState<ScanSort | null>(null);
+  const [saved, setSaved] = useState<SavedSearch[]>(() => loadSaved(profile, topic));
+  useEffect(() => setSaved(loadSaved(profile, topic)), [profile, topic]);
+  const persist = (next: SavedSearch[]) => {
+    setSaved(next);
+    try {
+      localStorage.setItem(savedKey(profile, topic), JSON.stringify(next));
+    } catch {
+      /* storage unavailable: the list just won't survive a reload */
+    }
+  };
 
   const pump = useCallback(async (gen: number) => {
     if (pumping.current) return;
@@ -169,6 +192,32 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
       sort: order ? `${order.key}:${order.desc ? "desc" : "asc"}` : undefined,
     });
 
+  const saveCurrent = () => {
+    const name = window.prompt("Name for this search:", text || query || "my search")?.trim();
+    if (!name) return;
+    persist([...saved.filter((x) => x.name !== name), { name, text, query, draft, sort }]);
+  };
+
+  const applySaved = (x: SavedSearch) => {
+    setText(x.text);
+    setQuery(x.query);
+    setDraft(x.draft);
+    setSort(x.sort);
+    setRangeOpen(!isEmptyDraft(x.draft));
+    try {
+      const range = toRange(x.draft);
+      setParams({
+        text: x.text.trim() ? x.text : undefined,
+        query: x.query.trim() ? x.query : undefined,
+        range: isEmptyDraft(x.draft) ? undefined : JSON.stringify(x.draft),
+        sort: x.sort ? `${x.sort.key}:${x.sort.desc ? "desc" : "asc"}` : undefined,
+      });
+      void start(x.text, x.query, range, x.sort);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const submit = (order: ScanSort | null = sort) => {
     try {
       const range = toRange(draft);
@@ -212,6 +261,25 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
         <button type="button" className={rangeOpen || !isEmptyDraft(draft) ? "toggle on" : "toggle"} onClick={() => setRangeOpen((o) => !o)} aria-expanded={rangeOpen}>
           Range{!isEmptyDraft(draft) ? " •" : ""}
         </button>
+        <details className="menu">
+          <summary title="Searches you saved for this topic (kept in this browser)">Saved{saved.length ? ` (${saved.length})` : ""} ▾</summary>
+          <div>
+            {saved.map((x) => (
+              <span key={x.name} className="saved-item">
+                <button type="button" onClick={() => applySaved(x)} title={[x.text, x.query].filter(Boolean).join("  ·  ") || "no filter"}>
+                  {x.name}
+                </button>
+                <button type="button" className="link" aria-label={`delete ${x.name}`} onClick={() => persist(saved.filter((y) => y.name !== x.name))}>
+                  ✕
+                </button>
+              </span>
+            ))}
+            {saved.length === 0 && <span className="dim pad small">Nothing saved yet.</span>}
+            <button type="button" onClick={saveCurrent}>
+              + Save current search…
+            </button>
+          </div>
+        </details>
         <button type="submit" className="primary">
           {filtered ? "Search" : "Refresh"}
         </button>
@@ -224,7 +292,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
           <div style={{ width: `${pct}%` }} className={status?.done ? "done" : undefined} />
         </div>
         <span>
-          {status && sort && rows.length === 0 && !status.done && !status.error
+          {status && sort && rows.length === 0 && (table || sort.desc || !(sort.key === "time" || sort.key === "offset")) && !status.done && !status.error
             ? `sorting: reading the whole topic first · scanned ${pct}% of ${formatCount(status.total)} offsets`
             : status
             ? `${formatCount(rows.length)}${status.done ? "" : "+"} ${filtered ? "matches" : table ? "keys" : "messages"} · scanned ${pct}% of ${formatCount(status.total)} offsets${status.done ? " · complete" : ""}`

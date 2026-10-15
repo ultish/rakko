@@ -67,6 +67,7 @@ mod tests {
             tls_enabled,
             auth,
             schema_registry_url: None,
+            schema_registry_tls: Default::default(),
             message_max_bytes: None,
             extra_producer_config: HashMap::new(),
         }

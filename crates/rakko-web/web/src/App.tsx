@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Profile, type Summary, type Topic } from "./api";
+import { Acls } from "./Acls";
 import { Brokers } from "./Brokers";
 import { Detail } from "./Detail";
 import { formatCount } from "./format";
@@ -7,15 +8,16 @@ import { GroupList, GroupView } from "./Groups";
 import { RegisterDialog, SchemasHome, SubjectList, SubjectView } from "./Schemas";
 import { CreateTopicDialog } from "./TopicAdmin";
 import { TopicView, type ProduceInitial } from "./TopicView";
+import { readParams, setParams } from "./urlState";
 
-type View = "topics" | "groups" | "schemas" | "brokers";
+type View = "topics" | "groups" | "schemas" | "brokers" | "acls";
 type Route = { profile: string; view: View; item: string };
 
 // #/<profile>/<topics|groups|brokers>/<item>
 function readRoute(): Route {
   const path = window.location.hash.replace(/^#\/?/, "").split("?")[0];
   const [profile = "", view = "topics", item = ""] = path.split("/").map(decodeURIComponent);
-  return { profile, view: view === "groups" || view === "schemas" || view === "brokers" ? view : "topics", item };
+  return { profile, view: view === "groups" || view === "schemas" || view === "brokers" || view === "acls" ? view : "topics", item };
 }
 
 function writeRoute(r: Route) {
@@ -30,7 +32,7 @@ export function App() {
   const [route, setRoute] = useState<Route>(readRoute);
   const [profiles, setProfiles] = useState<Profile[] | null>(null);
   const [topics, setTopics] = useState<Topic[] | null>(null);
-  const [topicFilter, setTopicFilter] = useState("");
+  const [topicFilter, setTopicFilter] = useState(() => readParams().get("tf") ?? "");
   const [sort, setSort] = useState<{ key: "name" | "messages" | "partitions"; dir: 1 | -1 }>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("rakko-topic-sort") ?? "null");
@@ -128,7 +130,19 @@ export function App() {
     loadTopics();
   }, [loadTopics]);
 
-  useEffect(() => setSelected(null), [route.profile, route.view, route.item]);
+  // A link can name the open message (?msg=partition:offset); the detail panel loads it by coordinates.
+  useEffect(() => {
+    const m = /^(\d+):(\d+)$/.exec(readParams().get("msg") ?? "");
+    const none = { format: "", preview: "", size: null };
+    setSelected(
+      m && route.view === "topics" && route.item
+        ? { partition: Number(m[1]), offset: Number(m[2]), timestamp_ms: null, key: none, value: none, header_count: 0 }
+        : null,
+    );
+  }, [route.profile, route.view, route.item]);
+  useEffect(() => {
+    if (route.view === "topics" && route.item) setParams({ msg: selected ? `${selected.partition}:${selected.offset}` : undefined });
+  }, [selected, route.view, route.item]);
 
   const visibleTopics = useMemo(() => {
     const needle = topicFilter.trim().toLowerCase();
@@ -138,7 +152,7 @@ export function App() {
 
   const go = (view: View, item = "") => writeRoute({ profile: route.profile, view, item });
   const showTopic = route.view === "topics" && route.item;
-  const hasSidebar = route.view !== "brokers";
+  const hasSidebar = route.view !== "brokers" && route.view !== "acls";
 
   return (
     <div style={{ "--side-w": `${sideWidth}px` } as React.CSSProperties} className={`app${selected && showTopic ? " with-detail" : ""}${hasSidebar ? "" : " no-side"}`}>
@@ -153,7 +167,7 @@ export function App() {
           ))}
         </select>
         <nav className="tabs" aria-label="sections">
-          {(["topics", "groups", "schemas", "brokers"] as View[]).map((v) => (
+          {(["topics", "groups", "schemas", "brokers", "acls"] as View[]).map((v) => (
             <button key={v} className={route.view === v ? "on" : undefined} aria-current={route.view === v} onClick={() => go(v)}>
               {v}
             </button>
@@ -168,7 +182,10 @@ export function App() {
         <nav className="sidebar">
           {route.view === "topics" ? (
             <>
-              <input placeholder="filter topics…" value={topicFilter} onChange={(e) => setTopicFilter(e.target.value)} spellCheck={false} />
+              <input placeholder="filter topics…" value={topicFilter} onChange={(e) => {
+                  setTopicFilter(e.target.value);
+                  setParams({ tf: e.target.value });
+                }} spellCheck={false} />
               <div className="sort-row">
                 <select
                   value={sort.key}
@@ -224,6 +241,8 @@ export function App() {
           <Placeholder text="No cluster profiles are configured." />
         ) : route.view === "brokers" ? (
           <Brokers profile={route.profile} />
+        ) : route.view === "acls" ? (
+          <Acls profile={route.profile} />
         ) : route.view === "schemas" ? (
           route.item ? (
             <SubjectView

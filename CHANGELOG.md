@@ -11,6 +11,21 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-15
+
+### Added
+- **Web:** Consumer-group **lag over time** — a chart of total and per-topic lag (15 min – 24 h) on the group page, sampled every 30 s while a group is open and kept in the server's memory.
+- **Web:** **Partitions** tab on a topic: leader, replicas, in-sync replicas (under-replicated and offline partitions are flagged), oldest/next offset.
+- **Web:** **ACLs** tab: read-only list of every ACL on the cluster, with a filter.
+- **Web:** **Saved searches** per topic (text, query, range, sort), kept in the browser.
+- **Web:** Oldest-first (time or offset ascending) now streams instead of reading the whole topic first, merging partitions into one exact order.
+- **Web:** The topic-list filter and the open message are part of the URL.
+- Schema Registry over **HTTPS with a private CA / client certificate** (web and TUI). Defaults to the cluster's own CA and client cert; override with `[profiles.schema_registry_tls]`.
+
+### Changed
+- **Web:** Kafka's terse errors (InvalidRecord, TopicAlreadyExists, authorization failures, unreachable brokers, …) now come with a plain-language explanation; the broker's original text is kept in brackets. Registry connection errors include the underlying TLS reason.
+- **Web:** Opening messages is faster: consumers for single-message fetches are reused.
+
 ## [0.16.0] - 2026-10-15
 
 ### Added

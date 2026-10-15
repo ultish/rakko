@@ -142,6 +142,8 @@ struct Cursor {
     high: i64,
     /// End (exclusive) of the next window; walks down to `low`.
     next_end: i64,
+    /// Start of the next window in an ascending scan; walks up to `high`.
+    next_start: i64,
 }
 
 pub struct TopicScan {
@@ -149,6 +151,8 @@ pub struct TopicScan {
     topic: String,
     window: i64,
     cursors: Vec<Cursor>,
+    /// Oldest-first instead of newest-first.
+    ascending: bool,
 }
 
 impl TopicScan {
@@ -205,15 +209,39 @@ impl TopicScan {
             consumer,
             topic: topic.to_string(),
             window: window.max(1) as i64,
+            ascending: false,
             cursors: marks
                 .iter()
-                .map(|m| Cursor { partition: m.partition, low: m.low, high: m.high, next_end: m.high })
+                .map(|m| Cursor { partition: m.partition, low: m.low, high: m.high, next_end: m.high, next_start: m.low })
                 .collect(),
         }
     }
 
+    /// Walk each partition from its oldest message up instead of newest-first. Call before
+    /// the first [`scan_next`](Self::scan_next).
+    pub fn ascending(mut self) -> Self {
+        self.ascending = true;
+        self
+    }
+
     pub fn progress(&self) -> ScanProgress {
-        progress_of(&self.cursors)
+        progress_of(&self.cursors, self.ascending)
+    }
+
+    /// Partitions of the topic that this scan covers.
+    pub fn partitions(&self) -> Vec<i32> {
+        self.cursors.iter().map(|c| c.partition).collect()
+    }
+
+    /// Whether `partition` has nothing left to read.
+    pub fn partition_done(&self, partition: i32) -> bool {
+        self.cursors.iter().find(|c| c.partition == partition).is_none_or(|c| {
+            if self.ascending {
+                c.next_start >= c.high
+            } else {
+                c.next_end <= c.low
+            }
+        })
     }
 
     pub fn done(&self) -> bool {
@@ -223,7 +251,7 @@ impl TopicScan {
     /// Reads the next window of every partition that has data left, calling `visit` for
     /// each message (partition order interleaved as the broker delivers it). Blocking.
     pub fn scan_next(&mut self, visit: &mut dyn FnMut(RawMessage)) -> AppResult<()> {
-        let windows = plan_windows(&self.cursors, self.window);
+        let windows = plan_windows(&self.cursors, self.window, self.ascending);
         if windows.is_empty() {
             return Ok(());
         }
@@ -284,7 +312,11 @@ impl TopicScan {
 
         for w in &windows {
             if let Some(c) = self.cursors.iter_mut().find(|c| c.partition == w.partition) {
-                c.next_end = w.start;
+                if self.ascending {
+                    c.next_start = w.end;
+                } else {
+                    c.next_end = w.start;
+                }
             }
         }
         Ok(())
@@ -300,7 +332,14 @@ struct Window {
     end: i64,
 }
 
-fn plan_windows(cursors: &[Cursor], window: i64) -> Vec<Window> {
+fn plan_windows(cursors: &[Cursor], window: i64, ascending: bool) -> Vec<Window> {
+    if ascending {
+        return cursors
+            .iter()
+            .filter(|c| c.next_start < c.high)
+            .map(|c| Window { partition: c.partition, start: c.next_start, end: (c.next_start + window).min(c.high) })
+            .collect();
+    }
     cursors
         .iter()
         .filter(|c| c.next_end > c.low)
@@ -312,12 +351,16 @@ fn plan_windows(cursors: &[Cursor], window: i64) -> Vec<Window> {
         .collect()
 }
 
-fn progress_of(cursors: &[Cursor]) -> ScanProgress {
+fn progress_of(cursors: &[Cursor], ascending: bool) -> ScanProgress {
     let mut total = 0u64;
     let mut scanned = 0u64;
     for c in cursors {
         total += (c.high - c.low).max(0) as u64;
-        scanned += (c.high - c.next_end.max(c.low)).max(0) as u64;
+        scanned += if ascending {
+            (c.next_start.min(c.high) - c.low).max(0) as u64
+        } else {
+            (c.high - c.next_end.max(c.low)).max(0) as u64
+        };
     }
     ScanProgress { total_offsets: total, scanned_offsets: scanned }
 }
@@ -327,7 +370,7 @@ mod tests {
     use super::*;
 
     fn cursor(partition: i32, low: i64, high: i64) -> Cursor {
-        Cursor { partition, low, high, next_end: high }
+        Cursor { partition, low, high, next_end: high, next_start: low }
     }
 
     fn marks() -> Vec<PartitionWatermarks> {
@@ -401,7 +444,7 @@ mod tests {
     fn windows_walk_each_partition_down_from_its_high_watermark() {
         let cursors = [cursor(0, 0, 250), cursor(1, 100, 130)];
         assert_eq!(
-            plan_windows(&cursors, 100),
+            plan_windows(&cursors, 100, false),
             vec![
                 Window { partition: 0, start: 150, end: 250 },
                 Window { partition: 1, start: 100, end: 130 },
@@ -413,14 +456,14 @@ mod tests {
     fn finished_and_empty_partitions_get_no_window() {
         let mut done = cursor(0, 10, 50);
         done.next_end = 10;
-        assert!(plan_windows(&[done, cursor(1, 7, 7)], 100).is_empty());
+        assert!(plan_windows(&[done, cursor(1, 7, 7)], 100, false).is_empty());
     }
 
     #[test]
     fn the_last_window_is_clamped_to_the_low_watermark() {
         let mut c = cursor(0, 20, 250);
         c.next_end = 60;
-        assert_eq!(plan_windows(&[c], 100), vec![Window { partition: 0, start: 20, end: 60 }]);
+        assert_eq!(plan_windows(&[c], 100, false), vec![Window { partition: 0, start: 20, end: 60 }]);
     }
 
     #[test]
@@ -428,15 +471,27 @@ mod tests {
         let mut a = cursor(0, 0, 100);
         a.next_end = 40; // 60 scanned of 100
         let b = cursor(1, 50, 80); // 0 of 30
-        let p = progress_of(&[a, b]);
+        let p = progress_of(&[a, b], false);
         assert_eq!(p, ScanProgress { total_offsets: 130, scanned_offsets: 60 });
         assert!(!p.done());
     }
 
     #[test]
+    fn ascending_windows_walk_up_and_clamp_to_the_high_watermark() {
+        let mut a = cursor(0, 100, 250);
+        assert_eq!(plan_windows(&[a], 100, true), vec![Window { partition: 0, start: 100, end: 200 }]);
+        a.next_start = 200;
+        assert_eq!(plan_windows(&[a], 100, true), vec![Window { partition: 0, start: 200, end: 250 }]);
+        assert_eq!(progress_of(&[a], true), ScanProgress { total_offsets: 150, scanned_offsets: 100 });
+        a.next_start = 250;
+        assert!(plan_windows(&[a], 100, true).is_empty());
+        assert!(progress_of(&[a], true).done());
+    }
+
+    #[test]
     fn an_empty_topic_is_immediately_done() {
-        assert!(progress_of(&[cursor(0, 5, 5), cursor(1, 0, 0)]).done());
-        assert!(progress_of(&[]).done());
+        assert!(progress_of(&[cursor(0, 5, 5), cursor(1, 0, 0)], false).done());
+        assert!(progress_of(&[], false).done());
     }
 }
 

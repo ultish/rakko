@@ -31,6 +31,7 @@ pub(crate) fn local_profile() -> Profile {
         tls_enabled: false,
         auth: AuthMode::None,
         schema_registry_url: Some(SCHEMA_REGISTRY_URL.into()),
+        schema_registry_tls: Default::default(),
         message_max_bytes: None,
         extra_producer_config: HashMap::new(),
     }
