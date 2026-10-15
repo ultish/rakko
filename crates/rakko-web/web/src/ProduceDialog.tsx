@@ -7,12 +7,12 @@ type Props = {
   topic: string;
   onClose: () => void;
   /** Pre-fills the form (replay-and-edit). */
-  initial?: { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean };
+  initial?: { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean; valueSchemaId?: number };
 };
 
 type Mode = "text" | "avro" | "base64" | "file" | "null";
 
-type Side = { mode: Mode; text: string; file: File | null; subject: string };
+type Side = { mode: Mode; text: string; file: File | null; subject: string; subjectFromTopic?: boolean };
 
 function toBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -142,8 +142,23 @@ export function ProduceDialog({ profile, topic, onClose, initial }: Props) {
   });
   const [subjects, setSubjects] = useState<string[] | null>(null);
   useEffect(() => {
-    api.subjects(profile).then(setSubjects).catch(() => setSubjects(null));
-  }, [profile]);
+    // Subjects this topic's messages actually use go first, whatever the naming strategy
+    // (<topic>-value, or a record name such as com.acme.Order); then everything else.
+    api
+      .subjects(profile)
+      .then(async (all) => {
+        const used = await api.avroSubjects(profile, topic).catch(() => ({ key: [] as string[], value: [] as string[] }));
+        // An edited message keeps the subject of its own schema (several record types can share a topic).
+        const own = initial?.valueSchemaId ? await api.schemaIdSubjects(profile, initial.valueSchemaId).catch(() => [] as string[]) : [];
+        if (own[0]) used.value.unshift(own[0]);
+        setSubjects([...new Set([...used.value, ...used.key, ...all])]);
+        // Pre-select what the topic uses, unless the form already has something (edit & produce).
+        setValue((v) => (v.subjectFromTopic || !used.value[0] ? v : { ...v, subject: used.value[0], subjectFromTopic: true }));
+        setKey((k) => (k.subjectFromTopic || !used.key[0] ? k : { ...k, subject: used.key[0], subjectFromTopic: true }));
+      })
+      .catch(() => setSubjects(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile, topic]);
   const [headers, setHeaders] = useState<{ key: string; value: string }[]>(
     (initial?.headers ?? []).map(([k, v]) => ({ key: k, value: v })),
   );

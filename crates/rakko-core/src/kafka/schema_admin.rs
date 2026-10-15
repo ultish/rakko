@@ -95,6 +95,18 @@ pub async fn list_versions(base_url: &str, subject: &str) -> AppResult<Vec<i64>>
     from_value(v, "versions")
 }
 
+/// Subjects a schema id is registered under (`GET /schemas/ids/{id}/versions`). With
+/// RecordNameStrategy this is how a message's schema maps back to a subject name.
+pub async fn subjects_for_id(base_url: &str, id: u32) -> AppResult<Vec<String>> {
+    let (_, v) = send(client()?.get(url(base_url, &["schemas", "ids", &id.to_string(), "versions"])?)).await?;
+    let pairs: Vec<Value> = from_value(v, "schema subjects")?;
+    let mut subjects: Vec<String> =
+        pairs.iter().filter_map(|p| p.get("subject")?.as_str().map(str::to_string)).collect();
+    subjects.sort();
+    subjects.dedup();
+    Ok(subjects)
+}
+
 /// `version` is a number or `latest`.
 pub async fn get_version(base_url: &str, subject: &str, version: &str) -> AppResult<SubjectVersion> {
     let (_, v) = send(client()?.get(url(base_url, &["subjects", subject, "versions", version])?)).await?;

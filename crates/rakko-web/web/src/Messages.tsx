@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Range, type Summary } from "./api";
+import { api, type Range, type ScanSort, type Summary } from "./api";
+import { readParams, setParams } from "./urlState";
 import { formatCount } from "./format";
 import { MessageTable } from "./MessageTable";
 import { QueryInput } from "./QueryInput";
@@ -51,6 +52,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
   const [draft, setDraft] = useState<RangeDraft>(emptyDraft);
   const [rangeOpen, setRangeOpen] = useState(false);
   const [applied, setApplied] = useState<Range>({});
+  const [sort, setSort] = useState<ScanSort | null>(null);
 
   const pump = useCallback(async (gen: number) => {
     if (pumping.current) return;
@@ -84,7 +86,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
   }, []);
 
   const start = useCallback(
-    async (filterText: string, filterQuery: string, range: Range) => {
+    async (filterText: string, filterQuery: string, range: Range, order: ScanSort | null) => {
       const gen = ++generation.current;
       setApplied(range);
       onApplied?.(filterText, filterQuery, range);
@@ -99,7 +101,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
       setError(null);
       setEpoch((e) => e + 1);
       try {
-        const created = await api.createScan(profile, topic, filterText, filterQuery, range, table);
+        const created = await api.createScan(profile, topic, filterText, filterQuery, range, table, order ?? undefined);
         if (gen !== generation.current) {
           api.deleteScan(created.scan_id).catch(() => {});
           return;
@@ -118,13 +120,31 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
     [profile, topic, pump, onApplied, table],
   );
 
-  // New topic: forget filters and browse the whole topic.
+  // Opening a topic: start from what the address bar says (a shared link / reload), else a plain browse.
   useEffect(() => {
-    setText("");
-    setQuery("");
-    setDraft(emptyDraft);
-    setRangeOpen(false);
-    void start("", "", {});
+    const params = readParams();
+    const t = params.get("text") ?? "";
+    const q = params.get("query") ?? "";
+    let d = emptyDraft;
+    let r: Range = {};
+    try {
+      const raw = params.get("range");
+      if (raw) {
+        d = { ...emptyDraft, ...(JSON.parse(raw) as Partial<RangeDraft>) };
+        r = toRange(d);
+      }
+    } catch {
+      d = emptyDraft;
+      r = {};
+    }
+    const [sk, sd] = (params.get("sort") ?? "").split(":");
+    const s: ScanSort | null = ["time", "offset", "partition", "key", "value"].includes(sk) ? { key: sk as ScanSort["key"], desc: sd === "desc" } : null;
+    setText(t);
+    setQuery(q);
+    setDraft(d);
+    setSort(s);
+    setRangeOpen(!isEmptyDraft(d));
+    void start(t, q, r, s);
     return () => {
       generation.current++;
       const id = scanId.current;
@@ -141,9 +161,19 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
     [pump],
   );
 
-  const submit = () => {
+  const remember = (order: ScanSort | null) =>
+    setParams({
+      text: text.trim() ? text : undefined,
+      query: query.trim() ? query : undefined,
+      range: isEmptyDraft(draft) ? undefined : JSON.stringify(draft),
+      sort: order ? `${order.key}:${order.desc ? "desc" : "asc"}` : undefined,
+    });
+
+  const submit = (order: ScanSort | null = sort) => {
     try {
-      void start(text, query, toRange(draft));
+      const range = toRange(draft);
+      remember(order);
+      void start(text, query, range, order);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setRangeOpen(true);
@@ -176,7 +206,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
           topic={topic}
           value={query}
           onChange={setQuery}
-          onSubmit={submit}
+          onSubmit={() => submit()}
           placeholder={'query — value.customer.tier = "gold" AND value.qty > 2   (Tab to complete)'}
         />
         <button type="button" className={rangeOpen || !isEmptyDraft(draft) ? "toggle on" : "toggle"} onClick={() => setRangeOpen((o) => !o)} aria-expanded={rangeOpen}>
@@ -187,14 +217,16 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
         </button>
       </form>
 
-      {rangeOpen && <RangePicker profile={profile} topic={topic} value={draft} onChange={setDraft} onApply={submit} />}
+      {rangeOpen && <RangePicker profile={profile} topic={topic} value={draft} onChange={setDraft} onApply={() => submit()} />}
 
       <div className="status" role="status">
         <div className="progress" aria-hidden>
           <div style={{ width: `${pct}%` }} className={status?.done ? "done" : undefined} />
         </div>
         <span>
-          {status
+          {status && sort && rows.length === 0 && !status.done && !status.error
+            ? `sorting: reading the whole topic first · scanned ${pct}% of ${formatCount(status.total)} offsets`
+            : status
             ? `${formatCount(rows.length)}${status.done ? "" : "+"} ${filtered ? "matches" : table ? "keys" : "messages"} · scanned ${pct}% of ${formatCount(status.total)} offsets${status.done ? " · complete" : ""}`
             : error
               ? ""
@@ -216,6 +248,11 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
         loading={status ? !status.done && !status.error : !error}
         onVisibleEnd={onVisibleEnd}
         resetKey={epoch}
+        sort={sort}
+        onSort={(next) => {
+          setSort(next);
+          submit(next);
+        }}
         table={table}
         empty={filtered ? "No messages match this filter." : table ? "No live keys: the topic is empty or every key was deleted." : "This topic is empty."}
       />

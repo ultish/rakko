@@ -25,6 +25,10 @@ const MAX_SAMPLE_BYTES: usize = 256 * 1024;
 pub struct Samples {
     keys: Vec<Value>,
     values: Vec<Value>,
+    /// Schema ids behind the topic's keys / values: those in recent messages plus the latest
+    /// `<topic>-key` / `<topic>-value` (TopicNameStrategy) subjects.
+    pub key_schema_ids: Vec<u32>,
+    pub value_schema_ids: Vec<u32>,
 }
 
 impl Samples {
@@ -99,7 +103,7 @@ async fn load(rt: &Arc<ProfileRuntime>, topic: &str) -> AppResult<Samples> {
     let rt = rt.clone();
     tokio::task::spawn_blocking(move || {
         rt.with_registry(|reg| {
-            let mut out = Samples::default();
+            let mut out = Samples { key_schema_ids: key_schema_ids.clone(), value_schema_ids: value_schema_ids.clone(), ..Default::default() };
             if let Some(reg) = reg {
                 let skeletons = |ids: &[u32]| -> Vec<Value> {
                     ids.iter().filter_map(|id| reg.cached_schema(*id)).map(|s| s.skeleton()).collect()

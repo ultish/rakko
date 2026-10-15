@@ -9,7 +9,7 @@ type Props = {
   message: Summary;
   onClose: () => void;
   /** Opens the produce dialog pre-filled with this message (edit & resend). */
-  onProduceFrom: (v: { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean }) => void;
+  onProduceFrom: (v: { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean; valueSchemaId?: number }) => void;
   onReplayed: () => void;
 };
 
@@ -116,7 +116,9 @@ export function Detail({ profile, topic, message, onClose, onProduceFrom, onRepl
     setPreparing(true);
     try {
       const [k, v] = await Promise.all([fullText("key", key), fullText("value", value)]);
-      onProduceFrom({ key: k, value: v, headers, valueAvro: value.chunks[0]?.format.startsWith("avro") });
+      const format = value.chunks[0]?.format ?? "";
+      const id = /^avro:(\d+)/.exec(format)?.[1];
+      onProduceFrom({ key: k, value: v, headers, valueAvro: format.startsWith("avro"), valueSchemaId: id ? Number(id) : undefined });
     } catch (e) {
       setNotice({ kind: "err", text: e instanceof Error ? e.message : String(e) });
     } finally {

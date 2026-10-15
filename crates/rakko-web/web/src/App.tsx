@@ -13,7 +13,8 @@ type Route = { profile: string; view: View; item: string };
 
 // #/<profile>/<topics|groups|brokers>/<item>
 function readRoute(): Route {
-  const [profile = "", view = "topics", item = ""] = window.location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  const path = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+  const [profile = "", view = "topics", item = ""] = path.split("/").map(decodeURIComponent);
   return { profile, view: view === "groups" || view === "schemas" || view === "brokers" ? view : "topics", item };
 }
 

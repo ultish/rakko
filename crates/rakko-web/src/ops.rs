@@ -70,6 +70,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/p/{profile}/topics/{topic}/configs", get(topic_configs).put(topic_configs_alter))
         .route("/p/{profile}/topics/{topic}/configs/all", get(topic_configs_all))
         .route("/p/{profile}/schemas/{subject}/template", get(schema_template))
+        .route("/p/{profile}/topics/{topic}/avro-subjects", get(avro_subjects))
+        .route("/p/{profile}/schema-ids/{id}/subjects", get(schema_id_subjects))
         .route("/p/{profile}/schemas", get(schema_subjects))
         .route(
             "/p/{profile}/schemas/{subject}",
@@ -908,4 +910,35 @@ async fn schema_template(State(state): Shared, Path((p, subject)): Path<(String,
     let id = u32::try_from(latest.id).map_err(|_| ApiError::bad_request("schema id out of range"))?;
     let schema = rakko_core::kafka::schema_registry::fetch_schema(&base, id).await?;
     Ok(Json(json!({ "subject": subject, "version": latest.version, "id": id, "template": schema.template() })))
+}
+
+async fn subjects_of(base: &str, ids: &[u32]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in ids {
+        // An id the registry no longer knows just contributes nothing.
+        if let Ok(subjects) = schema_admin::subjects_for_id(base, *id).await {
+            for s in subjects {
+                if !out.contains(&s) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Subjects this topic's messages are encoded with, for the Avro producer. Works for any
+/// naming strategy: it follows the schema ids of recent messages back to their subjects
+/// (TopicNameStrategy `<topic>-value`, RecordNameStrategy `com.acme.Order`, …).
+async fn avro_subjects(State(state): Shared, Path((p, topic)): Path<(String, String)>) -> ApiResult<Value> {
+    let rt = profile(&state, &p)?;
+    let base = registry_url(&rt)?;
+    let samples = state.samples.get(&rt, &topic).await?;
+    let (key, value) = (subjects_of(&base, &samples.key_schema_ids).await, subjects_of(&base, &samples.value_schema_ids).await);
+    Ok(Json(json!({ "key": key, "value": value })))
+}
+
+async fn schema_id_subjects(State(state): Shared, Path((p, id)): Path<(String, u32)>) -> ApiResult<Vec<String>> {
+    let rt = profile(&state, &p)?;
+    Ok(Json(subjects_of(&registry_url(&rt)?, &[id]).await))
 }

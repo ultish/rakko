@@ -11,6 +11,15 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-15
+
+### Added
+- **Web:** True server-side sort — click a column header (time, partition, offset, key, value) and the whole topic is sorted, not just what is loaded. Non-default orders read the whole topic first (up to 200,000 matches; narrow the filter or range beyond that).
+- **Web:** The current view lives in the address bar — Browse/Table/Live, text and query filters, range, sort, and the selected schema version — so reloading or sharing a link lands on the same screen.
+
+### Changed
+- **Web:** Avro producing works with any subject naming strategy. The producer offers the subjects the topic's own messages use (TopicNameStrategy `<topic>-value` or RecordNameStrategy record names such as `com.acme.Order`), and *Edit & produce* keeps the edited message's own subject.
+
 ## [0.15.0] - 2026-10-15
 
 ### Added

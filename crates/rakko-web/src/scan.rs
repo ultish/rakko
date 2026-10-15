@@ -20,6 +20,58 @@ use serde::Serialize;
 use crate::dto::{summarize, MessageSummary};
 use crate::runtime::{schema_ids, ProfileRuntime};
 
+/// Sorting needs every match in memory; past this many the scan stops with an error
+/// asking for a narrower filter or range.
+const MAX_SORT_MATCHES: usize = 200_000;
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SortKey {
+    Time,
+    Offset,
+    Partition,
+    Key,
+    Value,
+}
+
+/// A non-default ordering. The scan normally streams newest-first; any other order has to
+/// see every match before the first row can be shown.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub struct Sort {
+    pub key: SortKey,
+    #[serde(default)]
+    pub desc: bool,
+}
+
+fn sort_matches(matches: &mut [MessageSummary], sort: Sort) {
+    use std::cmp::Ordering;
+    matches.sort_by(|a, b| {
+        let primary = match sort.key {
+            SortKey::Time => a.timestamp_ms.cmp(&b.timestamp_ms),
+            SortKey::Offset => a.offset.cmp(&b.offset),
+            SortKey::Partition => a.partition.cmp(&b.partition),
+            SortKey::Key => a.key.preview.cmp(&b.key.preview),
+            SortKey::Value => a.value.preview.cmp(&b.value.preview),
+        };
+        let primary = if sort.desc { primary.reverse() } else { primary };
+        let tie = a.partition.cmp(&b.partition).then(a.offset.cmp(&b.offset));
+        match primary {
+            Ordering::Equal => tie,
+            other => other,
+        }
+    });
+}
+
+/// How a scan reads the topic, beyond filter and range.
+#[derive(Debug, Clone, Copy)]
+pub struct ScanOptions {
+    /// Offsets fetched per window.
+    pub window: usize,
+    /// Latest record per key only (see `ScanSession::latest_per_key`).
+    pub table: bool,
+    pub sort: Option<Sort>,
+}
+
 /// A session may have this many live scans; the oldest is dropped past it.
 pub const MAX_SCANS_PER_SESSION: usize = 4;
 pub const MAX_SCANS_TOTAL: usize = 64;
@@ -48,6 +100,7 @@ pub struct ScanSession {
     /// Table mode: only the newest record of each key counts (a tombstone removes the key),
     /// i.e. the topic read as a KTable. Applied before the filter, so a filter can't resurrect
     /// an older version of a key whose newest version it rejects.
+    sort: Option<Sort>,
     latest_per_key: Option<Arc<Mutex<HashSet<Vec<u8>>>>>,
     preview_chars: usize,
     scan: Mutex<Option<TopicScan>>,
@@ -117,9 +170,9 @@ impl ScanSession {
         topic: String,
         filter: MessageFilter,
         range: ScanRange,
-        window: usize,
-        table: bool,
+        options: ScanOptions,
     ) -> Result<Arc<Self>, AppError> {
+        let ScanOptions { window, table, sort } = options;
         let (p, t, r) = (profile.profile.clone(), topic.clone(), range.clone());
         let scan = tokio::task::spawn_blocking(move || TopicScan::open_range(&p, &t, window, &r))
             .await
@@ -133,6 +186,7 @@ impl ScanSession {
             profile,
             filter: Arc::new(filter),
             range,
+            sort,
             latest_per_key: table.then(Default::default),
             preview_chars: if table { TABLE_PREVIEW_CHARS } else { crate::dto::ROW_PREVIEW_CHARS },
             scan: Mutex::new(Some(scan)),
@@ -161,7 +215,8 @@ impl ScanSession {
             return false;
         }
         let state = lock(&self.state);
-        !state.done && state.error.is_none() && state.matches.len() < self.want.load(Ordering::SeqCst)
+        // A sorted scan has to finish before anything can be shown.
+        !state.done && state.error.is_none() && (self.sort.is_some() || state.matches.len() < self.want.load(Ordering::SeqCst))
     }
 
     /// Starts the runner if none is active and there is something to do.
@@ -233,6 +288,15 @@ impl ScanSession {
                     if let Err(err) = outcome {
                         state.error = Some(err.to_string());
                     }
+                    if let Some(sort) = self.sort {
+                        if state.matches.len() > MAX_SORT_MATCHES {
+                            state.error = Some(format!(
+                                "more than {MAX_SORT_MATCHES} matches — too many to sort; narrow the filter or range, or use the default order"
+                            ));
+                        } else if state.done {
+                            sort_matches(&mut state.matches, sort);
+                        }
+                    }
                 }
                 Err(join_err) => {
                     lock(&self.state).error = Some(format!("scan task panicked: {join_err}"));
@@ -244,11 +308,13 @@ impl ScanSession {
 
     fn snapshot(&self, from: usize, limit: usize) -> MatchesPage {
         let state = lock(&self.state);
-        let end = (from + limit).min(state.matches.len());
+        // Rows of a sorted scan are only meaningful once the scan is complete.
+        let hidden = self.sort.is_some() && !state.done;
+        let end = if hidden { 0 } else { (from + limit).min(state.matches.len()) };
         let progress = state.progress.unwrap_or(ScanProgress { total_offsets: 0, scanned_offsets: 0 });
         MatchesPage {
             matches: state.matches.get(from..end).map(<[_]>::to_vec).unwrap_or_default(),
-            found: state.matches.len(),
+            found: if hidden { 0 } else { state.matches.len() },
             scanned_offsets: progress.scanned_offsets,
             total_offsets: progress.total_offsets,
             done: state.done,

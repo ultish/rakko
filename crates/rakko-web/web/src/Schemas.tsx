@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { readParams, setParams } from "./urlState";
 import { api, type SchemaDraft, type SchemaReference, type SubjectVersion } from "./api";
 import { Dialog } from "./Dialog";
 
@@ -301,7 +302,8 @@ export function SubjectView({ profile, subject, onChanged, onGone }: { profile: 
         .versions(profile, subject)
         .then((v) => {
           setVersions(v);
-          setVersion(select && v.includes(select) ? select : (v[v.length - 1] ?? null));
+          const wanted = select ?? Number(readParams().get("v"));
+          setVersion(wanted && v.includes(wanted) ? wanted : (v[v.length - 1] ?? null));
         })
         .catch((e: unknown) => setError(message(e)));
     },
@@ -357,7 +359,10 @@ export function SubjectView({ profile, subject, onChanged, onGone }: { profile: 
         <div className="panel-scroll">
           <div className="seg versions" role="tablist" aria-label="versions">
             {versions.map((v) => (
-              <button key={v} role="tab" aria-selected={v === version} className={v === version ? "on" : undefined} onClick={() => setVersion(v)}>
+              <button key={v} role="tab" aria-selected={v === version} className={v === version ? "on" : undefined} onClick={() => {
+                  setVersion(v);
+                  setParams({ v: String(v) });
+                }}>
                 v{v}
               </button>
             ))}

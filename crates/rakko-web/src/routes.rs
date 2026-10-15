@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use crate::details::{slice_text, Part};
 use crate::error::{ApiError, ApiResult};
 use crate::runtime::ProfileRuntime;
-use crate::scan::{MatchesPage, ScanSession};
+use crate::scan::{MatchesPage, ScanOptions, ScanSession};
 use crate::state::AppState;
 
 type Shared = State<Arc<AppState>>;
@@ -124,6 +124,8 @@ struct ScanRequest {
     /// Read the topic as a table: only the latest record per key, tombstoned keys removed.
     #[serde(default)]
     table: bool,
+    /// Order the results (default: newest first, streamed). Anything else scans the whole topic first.
+    sort: Option<crate::scan::Sort>,
 }
 
 async fn create_scan(
@@ -136,7 +138,7 @@ async fn create_scan(
     let rt = profile(&state, &profile_name)?;
     let filter = MessageFilter::parse(body.text.as_deref(), body.query.as_deref()).map_err(ApiError::bad_request)?;
     body.range.validate().map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let scan = ScanSession::open(owner, rt, topic, filter, body.range, state.scan_window, body.table).await?;
+    let scan = ScanSession::open(owner, rt, topic, filter, body.range, ScanOptions { window: state.scan_window, table: body.table, sort: body.sort }).await?;
     let (id, total) = (scan.id.clone(), scan.total_offsets());
     state
         .scans

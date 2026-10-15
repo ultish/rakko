@@ -4,6 +4,7 @@ import { formatCount } from "./format";
 import { Messages } from "./Messages";
 import { ProduceDialog } from "./ProduceDialog";
 import { Tail } from "./Tail";
+import { readParams, setParams } from "./urlState";
 import { DeleteTopicDialog, TopicConfigDialog } from "./TopicAdmin";
 
 type Props = {
@@ -18,7 +19,7 @@ type Props = {
   onProduceFrom: (v: ProduceInitial | null) => void;
 };
 
-export type ProduceInitial = { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean };
+export type ProduceInitial = { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean; valueSchemaId?: number };
 
 /** One topic: browse/filter the whole topic or follow it live, plus produce/export/import. */
 export function TopicView({ profile, topic, info, selected, onSelect, onChanged, onDeleted, produceFrom, onProduceFrom }: Props) {
@@ -30,8 +31,15 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  const changeMode = (m: "browse" | "table" | "live") => {
+    setMode(m);
+    // Switching view starts fresh; the new view writes its own filters back.
+    setParams({ mode: m === "browse" ? undefined : m, text: undefined, query: undefined, range: undefined, sort: undefined });
+  };
+
   useEffect(() => {
-    setMode("browse");
+    const m = readParams().get("mode");
+    setMode(m === "table" || m === "live" ? m : "browse");
     setApplied({ text: "", query: "", range: {} });
     setNotice(null);
     setStored(null);
@@ -71,19 +79,19 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
         )}
         <span className="spacer" />
         <div className="seg" role="tablist">
-          <button role="tab" aria-selected={mode === "browse"} className={mode === "browse" ? "on" : undefined} onClick={() => setMode("browse")}>
+          <button role="tab" aria-selected={mode === "browse"} className={mode === "browse" ? "on" : undefined} onClick={() => changeMode("browse")}>
             Browse
           </button>
           <button
             role="tab"
             aria-selected={mode === "table"}
             className={mode === "table" ? "on" : undefined}
-            onClick={() => setMode("table")}
+            onClick={() => changeMode("table")}
             title="The latest value of every key (a compacted topic read as a table)"
           >
             Table
           </button>
-          <button role="tab" aria-selected={mode === "live"} className={mode === "live" ? "on" : undefined} onClick={() => setMode("live")}>
+          <button role="tab" aria-selected={mode === "live"} className={mode === "live" ? "on" : undefined} onClick={() => changeMode("live")}>
             Live
           </button>
         </div>

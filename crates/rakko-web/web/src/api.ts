@@ -89,6 +89,11 @@ export type SchemaDraft = { schema: string; schema_type: string; references: Sch
 /** Restricts a scan to a time window (epoch ms; from inclusive, to exclusive) or one partition's offsets. */
 export type Range = { fromMs?: number; toMs?: number; partition?: number; fromOffset?: number; toOffset?: number };
 
+export type SortKey = "time" | "offset" | "partition" | "key" | "value";
+
+/** `undefined` = newest first (streamed). Anything else scans the whole topic before showing rows. */
+export type ScanSort = { key: SortKey; desc: boolean };
+
 export type PartitionInfo = { partition: number; low: number; high: number; messages: number };
 
 export type Completion = { prefix: string; candidates: string[] };
@@ -168,6 +173,8 @@ export const api = {
   topicConfigsAll: (profile: string, topic: string) => request<TopicConfig[]>(`/p/${enc(profile)}/topics/${enc(topic)}/configs/all`),
   alterTopicConfigs: (profile: string, topic: string, set: Record<string, string>, unset: string[]) =>
     request<{ ok: boolean }>(`/p/${enc(profile)}/topics/${enc(topic)}/configs`, { method: "PUT", body: JSON.stringify({ set, unset }) }),
+  avroSubjects: (profile: string, topic: string) => request<{ key: string[]; value: string[] }>(`/p/${enc(profile)}/topics/${enc(topic)}/avro-subjects`),
+  schemaIdSubjects: (profile: string, id: number) => request<string[]>(`/p/${enc(profile)}/schema-ids/${id}/subjects`),
   avroTemplate: (profile: string, subject: string) => request<AvroTemplate>(`/p/${enc(profile)}/schemas/${enc(subject)}/template`),
   topicConfigs: (profile: string, topic: string) =>
     request<{ name: string; value: string }[]>(`/p/${enc(profile)}/topics/${enc(topic)}/configs`),
@@ -229,10 +236,10 @@ export const api = {
   profiles: () => request<Profile[]>("/profiles"),
   topics: (profile: string) => request<Topic[]>(`/p/${enc(profile)}/topics`),
   partitions: (profile: string, topic: string) => request<PartitionInfo[]>(`${base(profile, topic)}/partitions`),
-  createScan: (profile: string, topic: string, text: string, query: string, range: Range = {}, table = false) =>
+  createScan: (profile: string, topic: string, text: string, query: string, range: Range = {}, table = false, sort?: ScanSort) =>
     request<{ scan_id: string; total_offsets: number }>(`/p/${enc(profile)}/topics/${enc(topic)}/scans`, {
       method: "POST",
-      body: JSON.stringify({ text, query, range: rangeBody(range), table }),
+      body: JSON.stringify({ text, query, range: rangeBody(range), table, sort }),
     }),
   matches: (scanId: string, from: number, limit: number, signal?: AbortSignal) =>
     request<MatchesPage>(`/scans/${enc(scanId)}/matches?from=${from}&limit=${limit}&wait_ms=2500`, { signal }),

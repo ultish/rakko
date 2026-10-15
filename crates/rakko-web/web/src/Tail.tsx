@@ -3,6 +3,7 @@ import { urls, type Summary } from "./api";
 import { formatCount } from "./format";
 import { MessageTable } from "./MessageTable";
 import { QueryInput } from "./QueryInput";
+import { readParams, setParams } from "./urlState";
 
 const MAX_ROWS = 5000;
 
@@ -17,9 +18,10 @@ type Props = {
 
 /** Live tail: new messages from the log end, newest first, via server-sent events. */
 export function Tail({ profile, topic, selected, onSelect, initialText, initialQuery }: Props) {
-  const [text, setText] = useState(initialText);
-  const [query, setQuery] = useState(initialQuery);
-  const [applied, setApplied] = useState({ text: initialText, query: initialQuery });
+  const start = { text: readParams().get("text") ?? initialText, query: readParams().get("query") ?? initialQuery };
+  const [text, setText] = useState(start.text);
+  const [query, setQuery] = useState(start.query);
+  const [applied, setApplied] = useState(start);
   const [rows, setRows] = useState<Summary[]>([]);
   const [paused, setPaused] = useState(false);
   const [state, setState] = useState<"connecting" | "live" | "error">("connecting");
@@ -72,7 +74,10 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
     };
   }, [profile, topic, applied]);
 
-  const submit = () => setApplied({ text, query });
+  const submit = () => {
+    setApplied({ text, query });
+    setParams({ text: text.trim() ? text : undefined, query: query.trim() ? query : undefined });
+  };
   const noop = useCallback(() => {}, []);
 
   return (

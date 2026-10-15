@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Summary } from "./api";
+import type { ScanSort, Summary } from "./api";
 import { formatBytes, formatTime } from "./format";
 
 const ROW_HEIGHT = 30;
@@ -18,6 +18,9 @@ type Props = {
   empty?: string;
   /** Show the value as columns (one per JSON field) instead of a single preview. */
   table?: boolean;
+  /** Server-side order (see `ScanSort`; `null` = newest first). Without `onSort`, headers sort the loaded rows locally. */
+  sort?: ScanSort | null;
+  onSort?: (s: ScanSort | null) => void;
 };
 
 type SortKey = "time" | "partition" | "offset" | "key" | "value" | "fmt";
@@ -54,8 +57,9 @@ function valueObject(r: Summary): Record<string, unknown> | null {
 const cell = (v: unknown): string => (v === undefined ? "" : typeof v === "string" ? v : JSON.stringify(v));
 
 /** Virtualized message rows, shared by the scan view and the live tail. */
-export function MessageTable({ rows: unsorted, selected, onSelect, loading, onVisibleEnd, resetKey, empty, table }: Props) {
-  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
+export function MessageTable({ rows: unsorted, selected, onSelect, loading, onVisibleEnd, resetKey, empty, table, sort: serverSort, onSort }: Props) {
+  const [localSort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
+  const sort = onSort ? null : localSort;
   // Sorting orders what has been loaded so far; the scan itself always walks newest first.
   const rows = useMemo(() => {
     if (!sort) return unsorted;
@@ -74,13 +78,30 @@ export function MessageTable({ rows: unsorted, selected, onSelect, loading, onVi
   }, [table, parsed]);
   const asColumns = table && columns.length > 0;
   const template = asColumns ? `minmax(90px, 200px) ${columns.map(() => "minmax(80px, 1fr)").join(" ")}` : undefined;
-  const toggle = (key: SortKey) => setSort((s) => (s?.key !== key ? { key, dir: 1 } : s.dir === 1 ? { key, dir: -1 } : null));
-  const head = (key: SortKey, label: string) => (
-    <span className="sortable" onClick={() => toggle(key)} title="Sort the loaded messages (click again to reverse, once more to clear)">
-      {label}
-      {sort?.key === key ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
-    </span>
-  );
+  const toggle = (key: SortKey) => {
+    if (onSort) {
+      if (key === "fmt") return;
+      const active = serverSort ?? { key: "time" as const, desc: true };
+      const next = active.key === key ? { key, desc: !active.desc } : { key, desc: false };
+      onSort(next.key === "time" && next.desc ? null : next);
+      return;
+    }
+    setSort((s) => (s?.key !== key ? { key, dir: 1 } : s.dir === 1 ? { key, dir: -1 } : null));
+  };
+  const head = (key: SortKey, label: string) => {
+    const active = onSort ? (serverSort ?? { key: "time" as const, desc: true }) : null;
+    const arrow = onSort ? (active?.key === key ? (active.desc ? " ▼" : " ▲") : "") : sort?.key === key ? (sort.dir === 1 ? " ▲" : " ▼") : "";
+    return (
+      <span
+        className={onSort && key === "fmt" ? undefined : "sortable"}
+        onClick={() => toggle(key)}
+        title={onSort ? "Sort the whole topic (a non-default order scans everything first)" : "Sort the loaded messages (click again to reverse, once more to clear)"}
+      >
+        {label}
+        {arrow}
+      </span>
+    );
+  };
   const scroller = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: rows.length + (loading ? 1 : 0),
