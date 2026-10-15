@@ -49,6 +49,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/p/{profile}/groups", get(groups))
         .route("/p/{profile}/groups/{group}", get(group))
         .route("/p/{profile}/groups/{group}/reset", post(reset_group))
+        .route("/p/{profile}/groups/{group}", axum::routing::delete(delete_group))
+        .route("/p/{profile}/topics/{topic}/clear", post(clear_topic))
         .route("/p/{profile}/groups/{group}/lag-history", get(lag_history))
         .route("/p/{profile}/brokers", get(brokers))
         .route("/p/{profile}/acls", get(acls))
@@ -990,4 +992,44 @@ async fn acls(State(state): Shared, Path(p): Path<String>) -> ApiResult<Vec<Valu
             })
             .collect(),
     ))
+}
+
+async fn delete_group(
+    State(state): Shared,
+    Path((p, group)): Path<(String, String)>,
+    Query(q): Query<ConfirmQuery>,
+) -> ApiResult<Value> {
+    if q.confirm != group {
+        return Err(ApiError::bad_request("confirm must equal the group name"));
+    }
+    let rt = profile(&state, &p)?;
+    rakko_core::kafka::admin::delete_group(&rt.profile, &group).await.map_err(|e| {
+        let text = e.to_string();
+        // Kafka refuses with NonEmptyGroup while consumers are still connected.
+        if text.contains("NonEmptyGroup") || text.contains("non-empty") {
+            ApiError::bad_request(format!("The group still has active members. Stop its consumers first, then delete it. ({text})"))
+        } else {
+            ApiError::bad_request(text)
+        }
+    })?;
+    tracing::info!("deleted consumer group {group} on profile {p}");
+    Ok(Json(json!({ "deleted": true })))
+}
+
+#[derive(Deserialize)]
+struct ClearBody {
+    /// Must equal the topic name.
+    confirm: String,
+}
+
+async fn clear_topic(State(state): Shared, Path((p, topic)): Path<(String, String)>, Json(b): Json<ClearBody>) -> ApiResult<Value> {
+    if b.confirm != topic {
+        return Err(ApiError::bad_request("confirm must equal the topic name"));
+    }
+    let rt = profile(&state, &p)?;
+    let removed = rakko_core::kafka::admin::clear_topic(&rt.profile, &topic).await.map_err(|e| ApiError::bad_request(e.to_string()))?;
+    tracing::info!("cleared topic {topic} ({removed} offsets) on profile {p}");
+    state.details.clear();
+    state.samples.sweep();
+    Ok(Json(json!({ "removed": removed })))
 }

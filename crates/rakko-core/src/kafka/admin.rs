@@ -448,6 +448,41 @@ pub async fn delete_topic(profile: &Profile, name: &str) -> AppResult<()> {
     .map_err(|err| AppError::Other(format!("delete topic task panicked: {err}")))?
 }
 
+/// Deletes a consumer group. Kafka only allows this once the group has no active members.
+pub async fn delete_group(profile: &Profile, group: &str) -> AppResult<()> {
+    let (profile, group) = (profile.clone(), group.to_string());
+    tokio::task::spawn_blocking(move || {
+        let admin_client: AdminClient<DefaultClientContext> =
+            consumer_client_config(&profile, ADMIN_GROUP_ID).create()?;
+        let opts = AdminOptions::new().request_timeout(Some(DESCRIBE_CONFIGS_TIMEOUT));
+        let results = futures::executor::block_on(admin_client.delete_groups(&[group.as_str()], &opts))?;
+        match results.into_iter().next() {
+            Some(Ok(_)) => Ok(()),
+            Some(Err((_, code))) => Err(AppError::Other(format!("delete group '{group}' failed: {code}"))),
+            None => Err(AppError::Other("broker returned no result".into())),
+        }
+    })
+    .await
+    .map_err(|err| AppError::Other(format!("delete group task panicked: {err}")))?
+}
+
+/// Removes every message from `topic` (DeleteRecords up to each partition's end). The topic,
+/// its config and its consumer groups stay; offsets keep counting up from where they were.
+/// Returns how many offsets were removed.
+pub async fn clear_topic(profile: &Profile, topic: &str) -> AppResult<i64> {
+    if is_internal_topic(topic) {
+        return Err(AppError::Other("internal topics cannot be cleared from here".into()));
+    }
+    let mut removed = 0;
+    for p in partition_details(profile, topic).await? {
+        if p.high > p.low {
+            delete_records_before(profile, topic, p.partition, p.high).await?;
+            removed += p.high - p.low;
+        }
+    }
+    Ok(removed)
+}
+
 /// A topic's non-default config (same filtering as the broker view).
 pub async fn fetch_topic_configs(profile: &Profile, topic: &str) -> AppResult<Vec<BrokerConfigEntry>> {
     let (profile, topic) = (profile.clone(), topic.to_string());

@@ -6,7 +6,7 @@ import { formatCount } from "./format";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export function GroupList({ profile, selected, onSelect }: { profile: string; selected: string; onSelect: (g: string) => void }) {
+export function GroupList({ profile, selected, onSelect, refreshKey = 0 }: { profile: string; selected: string; onSelect: (g: string) => void; refreshKey?: number }) {
   const [groups, setGroups] = useState<Group[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -18,7 +18,7 @@ export function GroupList({ profile, selected, onSelect }: { profile: string; se
   useEffect(() => {
     setGroups(null);
     load();
-  }, [load]);
+  }, [load, refreshKey]);
 
   const needle = filter.trim().toLowerCase();
   return (
@@ -122,10 +122,11 @@ function ResetDialog({ profile, group, detail, onClose, onDone }: { profile: str
   );
 }
 
-export function GroupView({ profile, group, onOpenTopic }: { profile: string; group: string; onOpenTopic: (t: string) => void }) {
+export function GroupView({ profile, group, onOpenTopic, onGone }: { profile: string; group: string; onOpenTopic: (t: string) => void; onGone: () => void }) {
   const [detail, setDetail] = useState<GroupDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [history, setHistory] = useState<{ interval_s: number; samples: LagSample[] } | null>(null);
 
   useEffect(() => {
@@ -168,6 +169,9 @@ export function GroupView({ profile, group, onOpenTopic }: { profile: string; gr
         <button onClick={load}>Refresh</button>
         <button className="danger" disabled={!detail || detail.lags.length === 0} onClick={() => setResetting(true)}>
           Reset offsets…
+        </button>
+        <button className="danger" disabled={!detail} onClick={() => setDeleting(true)} title="Delete this consumer group (it must have no active members)">
+          Delete group…
         </button>
       </div>
       {error && <div className="err">{error}</div>}
@@ -228,7 +232,56 @@ export function GroupView({ profile, group, onOpenTopic }: { profile: string; gr
           )}
         </div>
       )}
+      {deleting && <DeleteGroupDialog profile={profile} group={group} members={detail?.members.length ?? 0} onClose={() => setDeleting(false)} onDone={onGone} />}
       {resetting && detail && <ResetDialog profile={profile} group={group} detail={detail} onClose={() => setResetting(false)} onDone={load} />}
     </>
+  );
+}
+
+function DeleteGroupDialog({ profile, group, members, onClose, onDone }: { profile: string; group: string; members: number; onClose: () => void; onDone: () => void }) {
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteGroup(profile, group);
+      onDone();
+      onClose();
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog title={`Delete group ${group}`} onClose={onClose}>
+      <form
+        className="dialog-body"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run();
+        }}
+      >
+        <p>
+          Permanently deletes the consumer group and its committed offsets. A consumer that later joins with this name starts from its configured reset policy (often the latest or earliest message).
+        </p>
+        {members > 0 && <p className="warn">This group has {members} active member(s); Kafka will refuse until they are stopped.</p>}
+        <label className="confirm">
+          Type <code>{group}</code> to confirm
+          <input value={confirm} onChange={(e) => setConfirm(e.target.value)} spellCheck={false} />
+        </label>
+        {error && <div className="err">{error}</div>}
+        <footer>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="danger" disabled={busy || confirm !== group}>
+            {busy ? "Deleting…" : "Delete group"}
+          </button>
+        </footer>
+      </form>
+    </Dialog>
   );
 }

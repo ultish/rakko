@@ -11,6 +11,10 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+- **Web:** **Delete group…** on a consumer group's page (typed confirmation; Kafka refuses while the group has active members, and the message says so).
+- **Web:** **Clear all messages…** in a topic's ⋯ menu: removes every message but keeps the topic, its settings and its consumer groups (typed confirmation).
+
 ## [0.17.0] - 2026-10-15
 
 ### Added

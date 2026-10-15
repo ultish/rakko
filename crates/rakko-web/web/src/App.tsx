@@ -74,6 +74,7 @@ export function App() {
   const [selected, setSelected] = useState<Summary | null>(null);
   const [produceFrom, setProduceFrom] = useState<ProduceInitial | null>(null);
   const [subjectsKey, setSubjectsKey] = useState(0);
+  const [groupsKey, setGroupsKey] = useState(0);
   const [newSubject, setNewSubject] = useState(false);
   const [newTopic, setNewTopic] = useState(false);
 
@@ -230,7 +231,7 @@ export function App() {
               />
             )
           ) : (
-            route.profile && <GroupList profile={route.profile} selected={route.item} onSelect={(g) => go("groups", g)} />
+            route.profile && <GroupList profile={route.profile} selected={route.item} onSelect={(g) => go("groups", g)} refreshKey={groupsKey} />
           )}
           {route.view === "topics" && <div className="resize" onPointerDown={startResize} role="separator" aria-orientation="vertical" aria-label="resize topic list" />}
         </nav>
@@ -256,7 +257,15 @@ export function App() {
           )
         ) : route.view === "groups" ? (
           route.item ? (
-            <GroupView profile={route.profile} group={route.item} onOpenTopic={(t) => go("topics", t)} />
+            <GroupView
+              profile={route.profile}
+              group={route.item}
+              onOpenTopic={(t) => go("topics", t)}
+              onGone={() => {
+                setGroupsKey((k) => k + 1);
+                go("groups");
+              }}
+            />
           ) : (
             <Placeholder text="Pick a consumer group." />
           )

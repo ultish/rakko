@@ -274,3 +274,50 @@ export function DeleteTopicDialog({ profile, topic, onClose, onDone }: { profile
     </Dialog>
   );
 }
+
+export function ClearTopicDialog({ profile, topic, onClose, onDone }: { profile: string; topic: string; onClose: () => void; onDone: (removed: number) => void }) {
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.clearTopic(profile, topic);
+      onDone(r.removed);
+      onClose();
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog title={`Clear ${topic}`} onClose={onClose}>
+      <form
+        className="dialog-body"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void run();
+        }}
+      >
+        <p>
+          Permanently deletes <strong>every message</strong> in every partition. The topic, its settings and its consumer groups stay; offsets keep counting up from where they are, so consumers simply find nothing to read until new messages arrive.
+        </p>
+        <label className="confirm">
+          Type <code>{topic}</code> to confirm
+          <input value={confirm} onChange={(e) => setConfirm(e.target.value)} spellCheck={false} />
+        </label>
+        {error && <div className="err">{error}</div>}
+        <footer>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="danger" disabled={busy || confirm !== topic}>
+            {busy ? "Clearing…" : "Clear topic"}
+          </button>
+        </footer>
+      </form>
+    </Dialog>
+  );
+}

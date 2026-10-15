@@ -621,3 +621,34 @@ async fn scans_and_exports_can_be_limited_to_a_time_or_offset_range() {
     let (_, bytes) = call_raw(&app, Method::GET, &uri, "x/y", vec![]).await;
     assert_eq!(String::from_utf8(bytes).unwrap().lines().count(), 5, "messages 25..30");
 }
+
+#[tokio::test]
+#[ignore = "requires `docker compose up -d`"]
+async fn clear_topic_and_delete_group() {
+    let app = app();
+    let topic = unique("clear");
+    create_topic(&topic, 2).await;
+    produce(&topic, (0..6).map(|i| (format!("k{i}"), format!("v{i}").into_bytes())).collect()).await;
+
+    let uri = format!("/api/p/local/topics/{topic}/clear");
+    let (st, _) = call(&app, Method::POST, &uri, None, Some(json!({"confirm": "nope"}))).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "needs the typed confirmation");
+    let (st, b) = call(&app, Method::POST, &uri, None, Some(json!({"confirm": topic}))).await;
+    assert_eq!(st, StatusCode::OK, "{b}");
+    assert_eq!(b["removed"], 6);
+    let (_, parts) = call(&app, Method::GET, &format!("/api/p/local/topics/{topic}/partition-details"), None, None).await;
+    assert!(parts.as_array().unwrap().iter().all(|p| p["messages"] == 0), "{parts}");
+    let (st, _) = call(
+        &app,
+        Method::POST,
+        "/api/p/local/topics/__consumer_offsets/clear",
+        None,
+        Some(json!({"confirm": "__consumer_offsets"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "internal topics are protected");
+
+    let (st, _) = call(&app, Method::DELETE, "/api/p/local/groups/no-such-group?confirm=other", None, None).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "group delete needs the typed confirmation");
+    call(&app, Method::DELETE, &format!("/api/p/local/topics/{topic}?confirm={topic}"), None, None).await;
+}

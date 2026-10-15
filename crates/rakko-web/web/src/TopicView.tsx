@@ -6,7 +6,7 @@ import { ProduceDialog } from "./ProduceDialog";
 import { PartitionsView } from "./PartitionsView";
 import { Tail } from "./Tail";
 import { readParams, setParams } from "./urlState";
-import { DeleteTopicDialog, TopicConfigDialog } from "./TopicAdmin";
+import { ClearTopicDialog, DeleteTopicDialog, TopicConfigDialog } from "./TopicAdmin";
 
 type Props = {
   profile: string;
@@ -27,7 +27,7 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
   const [mode, setMode] = useState<"browse" | "table" | "live" | "partitions">("browse");
   const [applied, setApplied] = useState<{ text: string; query: string; range: Range }>({ text: "", query: "", range: {} });
   const [producing, setProducing] = useState(false);
-  const [admin, setAdmin] = useState<"config" | "delete" | null>(null);
+  const [admin, setAdmin] = useState<"config" | "delete" | "clear" | null>(null);
   const [stored, setStored] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -113,6 +113,7 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
           <summary>⋯</summary>
           <div>
             <button onClick={() => setAdmin("config")}>Topic settings…</button>
+            <button onClick={() => setAdmin("clear")}>Clear all messages…</button>
             <button onClick={() => setAdmin("delete")}>Delete topic…</button>
           </div>
         </details>
@@ -153,6 +154,17 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
         <Tail profile={profile} topic={topic} selected={selected} onSelect={onSelect} initialText={applied.text} initialQuery={applied.query} />
       )}
       {admin === "config" && <TopicConfigDialog profile={profile} topic={topic} onClose={() => setAdmin(null)} />}
+      {admin === "clear" && (
+        <ClearTopicDialog
+          profile={profile}
+          topic={topic}
+          onClose={() => setAdmin(null)}
+          onDone={(removed) => {
+            setNotice({ kind: "ok", text: `Cleared ${formatCount(removed)} message(s). Refresh to see the empty topic.` });
+            onChanged();
+          }}
+        />
+      )}
       {admin === "delete" && <DeleteTopicDialog profile={profile} topic={topic} onClose={() => setAdmin(null)} onDone={onDeleted} />}
       {(producing || produceFrom) && (
         <ProduceDialog

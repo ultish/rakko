@@ -233,6 +233,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ target, partitions, confirm: group }),
     }),
+  deleteGroup: (profile: string, group: string) =>
+    request<unknown>(`/p/${enc(profile)}/groups/${enc(group)}?confirm=${enc(group)}`, { method: "DELETE" }),
+  clearTopic: (profile: string, topic: string) =>
+    request<{ removed: number }>(`/p/${enc(profile)}/topics/${enc(topic)}/clear`, { method: "POST", body: JSON.stringify({ confirm: topic }) }),
   brokers: (profile: string) => request<Brokers>(`/p/${enc(profile)}/brokers`),
   brokerConfigs: (profile: string, id: number) =>
     request<{ name: string; value: string }[]>(`/p/${enc(profile)}/brokers/${id}/configs`),
