@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type PartitionDetail } from "./api";
-import { formatCount } from "./format";
+import { formatBytes, formatCount } from "./format";
 import { usePolling } from "./usePolling";
 
 /** Where each partition lives: leader, replicas, in-sync replicas, and how much data it holds. */
@@ -22,6 +22,18 @@ export function PartitionsView({ profile, topic }: { profile: string; topic: str
     api.partitionDetails(profile, topic).then(setParts).catch(() => {});
   }, 15_000);
 
+  const [size, setSize] = useState<{ bytes: number; partitions: { partition: number; bytes: number }[] } | null>(null);
+  const [sizing, setSizing] = useState(false);
+  useEffect(() => setSize(null), [profile, topic]);
+  const estimate = () => {
+    setSizing(true);
+    api
+      .topicSize(profile, topic)
+      .then(setSize)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setSizing(false));
+  };
+
   const unhealthy = (p: PartitionDetail) => p.leader < 0 || p.isr.length < p.replicas.length;
 
   return (
@@ -35,6 +47,14 @@ export function PartitionsView({ profile, topic }: { profile: string; topic: str
               {parts.length} partitions · {parts.filter(unhealthy).length} under-replicated or offline
             </span>
             <span className="spacer" />
+            {size && (
+              <span title="Average message payload (key, value, headers) from a few sampled messages per partition, times the stored offsets. One replica, uncompressed; the size on disk differs.">
+                ≈ {formatBytes(size.bytes)} of data
+              </span>
+            )}
+            <button onClick={estimate} disabled={sizing} title="Samples a few messages per partition; Kafka does not report a topic's size to clients">
+              {sizing ? "Estimating…" : size ? "Re-estimate size" : "Estimate size"}
+            </button>
             <button onClick={load}>Refresh</button>
           </div>
           <table className="grid">
@@ -47,6 +67,7 @@ export function PartitionsView({ profile, topic }: { profile: string; topic: str
                 <th className="num">oldest offset</th>
                 <th className="num">next offset</th>
                 <th className="num">messages</th>
+                {size && <th className="num">≈ size</th>}
               </tr>
             </thead>
             <tbody>
@@ -64,6 +85,7 @@ export function PartitionsView({ profile, topic }: { profile: string; topic: str
                   <td className="num" title="offsets between oldest and next; compaction can make the real count lower">
                     {formatCount(p.messages)}
                   </td>
+                  {size && <td className="num">{formatBytes(size.partitions.find((x) => x.partition === p.partition)?.bytes ?? null)}</td>}
                 </tr>
               ))}
             </tbody>

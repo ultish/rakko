@@ -10,6 +10,8 @@ type Props = {
   initial?: { key?: string; value?: string; headers?: [string, string][]; valueAvro?: boolean; valueSchemaId?: number };
 };
 
+const CUSTOM = "\u0000custom";
+
 type Mode = "text" | "avro" | "base64" | "file" | "null";
 
 type Side = { mode: Mode; text: string; file: File | null; subject: string; subjectFromTopic?: boolean };
@@ -47,6 +49,7 @@ function SideEditor({
   onChange,
   rows,
   subjects,
+  preferred,
 }: {
   profile: string;
   label: string;
@@ -55,7 +58,11 @@ function SideEditor({
   rows: number;
   /** Registry subjects; `null` when the profile has no (reachable) registry. */
   subjects: string[] | null;
+  /** Subjects this topic's messages use; listed first. */
+  preferred: string[];
 }) {
+  const [custom, setCustom] = useState(false);
+  const typed = custom || (subjects !== null && side.subject !== "" && !subjects.includes(side.subject));
   const [note, setNote] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const modes: Mode[] = subjects ? ["text", "avro", "base64", "file", "null"] : ["text", "base64", "file", "null"];
 
@@ -95,19 +102,47 @@ function SideEditor({
       </div>
       {side.mode === "avro" && (
         <div className="header-row">
-          <input
-            list={`subjects-${label}`}
-            value={side.subject}
-            placeholder="subject, e.g. orders-value"
-            spellCheck={false}
-            onChange={(e) => onChange({ ...side, subject: e.target.value })}
-            onBlur={() => side.subject && !side.text.trim() && void generate(side.subject, true)}
-          />
-          <datalist id={`subjects-${label}`}>
-            {subjects?.map((s) => (
-              <option key={s} value={s} />
-            ))}
-          </datalist>
+          <select
+            value={typed ? CUSTOM : side.subject}
+            onChange={(e) => {
+              if (e.target.value === CUSTOM) {
+                setCustom(true);
+                return;
+              }
+              setCustom(false);
+              onChange({ ...side, subject: e.target.value });
+              if (!side.text.trim()) void generate(e.target.value, true);
+            }}
+            aria-label={`${label} subject`}
+          >
+            {!side.subject && !typed && <option value="">choose a subject…</option>}
+            {preferred.length > 0 && (
+              <optgroup label="Used on this topic">
+                {preferred.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            <optgroup label={preferred.length > 0 ? "Other subjects" : "Subjects"}>
+              {subjects?.filter((s) => !preferred.includes(s)).map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </optgroup>
+            <option value={CUSTOM}>type a name…</option>
+          </select>
+          {typed && (
+            <input
+              value={side.subject}
+              placeholder="subject, e.g. orders-value"
+              spellCheck={false}
+              onChange={(e) => onChange({ ...side, subject: e.target.value })}
+              onBlur={() => side.subject && !side.text.trim() && void generate(side.subject, true)}
+            />
+          )}
           <button type="button" disabled={!side.subject.trim()} onClick={() => void generate(side.subject, true)} title="Replace the text with a template of the subject's latest schema">
             Generate template
           </button>
@@ -141,6 +176,7 @@ export function ProduceDialog({ profile, topic, onClose, initial }: Props) {
     subject: `${topic}-value`,
   });
   const [subjects, setSubjects] = useState<string[] | null>(null);
+  const [used, setUsed] = useState<{ key: string[]; value: string[] }>({ key: [], value: [] });
   useEffect(() => {
     // Subjects this topic's messages actually use go first, whatever the naming strategy
     // (<topic>-value, or a record name such as com.acme.Order); then everything else.
@@ -152,6 +188,7 @@ export function ProduceDialog({ profile, topic, onClose, initial }: Props) {
         const own = initial?.valueSchemaId ? await api.schemaIdSubjects(profile, initial.valueSchemaId).catch(() => [] as string[]) : [];
         if (own[0]) used.value.unshift(own[0]);
         setSubjects([...new Set([...used.value, ...used.key, ...all])]);
+        setUsed({ key: [...new Set(used.key)], value: [...new Set(used.value)] });
         // Pre-select what the topic uses, unless the form already has something (edit & produce).
         setValue((v) => (v.subjectFromTopic || !used.value[0] ? v : { ...v, subject: used.value[0], subjectFromTopic: true }));
         setKey((k) => (k.subjectFromTopic || !used.key[0] ? k : { ...k, subject: used.key[0], subjectFromTopic: true }));
@@ -190,8 +227,8 @@ export function ProduceDialog({ profile, topic, onClose, initial }: Props) {
           void send();
         }}
       >
-        <SideEditor profile={profile} label="Key" side={key} onChange={setKey} rows={2} subjects={subjects} />
-        <SideEditor profile={profile} label="Value" side={value} onChange={setValue} rows={10} subjects={subjects} />
+        <SideEditor profile={profile} label="Key" side={key} onChange={setKey} rows={2} subjects={subjects} preferred={used.key} />
+        <SideEditor profile={profile} label="Value" side={value} onChange={setValue} rows={10} subjects={subjects} preferred={used.value} />
         <fieldset>
           <legend>Headers</legend>
           {headers.map((h, i) => (

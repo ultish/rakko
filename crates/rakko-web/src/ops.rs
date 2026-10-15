@@ -498,7 +498,7 @@ impl Drop for StopOnDrop {
 }
 
 /// Server-sent events of new messages (from the log end) that match the filter.
-/// Events: `message` (a summary), `dropped` (`{count}`), `error` (`{message}`).
+/// Events: `messages` (an array of summaries), `dropped` (`{count}`), `error` (`{message}`).
 async fn tail(
     State(state): Shared,
     Path((p, topic)): Path<(String, String)>,
@@ -507,7 +507,7 @@ async fn tail(
     let rt = profile(&state, &p)?;
     let filter = MessageFilter::parse(q.text.as_deref(), q.query.as_deref()).map_err(ApiError::bad_request)?;
 
-    let (tx, rx) = mpsc::channel::<TailItem>(1000);
+    let (tx, rx) = mpsc::channel::<TailItem>(20_000);
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = tokio::runtime::Handle::current();
     let profile_cfg = rt.profile.clone();
@@ -543,15 +543,35 @@ async fn tail(
         stop_rx,
     ));
 
-    let events = stream::unfold((rx, StopOnDrop(stop_tx)), |(mut rx, guard)| async move {
-        let item = rx.recv().await?;
-        let event = match item {
-            TailItem::Message(m) => Event::default().event("message").json_data(&*m),
+    // Messages leave in batches (one SSE event per drain of the queue): at tens of thousands
+    // of messages a second the per-event overhead, not Kafka, is what falls behind.
+    let events = stream::unfold((rx, StopOnDrop(stop_tx), None::<TailItem>), |(mut rx, guard, pending)| async move {
+        let first = match pending {
+            Some(item) => item,
+            None => rx.recv().await?,
+        };
+        let mut batch = Vec::new();
+        let mut next = None;
+        let event = match first {
+            TailItem::Message(m) => {
+                batch.push(m);
+                while batch.len() < 500 {
+                    match rx.try_recv() {
+                        Ok(TailItem::Message(m)) => batch.push(m),
+                        Ok(item) => {
+                            next = Some(item);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+                Event::default().event("messages").json_data(&batch)
+            }
             TailItem::Dropped(n) => Event::default().event("dropped").json_data(json!({ "count": n })),
             TailItem::Failed(m) => Event::default().event("error").json_data(json!({ "message": m })),
-        }
-        .unwrap_or_else(|_| Event::default().event("error").data("serialisation failed"));
-        Some((Ok(event), (rx, guard)))
+        };
+        let event = event.unwrap_or_else(|_| Event::default().event("error").data("serialisation failed"));
+        Some((Ok(event), (rx, guard, next)))
     });
     Ok(Sse::new(events).keep_alive(KeepAlive::default()))
 }

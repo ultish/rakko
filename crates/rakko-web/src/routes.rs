@@ -27,7 +27,9 @@ pub fn api_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/profiles", get(profiles))
         .route("/p/{profile}/topics", get(topics))
+        .route("/p/{profile}/topic-counts", get(topic_counts))
         .route("/p/{profile}/topics/{topic}/partitions", get(partitions))
+        .route("/p/{profile}/topics/{topic}/size", get(size_estimate))
         .route("/p/{profile}/topics/{topic}/scans", post(create_scan))
         .route("/p/{profile}/topics/{topic}/complete", post(complete))
         .route("/p/{profile}/topics/{topic}/messages/{partition}/{offset}", get(message_detail))
@@ -93,6 +95,12 @@ async fn topics(State(state): Shared, Path(profile_name): Path<String>) -> ApiRe
     ))
 }
 
+/// Just the stored-offset count per topic: the light call the topic list polls for live numbers.
+async fn topic_counts(State(state): Shared, Path(profile_name): Path<String>) -> ApiResult<std::collections::HashMap<String, i64>> {
+    let rt = profile(&state, &profile_name)?;
+    Ok(Json(rakko_core::kafka::admin::topic_message_counts(&rt.profile).await?.into_iter().collect()))
+}
+
 #[derive(Serialize)]
 struct PartitionInfo {
     partition: i32,
@@ -110,6 +118,57 @@ async fn partitions(State(state): Shared, Path((profile_name, topic)): Path<(Str
             .map(|m| PartitionInfo { partition: m.partition, low: m.low, high: m.high, messages: m.message_count() })
             .collect(),
     ))
+}
+
+#[derive(Serialize)]
+struct PartitionSize {
+    partition: i32,
+    messages: i64,
+    bytes: i64,
+}
+
+/// Messages sampled per window (start, middle, end of each partition).
+const SIZE_SAMPLE: usize = 30;
+
+/// Kafka has no cheap "how big is this topic" call (log-dir sizes are not reachable through
+/// the client library), so estimate: average the payload size of a few sampled messages per
+/// partition and multiply by the number of stored offsets.
+async fn size_estimate(State(state): Shared, Path((profile_name, topic)): Path<(String, String)>) -> ApiResult<Value> {
+    use rakko_core::kafka::consumer::{read_seek_page, SeekPageRequest};
+    let rt = profile(&state, &profile_name)?;
+    let marks = partition_watermarks(&rt.profile, &topic).await?;
+    let per_partition = futures::future::join_all(marks.iter().map(|m| {
+        let (profile, topic) = (rt.profile.clone(), topic.clone());
+        let m = *m;
+        async move {
+            let count = m.message_count();
+            if count == 0 {
+                return PartitionSize { partition: m.partition, messages: 0, bytes: 0 };
+            }
+            let mid = m.low + count / 2;
+            let requests = [
+                SeekPageRequest::Forward { from_offset: m.low, page_size: SIZE_SAMPLE },
+                SeekPageRequest::Forward { from_offset: mid, page_size: SIZE_SAMPLE },
+                SeekPageRequest::Latest { page_size: SIZE_SAMPLE },
+            ];
+            let (mut total, mut n) = (0u64, 0u64);
+            let mut seen = std::collections::HashSet::new();
+            for r in requests {
+                if let Ok((messages, _)) = read_seek_page(&profile, &topic, m.partition, r).await {
+                    for msg in messages.iter().filter(|x| seen.insert(x.offset)) {
+                        let headers: usize = msg.headers.iter().map(|(k, v)| k.len() + v.len()).sum();
+                        total += (msg.key.as_ref().map_or(0, Vec::len) + msg.value.as_ref().map_or(0, Vec::len) + headers) as u64;
+                        n += 1;
+                    }
+                }
+            }
+            let bytes = if n == 0 { 0 } else { (total as f64 / n as f64 * count as f64) as i64 };
+            PartitionSize { partition: m.partition, messages: count, bytes }
+        }
+    }))
+    .await;
+    let bytes: i64 = per_partition.iter().map(|p| p.bytes).sum();
+    Ok(Json(json!({ "bytes": bytes, "partitions": per_partition })))
 }
 
 #[derive(Deserialize, Default)]

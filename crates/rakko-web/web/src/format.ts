@@ -9,7 +9,8 @@ export function formatBytes(n: number | null): string {
   if (n === null) return "null";
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+  if (n < 1024 ** 3) return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GiB`;
 }
 
 export function formatCount(n: number): string {

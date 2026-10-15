@@ -257,7 +257,10 @@ export const api = {
     }),
   profiles: () => request<Profile[]>("/profiles"),
   topics: (profile: string) => request<Topic[]>(`/p/${enc(profile)}/topics`),
+  topicCounts: (profile: string) => request<Record<string, number>>(`/p/${enc(profile)}/topic-counts`),
   partitions: (profile: string, topic: string) => request<PartitionInfo[]>(`${base(profile, topic)}/partitions`),
+  topicSize: (profile: string, topic: string) =>
+    request<{ bytes: number; partitions: { partition: number; messages: number; bytes: number }[] }>(`${base(profile, topic)}/size`),
   createScan: (profile: string, topic: string, text: string, query: string, range: Range = {}, table = false, sort?: ScanSort) =>
     request<{ scan_id: string; total_offsets: number }>(`/p/${enc(profile)}/topics/${enc(topic)}/scans`, {
       method: "POST",

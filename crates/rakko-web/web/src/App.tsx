@@ -136,6 +136,14 @@ export function App() {
   usePolling(() => {
     if (route.profile) api.topics(route.profile).then(setTopics).catch(() => {});
   }, 30_000);
+  // The numbers next to the topics move constantly, so they get a lighter, faster refresh.
+  usePolling(() => {
+    if (!route.profile) return;
+    api
+      .topicCounts(route.profile)
+      .then((counts) => setTopics((prev) => prev && prev.map((t) => (counts[t.name] === undefined || counts[t.name] === t.messages ? t : { ...t, messages: counts[t.name] }))))
+      .catch(() => {});
+  }, 5_000);
 
   // A link can name the open message (?msg=partition:offset); the detail panel loads it by coordinates.
   useEffect(() => {

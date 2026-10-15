@@ -11,6 +11,19 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- Partitions tab: "Estimate size" gives an approximate data size per partition and for the topic (sampled; Kafka does not report it to clients).
+
+### Changed
+
+- Topic list counts refresh every 5 seconds with a lighter request.
+- Live tail no longer skips messages on a busy topic: messages travel in batches and the page re-renders once per batch.
+
+### Fixed
+
+- Produce dialog: the Avro subject picker is now a real dropdown (topic's subjects first, then all, or type a name) instead of a text box that filtered itself to the pre-selected value.
+
 ## [0.18.0] - 2026-10-15
 
 ### Changed

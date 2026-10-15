@@ -265,6 +265,32 @@ fn list_topics_blocking(profile: &Profile) -> AppResult<Vec<TopicSummary>> {
     Ok(summaries)
 }
 
+/// Topic name -> stored offsets (watermark difference), without the per-topic config
+/// lookups of [`list_topics`]: cheap enough to poll for a live count in a topic list.
+pub async fn topic_message_counts(profile: &Profile) -> AppResult<Vec<(String, i64)>> {
+    let profile = profile.clone();
+    tokio::task::spawn_blocking(move || -> AppResult<Vec<(String, i64)>> {
+        let consumer: BaseConsumer = consumer_client_config(&profile, ADMIN_GROUP_ID).create()?;
+        let metadata = consumer.fetch_metadata(None, METADATA_TIMEOUT)?;
+        let mut out = Vec::new();
+        for topic in metadata.topics() {
+            if is_internal_topic(topic.name()) {
+                continue;
+            }
+            let mut total = 0;
+            for partition in topic.partitions() {
+                if let Ok((low, high)) = consumer.fetch_watermarks(topic.name(), partition.id(), WATERMARK_TIMEOUT) {
+                    total += high - low;
+                }
+            }
+            out.push((topic.name().to_string(), total));
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|err| AppError::Other(format!("topic count task panicked: {err}")))?
+}
+
 /// Best-effort `compression.type` lookup: this is a nice-to-have stat, so any failure
 /// (timeout, missing config entry, etc) falls back to `"unknown"` rather than failing
 /// the whole topic listing.

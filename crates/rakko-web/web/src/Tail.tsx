@@ -30,6 +30,10 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
   const [total, setTotal] = useState(0);
   const pausedRef = useRef(false);
   const buffer = useRef<Summary[]>([]);
+  // Counters live in refs and reach state with each batch: a state update per message
+  // re-renders the page per message, which is what made a busy topic fall behind.
+  const received = useRef(0);
+  const skipped = useRef(0);
 
   pausedRef.current = paused;
 
@@ -40,15 +44,19 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
     setError(null);
     setState("connecting");
     buffer.current = [];
+    received.current = 0;
+    skipped.current = 0;
     const source = new EventSource(urls.tail(profile, topic, applied.text, applied.query));
     source.onopen = () => setState("live");
-    source.addEventListener("message", (e) => {
-      const row = JSON.parse((e as MessageEvent<string>).data) as Summary;
-      setTotal((n) => n + 1);
+    source.addEventListener("messages", (e) => {
+      const batch = JSON.parse((e as MessageEvent<string>).data) as Summary[];
+      received.current += batch.length;
       if (pausedRef.current) return;
-      buffer.current.push(row);
+      for (const row of batch) buffer.current.push(row);
     });
-    source.addEventListener("dropped", (e) => setDropped((n) => n + (JSON.parse((e as MessageEvent<string>).data) as { count: number }).count));
+    source.addEventListener("dropped", (e) => {
+      skipped.current += (JSON.parse((e as MessageEvent<string>).data) as { count: number }).count;
+    });
     source.addEventListener("error", (e) => {
       const data = (e as MessageEvent<string | undefined>).data;
       if (data) {
@@ -63,6 +71,8 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
     });
     // Batch renders: a busy topic must not re-render per message.
     const flush = window.setInterval(() => {
+      setTotal(received.current);
+      setDropped(skipped.current);
       if (buffer.current.length === 0) return;
       const incoming = buffer.current.reverse();
       buffer.current = [];
