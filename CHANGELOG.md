@@ -12,6 +12,7 @@ over dumping raw commit subjects.
 ## [Unreleased]
 
 ## [0.18.0] - 2026-10-15
+
 ### Changed
 - **Web:** Lists refresh themselves — topics every 30 s, consumer groups, schema subjects/versions and partitions every 15 s, brokers every 30 s, ACLs every minute — and immediately when you return to the tab, so new topics, schemas and groups appear without F5. Message lists don't change under you; use Refresh, or Live for a stream.
 
