@@ -67,7 +67,7 @@ export function PartitionsView({ profile, topic }: { profile: string; topic: str
                 <th className="num">oldest offset</th>
                 <th className="num">next offset</th>
                 <th className="num">messages</th>
-                {size && <th className="num">≈ size</th>}
+                {size && <th className="num" title="Estimate: average sampled message payload × stored offsets. Uncompressed, one replica; actual disk usage differs.">≈ size</th>}
               </tr>
             </thead>
             <tbody>
