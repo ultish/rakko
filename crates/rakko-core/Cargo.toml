@@ -1,6 +1,6 @@
 [package]
 name = "rakko-core"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 description = "Frontend-agnostic Kafka, Schema Registry, decode and filter logic shared by rakko's TUI and web frontends"
 publish = false

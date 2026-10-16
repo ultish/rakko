@@ -11,6 +11,8 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-16
+
 ### Added
 
 - Partitions tab: "Estimate size" gives an approximate data size per partition and for the topic (sampled; Kafka does not report it to clients).
