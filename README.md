@@ -401,6 +401,10 @@ Logging: `RUST_LOG=info` (default) or e.g. `RUST_LOG=rakko_web=debug`.
 
 ### Developing the web UI
 
+For a quick demo with seeded data (JSON, Avro with a registered schema, a few large
+messages), one command starts the compose stack, seeds any empty demo topic and runs
+rakko-web on http://127.0.0.1:8080: `./scripts/dev-up.sh` (`RESET=1` wipes the data first).
+
 ```bash
 docker compose up -d                      # local Kafka + Schema Registry
 cargo run -p rakko-web -- --config config.example.toml   # API on :8080
