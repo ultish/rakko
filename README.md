@@ -115,7 +115,7 @@ Both keys are optional (defaults: dark theme, wave banner). Changing them with *
 ```toml
 [[profiles]]
 name = "local"
-bootstrap_servers = "localhost:19092"
+bootstrap_servers = "127.0.0.1:19092"
 tls_enabled = false
 schema_registry_url = "http://localhost:18081"
 
@@ -487,7 +487,7 @@ docker compose up -d
 
 | Service          | Host address        |
 |------------------|---------------------|
-| Kafka            | `localhost:19092`   |
+| Kafka            | `127.0.0.1:19092`   |
 | Schema Registry  | `http://localhost:18081` |
 
 Non-default host ports (19092/18081, not 9092/8081), deliberately chosen so this

@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::{AuthMode, Profile};
 
-pub(crate) const BOOTSTRAP: &str = "localhost:19092";
+pub(crate) const BOOTSTRAP: &str = "127.0.0.1:19092";
 pub(crate) const SCHEMA_REGISTRY_URL: &str = "http://localhost:18081";
 
 /// A PLAINTEXT profile pointed at the local docker-compose stack.

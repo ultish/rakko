@@ -19,7 +19,7 @@ use rdkafka::ClientConfig;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-const BOOTSTRAP: &str = "localhost:19092";
+const BOOTSTRAP: &str = "127.0.0.1:19092";
 const REGISTRY: &str = "http://localhost:18081";
 const SESSION: &str = "session-aaaaaaaa";
 const OTHER_SESSION: &str = "session-bbbbbbbb";
@@ -302,9 +302,9 @@ async fn read_sse_messages(resp: axum::response::Response, want: usize) -> Vec<V
         text.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(end) = text.find("\n\n") {
             let frame: String = text.drain(..end + 2).collect();
-            if frame.contains("event: message") {
+            if frame.contains("event: messages") {
                 let data = frame.lines().find_map(|l| l.strip_prefix("data: ")).unwrap();
-                out.push(serde_json::from_str(data).unwrap());
+                out.extend(serde_json::from_str::<Vec<Value>>(data).unwrap());
             }
         }
     }

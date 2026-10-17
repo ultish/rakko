@@ -1,5 +1,5 @@
 # Local Kafka + Schema Registry stack for rakko milestone testing.
-# KRaft mode (no ZooKeeper). Host clients: localhost:19092 / localhost:18081.
+# KRaft mode (no ZooKeeper). Host clients: 127.0.0.1:19092 / 127.0.0.1:18081.
 # Host ports are deliberately non-default (19092/18081, not 9092/8081) so this stack
 # doesn't collide with an unrelated Kafka deployment that may already be running on
 # the host — only the host-side mapping and advertised listener changed; the
@@ -15,9 +15,9 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
-      # Internal listener for containers; host listener advertised as localhost:19092
+      # Internal listener for containers; host listener advertised as 127.0.0.1:19092
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:19092,CONTROLLER://0.0.0.0:29093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://127.0.0.1:19092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
