@@ -18,7 +18,7 @@
 #     ./scripts/produce-avro-test-messages.sh
 #
 # NOTE: the record shape below (order_id/customer/amount_cents/currency/status) is
-# hardcoded to match the OrderValue schema currently registered for jxhui-avro. If
+# hardcoded to match the Order schema that scripts/dev-up.sh registers for demo-orders-avro. If
 # that schema changes, update build_record() below to match its fields.
 #
 # TLS for the Kafka broker (type = "tls"/"mtls" in rakko - same as the other scripts):
@@ -29,17 +29,17 @@
 #   SCHEMA_REGISTRY_CA=/path/to/ca.pem ./scripts/produce-avro-test-messages.sh
 #
 # Env vars:
-#   BROKER                default 192.168.50.148:9093
-#   TOPIC                 default jxhui-avro
-#   SCHEMA_REGISTRY_URL   default http://192.168.50.148:8081
+#   BROKER                default 127.0.0.1:19092
+#   TOPIC                 default demo-orders-avro
+#   SCHEMA_REGISTRY_URL   default http://127.0.0.1:18081
 #   SUBJECT               default ${TOPIC}-value (TopicNameStrategy)
 #   MIN_DELAY / MAX_DELAY default 0.5 / 3 (seconds between messages)
 
 set -euo pipefail
 
-BROKER="${BROKER:-192.168.50.148:9093}"
-TOPIC="${TOPIC:-jxhui-avro}"
-SCHEMA_REGISTRY_URL="${SCHEMA_REGISTRY_URL:-http://192.168.50.148:8081}"
+BROKER="${BROKER:-127.0.0.1:19092}"
+TOPIC="${TOPIC:-demo-orders-avro}"
+SCHEMA_REGISTRY_URL="${SCHEMA_REGISTRY_URL:-http://127.0.0.1:18081}"
 SUBJECT="${SUBJECT:-${TOPIC}-value}"
 MIN_DELAY="${MIN_DELAY:-0.5}"
 MAX_DELAY="${MAX_DELAY:-3}"
@@ -91,7 +91,7 @@ fastavro.schemaless_writer(buf, parsed, record)
 sys.stdout.buffer.write(buf.getvalue())
 '
 
-KCAT_ARGS=(-b "$BROKER" -t "$TOPIC" -P)
+KCAT_ARGS=(-b "$BROKER" -X broker.address.family="${ADDRESS_FAMILY:-v4}" -t "$TOPIC" -P)
 if [[ "${KCAT_TLS:-0}" == "1" ]]; then
     KCAT_ARGS+=(-X security.protocol=SSL)
     if [[ -n "${CA_CERT:-}" ]]; then

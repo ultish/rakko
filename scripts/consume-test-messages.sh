@@ -22,9 +22,9 @@
 #     CLIENT_KEY=/path/to/client.key ./scripts/consume-test-messages.sh
 #
 # Env vars:
-#   BROKER             default 192.168.50.148:9093
-#   TOPIC               default jxhui-test
-#   GROUP                default jxhui-test-consumer (keep this the SAME across
+#   BROKER             default 127.0.0.1:19092
+#   TOPIC               default demo-events
+#   GROUP                default demo-consumer (keep this the SAME across
 #                        runs - a different value starts a brand new group with
 #                        no lag history instead of resuming)
 #   AUTO_OFFSET_RESET     default earliest (only applies the very first time this
@@ -33,9 +33,9 @@
 
 set -euo pipefail
 
-BROKER="${BROKER:-192.168.50.148:9093}"
-TOPIC="${TOPIC:-jxhui-test}"
-GROUP="${GROUP:-jxhui-test-consumer}"
+BROKER="${BROKER:-127.0.0.1:19092}"
+TOPIC="${TOPIC:-demo-events}"
+GROUP="${GROUP:-demo-consumer}"
 AUTO_OFFSET_RESET="${AUTO_OFFSET_RESET:-earliest}"
 
 if ! command -v kcat >/dev/null 2>&1; then
@@ -43,7 +43,7 @@ if ! command -v kcat >/dev/null 2>&1; then
     exit 1
 fi
 
-KCAT_ARGS=(-b "$BROKER" -G "$GROUP" -u -f 'partition %p @ offset %o  key=%k  %s\n')
+KCAT_ARGS=(-b "$BROKER" -X broker.address.family="${ADDRESS_FAMILY:-v4}" -G "$GROUP" -u -f 'partition %p @ offset %o  key=%k  %s\n')
 KCAT_ARGS+=(-X auto.offset.reset="$AUTO_OFFSET_RESET")
 
 if [[ "${KCAT_TLS:-0}" == "1" ]]; then

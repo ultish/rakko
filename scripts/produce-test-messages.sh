@@ -18,15 +18,15 @@
 #     CLIENT_KEY=/path/to/client.key ./scripts/produce-test-messages.sh
 #
 # Env vars:
-#   BROKER      default 192.168.50.148:9093
-#   TOPIC       default jxhui-test
+#   BROKER      default 127.0.0.1:19092
+#   TOPIC       default demo-events
 #   MIN_DELAY   default 0.5 (seconds between messages, may be fractional)
 #   MAX_DELAY   default 3
 
 set -euo pipefail
 
-BROKER="${BROKER:-192.168.50.148:9093}"
-TOPIC="${TOPIC:-jxhui-test}"
+BROKER="${BROKER:-127.0.0.1:19092}"
+TOPIC="${TOPIC:-demo-events}"
 MIN_DELAY="${MIN_DELAY:-0.5}"
 MAX_DELAY="${MAX_DELAY:-3}"
 
@@ -35,7 +35,7 @@ if ! command -v kcat >/dev/null 2>&1; then
     exit 1
 fi
 
-KCAT_ARGS=(-b "$BROKER" -t "$TOPIC" -P)
+KCAT_ARGS=(-b "$BROKER" -X broker.address.family="${ADDRESS_FAMILY:-v4}" -t "$TOPIC" -P)
 
 if [[ "${KCAT_TLS:-0}" == "1" ]]; then
     KCAT_ARGS+=(-X security.protocol=SSL)

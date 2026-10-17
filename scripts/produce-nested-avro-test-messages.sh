@@ -36,18 +36,18 @@
 #   SCHEMA_REGISTRY_CA=/path/to/ca.pem ./scripts/produce-nested-avro-test-messages.sh
 #
 # Env vars:
-#   BROKER                default 192.168.50.148:9093
-#   TOPIC                 default jxhui-nested-avro
-#   SCHEMA_REGISTRY_URL   default http://192.168.50.148:8081
+#   BROKER                default 127.0.0.1:19092
+#   TOPIC                 default demo-nested-avro
+#   SCHEMA_REGISTRY_URL   default http://127.0.0.1:18081
 #   SUBJECT               default ${TOPIC}-value (TopicNameStrategy)
 #   COUNT                 default 300 (messages to send, then exit)
 #   MIN_DELAY / MAX_DELAY default 0 / 0.05 (seconds between messages)
 
 set -euo pipefail
 
-BROKER="${BROKER:-192.168.50.148:9093}"
-TOPIC="${TOPIC:-jxhui-nested-avro}"
-SCHEMA_REGISTRY_URL="${SCHEMA_REGISTRY_URL:-http://192.168.50.148:8081}"
+BROKER="${BROKER:-127.0.0.1:19092}"
+TOPIC="${TOPIC:-demo-nested-avro}"
+SCHEMA_REGISTRY_URL="${SCHEMA_REGISTRY_URL:-http://127.0.0.1:18081}"
 SUBJECT="${SUBJECT:-${TOPIC}-value}"
 COUNT="${COUNT:-300}"
 MIN_DELAY="${MIN_DELAY:-0}"
@@ -219,7 +219,7 @@ sys.stdout.buffer.write(buf.getvalue())
 sys.stderr.write(order_id)
 '
 
-KCAT_ARGS=(-b "$BROKER" -t "$TOPIC" -P)
+KCAT_ARGS=(-b "$BROKER" -X broker.address.family="${ADDRESS_FAMILY:-v4}" -t "$TOPIC" -P)
 if [[ "${KCAT_TLS:-0}" == "1" ]]; then
     KCAT_ARGS+=(-X security.protocol=SSL)
     if [[ -n "${CA_CERT:-}" ]]; then

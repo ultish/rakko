@@ -17,8 +17,8 @@
 #     CLIENT_KEY=/path/to/client.key ./scripts/send-large-message.sh
 #
 # Env vars:
-#   BROKER          default 192.168.50.148:9093
-#   TOPIC           default jxhui-test
+#   BROKER          default 127.0.0.1:19092
+#   TOPIC           default demo-large
 #   MSG_SIZE_BYTES  default 1572864 (1.5 MiB) - the actual on-wire message size built
 #   MAX_MSG_BYTES   default 20971520 - producer-side message.max.bytes override
 #                   (librdkafka caps produced messages at 1,000,000 bytes by
@@ -27,8 +27,8 @@
 
 set -euo pipefail
 
-BROKER="${BROKER:-192.168.50.148:9093}"
-TOPIC="${TOPIC:-jxhui-test}"
+BROKER="${BROKER:-127.0.0.1:19092}"
+TOPIC="${TOPIC:-demo-large}"
 MSG_SIZE_BYTES="${MSG_SIZE_BYTES:-1572864}"
 MAX_MSG_BYTES="${MAX_MSG_BYTES:-20971520}"
 
@@ -72,7 +72,7 @@ trap 'rm -f "$tmpfile"' EXIT
 
 actual_bytes="$(wc -c < "$tmpfile" | tr -d ' ')"
 
-KCAT_ARGS=(-b "$BROKER" -t "$TOPIC" -P -k "large-msg-test" -X message.max.bytes="$MAX_MSG_BYTES")
+KCAT_ARGS=(-b "$BROKER" -X broker.address.family="${ADDRESS_FAMILY:-v4}" -t "$TOPIC" -P -k "large-msg-test" -X message.max.bytes="$MAX_MSG_BYTES")
 
 if [[ "${KCAT_TLS:-0}" == "1" ]]; then
     KCAT_ARGS+=(-X security.protocol=SSL)
