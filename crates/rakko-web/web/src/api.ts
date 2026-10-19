@@ -46,6 +46,8 @@ export type Detail = {
 
 export type Group = { name: string; state: string; members: number; protocol: string };
 
+export type TopicConsumer = { name: string; state: string; total_lag: number };
+
 export type GroupDetail = {
   name: string;
   state: string;
@@ -227,6 +229,7 @@ export const api = {
       body: JSON.stringify({ level }),
     }),
   groups: (profile: string) => request<Group[]>(`/p/${enc(profile)}/groups`),
+  topicConsumers: (profile: string, topic: string) => request<TopicConsumer[]>(`/p/${enc(profile)}/topics/${enc(topic)}/consumers`),
   group: (profile: string, group: string) => request<GroupDetail>(`/p/${enc(profile)}/groups/${enc(group)}`),
   resetGroup: (profile: string, group: string, target: ResetTarget, partitions?: { topic: string; partition: number }[]) =>
     request<{ reset: number }>(`/p/${enc(profile)}/groups/${enc(group)}/reset`, {

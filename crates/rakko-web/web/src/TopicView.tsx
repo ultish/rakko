@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, urls, type Range, type Summary, type Topic } from "./api";
 import { formatCount } from "./format";
+import { ConsumersPanel } from "./ConsumersPanel";
 import { Messages } from "./Messages";
 import { ProduceDialog } from "./ProduceDialog";
 import { PartitionsView } from "./PartitionsView";
@@ -137,6 +138,7 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
           </button>
         </div>
       )}
+      <ConsumersPanel profile={profile} topic={topic} />
       {mode === "partitions" ? (
         <PartitionsView profile={profile} topic={topic} />
       ) : mode !== "live" ? (

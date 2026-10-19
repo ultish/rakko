@@ -79,6 +79,32 @@ pub enum OffsetResetTarget {
     Timestamp(i64),
 }
 
+/// A consumer group that has committed offsets on one topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicConsumer {
+    pub group: String,
+    pub state: String,
+    /// Lag summed over this topic's partitions only.
+    pub total_lag: i64,
+}
+
+/// Groups that have committed offsets on `topic`, by name, with their lag on that topic.
+pub fn topic_consumers(details: &[GroupDetail], topic: &str) -> Vec<TopicConsumer> {
+    let mut out: Vec<TopicConsumer> = details
+        .iter()
+        .filter_map(|d| {
+            let mine: Vec<&PartitionLag> = d.lags.iter().filter(|l| l.topic == topic && l.committed_offset.is_some()).collect();
+            (!mine.is_empty()).then(|| TopicConsumer {
+                group: d.name.clone(),
+                state: d.state.clone(),
+                total_lag: mine.iter().filter_map(|l| l.lag).sum(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.group.cmp(&b.group));
+    out
+}
+
 /// Pure lag math — unit-tested without a broker.
 ///
 /// Returns `None` when there is no committed offset (the group has never consumed
@@ -346,6 +372,44 @@ fn reset_group_offsets_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lag(topic: &str, partition: i32, committed: Option<i64>, high: i64) -> PartitionLag {
+        PartitionLag {
+            topic: topic.into(),
+            partition,
+            committed_offset: committed,
+            high_watermark: high,
+            low_watermark: 0,
+            lag: compute_lag(committed, high),
+        }
+    }
+
+    fn detail(name: &str, state: &str, lags: Vec<PartitionLag>) -> GroupDetail {
+        GroupDetail { name: name.into(), state: state.into(), members: vec![], lags }
+    }
+
+    #[test]
+    fn topic_consumers_lists_groups_with_commits_on_the_topic_and_their_lag_there() {
+        let details = vec![
+            detail("zeta", "Empty", vec![lag("orders", 0, Some(5), 5)]),
+            detail(
+                "alpha",
+                "Stable",
+                vec![lag("orders", 0, Some(7), 10), lag("orders", 1, Some(1), 4), lag("other", 0, Some(0), 100)],
+            ),
+            detail("beta", "Stable", vec![lag("other", 0, Some(0), 9)]),
+            detail("gamma", "Empty", vec![]),
+        ];
+        let got = topic_consumers(&details, "orders");
+        let got: Vec<_> = got.iter().map(|c| (c.group.as_str(), c.state.as_str(), c.total_lag)).collect();
+        assert_eq!(got, vec![("alpha", "Stable", 6), ("zeta", "Empty", 0)]);
+    }
+
+    #[test]
+    fn topic_consumers_is_empty_when_nobody_consumes_the_topic() {
+        let details = vec![detail("beta", "Stable", vec![lag("other", 0, Some(0), 9)])];
+        assert!(topic_consumers(&details, "orders").is_empty());
+    }
 
     #[test]
     fn lag_is_high_minus_committed_floored_at_zero() {

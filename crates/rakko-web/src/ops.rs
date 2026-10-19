@@ -23,7 +23,7 @@ use rakko_core::export::{message_to_jsonl_line, parse_jsonl_line};
 use rakko_core::kafka::admin::{create_topic as admin_create_topic, delete_records_before, delete_topic as admin_delete_topic, fetch_topic_configs, fetch_broker_configs, list_brokers};
 use rakko_core::kafka::schema_admin::{self, SchemaReference};
 use rakko_core::kafka::consumer::{fetch_message, run_tail, BrowseEvent};
-use rakko_core::kafka::group_offsets::{describe_group, list_groups, reset_group_offsets, OffsetResetTarget};
+use rakko_core::kafka::group_offsets::{describe_group, list_groups, topic_consumers, reset_group_offsets, OffsetResetTarget};
 use rakko_core::kafka::producer::RawProducer;
 use rakko_core::kafka::scan::{ScanRange, TopicScan};
 use rakko_core::message_filter::MessageFilter;
@@ -48,6 +48,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/p/{profile}/groups", get(groups))
         .route("/p/{profile}/groups/{group}", get(group))
+        .route("/p/{profile}/topics/{topic}/consumers", get(topic_consumer_groups))
         .route("/p/{profile}/groups/{group}/reset", post(reset_group))
         .route("/p/{profile}/groups/{group}", axum::routing::delete(delete_group))
         .route("/p/{profile}/topics/{topic}/clear", post(clear_topic))
@@ -113,6 +114,37 @@ async fn groups(State(state): Shared, Path(p): Path<String>) -> ApiResult<Vec<Gr
         groups
             .into_iter()
             .map(|g| GroupInfo { name: g.name, state: g.state, members: g.member_count, protocol: g.protocol })
+            .collect(),
+    ))
+}
+
+#[derive(Serialize)]
+struct TopicConsumerInfo {
+    name: String,
+    state: String,
+    total_lag: i64,
+}
+
+/// Consumer groups with committed offsets on the topic. Kafka has no topic-to-groups index,
+/// so every group is described (a few at a time) and filtered; groups that fail to describe
+/// are skipped rather than failing the whole panel.
+async fn topic_consumer_groups(State(state): Shared, Path((p, topic)): Path<(String, String)>) -> ApiResult<Vec<TopicConsumerInfo>> {
+    use futures::StreamExt;
+    let rt = profile(&state, &p)?;
+    let names = list_groups(&rt.profile).await?;
+    let details: Vec<_> = stream::iter(names)
+        .map(|g| {
+            let rt = rt.clone();
+            async move { describe_group(&rt.profile, &g.name).await.ok() }
+        })
+        .buffer_unordered(8)
+        .filter_map(|d| async move { d })
+        .collect()
+        .await;
+    Ok(Json(
+        topic_consumers(&details, &topic)
+            .into_iter()
+            .map(|c| TopicConsumerInfo { name: c.group, state: c.state, total_lag: c.total_lag })
             .collect(),
     ))
 }
