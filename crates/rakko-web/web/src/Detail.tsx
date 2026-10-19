@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, urls, type Detail as DetailT, type Summary } from "./api";
 import { Dialog } from "./Dialog";
+import { useCopy } from "./clipboard";
 import { formatBytes, formatTime } from "./format";
 
 type Props = {
@@ -22,6 +23,7 @@ function Part({ title, state, onMore }: { title: string; state: PartState; onMor
   const last = state.chunks[state.chunks.length - 1];
   const text = state.chunks.map((c) => c.text).join("");
   const more = last ? last.end < last.total : false;
+  const { status, copy } = useCopy();
   return (
     <section className="part">
       <header>
@@ -33,13 +35,11 @@ function Part({ title, state, onMore }: { title: string; state: PartState; onMor
         )}
         {text && (
           <button
-            className="link"
-            onClick={() => {
-              navigator.clipboard?.writeText(text).catch(() => {});
-            }}
-            title={more ? "copies the part loaded so far" : "copy"}
+            className={status === "failed" ? "link copy-failed" : "link"}
+            onClick={() => void copy(text)}
+            title={status === "failed" ? "clipboard unavailable or permission denied" : more ? "copies the part loaded so far" : "copy"}
           >
-            copy
+            {status === "copied" ? "Copied" : status === "failed" ? "Copy failed" : "copy"}
           </button>
         )}
       </header>

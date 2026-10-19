@@ -264,3 +264,4 @@ button.toggle.on { border-color: var(--accent); color: var(--accent); }
 
 .saved-item { display: flex; align-items: center; }
 .saved-item > button:first-child { flex: 1; }
+button.link.copy-failed { color: var(--err, #e5484d); }

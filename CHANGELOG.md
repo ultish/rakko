@@ -11,6 +11,10 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Fixed
+
+- Web: the message detail "copy" button now shows "Copied" for 1.5s, and "Copy failed" when the browser blocks or lacks clipboard access, instead of failing silently.
+
 ## [0.19.0] - 2026-10-16
 
 ### Added
