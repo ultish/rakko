@@ -11,6 +11,10 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- Web: a Consumers panel on each topic lists the consumer groups that have committed offsets on it, with state and lag on that topic; each name links to the group's page.
+
 ## [0.19.0] - 2026-10-16
 
 ### Added
