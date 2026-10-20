@@ -264,7 +264,7 @@ button.toggle.on { border-color: var(--accent); color: var(--accent); }
 
 .saved-item { display: flex; align-items: center; }
 .saved-item > button:first-child { flex: 1; }
-
 .consumers { padding: 4px 12px; }
 .consumers summary { cursor: pointer; font-weight: 600; }
 .consumers table { margin: 4px 0; }
+button.link.copy-failed { color: var(--err, #e5484d); }
