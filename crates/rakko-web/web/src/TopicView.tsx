@@ -31,6 +31,7 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
   const [admin, setAdmin] = useState<"config" | "delete" | "clear" | null>(null);
   const [stored, setStored] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const loadedRows = useRef<Summary[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const changeMode = (m: "browse" | "table" | "live" | "partitions") => {
@@ -45,6 +46,7 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
     setApplied({ text: "", query: "", range: {} });
     setNotice(null);
     setStored(null);
+    loadedRows.current = [];
   }, [profile, topic]);
 
   const onApplied = useCallback((text: string, query: string, range: Range) => setApplied({ text, query, range }), []);
@@ -151,9 +153,10 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
           onSelect={onSelect}
           onApplied={onApplied}
           onStored={setStored}
+          onRows={(rows) => (loadedRows.current = rows)}
         />
       ) : (
-        <Tail profile={profile} topic={topic} selected={selected} onSelect={onSelect} initialText={applied.text} initialQuery={applied.query} />
+        <Tail profile={profile} topic={topic} selected={selected} onSelect={onSelect} initialText={applied.text} initialQuery={applied.query} loaded={loadedRows.current} />
       )}
       {admin === "config" && <TopicConfigDialog profile={profile} topic={topic} onClose={() => setAdmin(null)} />}
       {admin === "clear" && (
