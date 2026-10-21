@@ -78,9 +78,9 @@ at the crate root, so TUI code still says `crate::kafka::…`, `crate::config::�
   random delay; fixed-group-id consumer for lag/resume testing).
 - `Dockerfile.web` + `scripts/build-web-image.sh` + `.github/workflows/web-image.yml` —
   the `rakko-web` container image (UBI 9, non-root) and its air-gapped `docker save`
-  archive; the workflow runs on `v*` tags and pushes to GHCR. The TUI release is still
-  manual (checklist below); attach the web archive with `gh release upload` or let the
-  workflow do it.
+  archive; the workflow runs on `v*` tags, pushes to GHCR, and creates the GitHub
+  Release if missing (attaching the web archive). The TUI assets are still built and
+  attached by hand (checklist below).
 - `docker-compose.yml` / `config.example.toml` — local Kafka + Schema Registry stack
   for manual testing.
 
@@ -163,17 +163,8 @@ summary — **not** a paste of commit subjects.
    - Rename `## [Unreleased]` content into
      `## [X.Y.Z] - YYYY-MM-DD` (today’s date, ISO).
    - Leave a fresh empty `## [Unreleased]` at the top (no bullets yet).
-3. Use the new section (or a short headline distilled from it) as
-   `gh release create --notes`. Prefer the changelog body over inventing notes
-   from scratch:
-   ```bash
-   # Example: notes from the version section (edit interactively if needed)
-   gh release create vX.Y.Z \
-     --title "vX.Y.Z — <headline>" \
-     --notes-file <(sed -n '/## \[X.Y.Z\]/,/## \[/p' CHANGELOG.md | sed '$d') \
-     dist/rakko-linux-amd64.tar.gz \
-     dist/SHA256SUMS
-   ```
+3. The tag-triggered workflow uses this section as the Release notes (see the
+   release checklist, step 5). Write it as the notes you want published.
 4. Commit version bump + changelog together when possible
    (`Release vX.Y.Z` or similar).
 
@@ -191,9 +182,16 @@ not — means a release is being cut. Run this checklist before committing. Owne
 of the commit implies ownership of the checklist; "someone else bumped it" is not an
 exception.
 
+0. **Sync first.** `git fetch`, then confirm `HEAD` isn't behind `origin/master`
+   (`git rev-list --count HEAD..origin/master` prints `0`) and the version you pick
+   isn't already tagged (`git ls-remote --tags origin 'v*'`). Releases get cut from
+   other checkouts/branches too; a stale checkout produces a duplicate or
+   out-of-order version.
 1. **Bump `version` in `Cargo.toml`.** SemVer: bug fixes → patch, backward-compatible
    features → minor, breaking changes to the config format / CLI / architecture →
-   major. Run `cargo build` once after bumping so `Cargo.lock` picks it up.
+   major. Keep `crates/*/Cargo.toml`, `crates/rakko-web/web/package.json`, and both
+   version lines in `crates/rakko-web/web/package-lock.json` in sync with it. Run
+   `cargo build` once after bumping so `Cargo.lock` picks it up.
 2. **Update `CHANGELOG.md`:** move `[Unreleased]` bullets into
    `## [X.Y.Z] - YYYY-MM-DD` and reset `[Unreleased]` (see **Changelog** above).
 3. **RHEL 9 / airgap Linux release asset (do not skip).** Air-gapped users install
@@ -223,27 +221,23 @@ exception.
      - `dist/SHA256SUMS` — merged with the RHEL 9 entries, not clobbered
      - `dist/otool-macos-<arch>.txt` — sanity-check no stray dynamic OpenSSL/librdkafka
        links crept in (should be system frameworks + libSystem/libiconv only)
-   - **Web image:** nothing to run by hand. Pushing the `v*` tag triggers
-     `.github/workflows/web-image.yml` (~10 min cold), which pushes
-     `ghcr.io/ultish/rakko-web:<version>` and attaches
-     `rakko-web-<version>-linux-amd64.tar.gz` to the Release, **creating the Release
-     if it doesn't exist** (notes from the `CHANGELOG.md` section). Wait for it, then
-     `gh release upload v<X.Y.Z> dist/rakko-linux-amd64.tar.gz dist/rakko-macos-<arch>.tar.gz dist/SHA256SUMS`
-     for the TUI assets instead of `gh release create` (which would fail or race).
-     Keep `crates/*/Cargo.toml` and `crates/rakko-web/web/package.json` versions in sync
-     with the root `Cargo.toml` when bumping.
-5. **Commit, tag, and cut the GitHub Release.** Pushing the tag makes the
-   `web-image` workflow create the Release (notes from `CHANGELOG.md`); the TUI
-   assets are still attached by hand. Every version bump gets a matching git tag
-   *and* a GitHub Release.
+5. **Commit, tag, and cut the GitHub Release.** Pushing the `v*` tag triggers
+   `.github/workflows/web-image.yml` (~10 min cold): it pushes
+   `ghcr.io/ultish/rakko-web:<version>` (and `:latest` for non-pre-release tags),
+   creates the GitHub Release if missing (notes from the `CHANGELOG.md` section), and
+   attaches `rakko-web-<version>-linux-amd64.tar.gz`. The TUI assets are attached by
+   hand. Every version bump gets a matching git tag *and* a GitHub Release.
    - Commit the release (include `Cargo.toml`, `Cargo.lock` if changed,
-     `CHANGELOG.md`), push to `main`.
+     `CHANGELOG.md`) and push to `master`. **Confirm the push succeeded before
+     tagging** — never chain it with the tag push. A tag push immediately publishes
+     images (including `:latest`) and a Release from whatever commit it points at.
    - Tag the release commit and push the tag:
      ```bash
      git tag -a v<X.Y.Z> -m "Release <X.Y.Z>: <headline>"
      git push origin v<X.Y.Z>
      ```
-   - Once the workflow has created the Release, attach the TUI assets:
+   - Once the workflow has created the Release, attach the TUI assets (don't use
+     `gh release create` — it would fail or race the workflow):
      ```bash
      gh release upload v<X.Y.Z> \
        dist/rakko-linux-amd64.tar.gz \
@@ -251,4 +245,9 @@ exception.
        dist/SHA256SUMS
      ```
      Optionally set a headline title: `gh release edit v<X.Y.Z> --title "v<X.Y.Z> — <headline>"`.
-   - Verify: `gh release view v<X.Y.Z>` shows the TUI assets plus the web archive and `isDraft: false`.
+   - Verify: `gh run list` shows the `rakko-web image` run succeeded, and
+     `gh release view v<X.Y.Z>` shows the TUI assets plus the web archive and
+     `isDraft: false`.
+   - **If a bad tag got pushed:** `gh run cancel <id>`, delete the remote tag
+     (`git push origin :refs/tags/v<X.Y.Z>`), delete the Release if one was created,
+     and re-push the last good image as `:latest`.
