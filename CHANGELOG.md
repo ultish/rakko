@@ -11,6 +11,12 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-21
+
+### Changed
+
+- Pushing a `v*` tag now creates the GitHub Release automatically (notes from this changelog) and attaches the rakko-web image archive.
+
 ## [0.21.0] - 2026-10-21
 
 ### Added

@@ -226,14 +226,16 @@ exception.
    - **Web image:** nothing to run by hand. Pushing the `v*` tag triggers
      `.github/workflows/web-image.yml` (~10 min cold), which pushes
      `ghcr.io/ultish/rakko-web:<version>` and attaches
-     `rakko-web-<version>-linux-amd64.tar.gz` to the Release **if it already exists** —
-     so create the Release right after pushing the tag, and check the asset appears.
+     `rakko-web-<version>-linux-amd64.tar.gz` to the Release, **creating the Release
+     if it doesn't exist** (notes from the `CHANGELOG.md` section). Wait for it, then
+     `gh release upload v<X.Y.Z> dist/rakko-linux-amd64.tar.gz dist/rakko-macos-<arch>.tar.gz dist/SHA256SUMS`
+     for the TUI assets instead of `gh release create` (which would fail or race).
      Keep `crates/*/Cargo.toml` and `crates/rakko-web/web/package.json` versions in sync
      with the root `Cargo.toml` when bumping.
-5. **Commit, tag, and cut the GitHub Release** — no CI; releases are 100% manual.
-   Committing and pushing does **not** create a release; a Release only exists once
-   `gh release create` runs. Every version bump gets a matching git tag *and* a
-   GitHub Release.
+5. **Commit, tag, and cut the GitHub Release.** Pushing the tag makes the
+   `web-image` workflow create the Release (notes from `CHANGELOG.md`); the TUI
+   assets are still attached by hand. Every version bump gets a matching git tag
+   *and* a GitHub Release.
    - Commit the release (include `Cargo.toml`, `Cargo.lock` if changed,
      `CHANGELOG.md`), push to `main`.
    - Tag the release commit and push the tag:
@@ -241,14 +243,12 @@ exception.
      git tag -a v<X.Y.Z> -m "Release <X.Y.Z>: <headline>"
      git push origin v<X.Y.Z>
      ```
-   - Create the Release, attaching the dist assets; **prefer notes from
-     `CHANGELOG.md`** for that version (see Changelog → When cutting a release):
+   - Once the workflow has created the Release, attach the TUI assets:
      ```bash
-     gh release create v<X.Y.Z> \
-       --title "v<X.Y.Z> — <headline>" \
-       --notes "<from CHANGELOG.md [X.Y.Z] section>" \
+     gh release upload v<X.Y.Z> \
        dist/rakko-linux-amd64.tar.gz \
        dist/rakko-macos-<arch>.tar.gz \
        dist/SHA256SUMS
      ```
-   - Verify: `gh release view v<X.Y.Z>` shows all three assets and `isDraft: false`.
+     Optionally set a headline title: `gh release edit v<X.Y.Z> --title "v<X.Y.Z> — <headline>"`.
+   - Verify: `gh release view v<X.Y.Z>` shows the TUI assets plus the web archive and `isDraft: false`.
