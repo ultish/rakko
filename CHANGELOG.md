@@ -11,11 +11,14 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Added
+
+- Web: with a filter in the topics sidebar, a bulk bar shows the number of matching topics with "Delete topics" and "Clear messages". Each opens a confirmation listing the affected topics and requiring you to type their count; results are shown per topic so one failure doesn't hide the others, and the topic list refreshes afterwards.
+
 ## [0.20.0] - 2026-10-21
 
 ### Added
 
-- Web: with a filter in the topics sidebar, a bulk bar shows the number of matching topics with "Delete topics" and "Clear messages". Each opens a confirmation listing the affected topics and requiring you to type their count; results are shown per topic so one failure doesn't hide the others, and the topic list refreshes afterwards.
 - Web: the live view has a "Keep existing messages" toggle (on by default). Switching a topic to live now keeps the messages already loaded and adds new ones above them; turn it off to start from an empty list as before.
 
 - Web: a Consumers panel on each topic lists the consumer groups that have committed offsets on it, with state and lag on that topic; each name links to the group's page.
