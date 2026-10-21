@@ -2,10 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ScanSort, Summary } from "./api";
 import { formatBytes, formatTime } from "./format";
+import { isPlainLeftClick, messageHref } from "./messageLink";
 
 const ROW_HEIGHT = 30;
 
 type Props = {
+  profile: string;
+  topic: string;
   rows: Summary[];
   selected: Summary | null;
   onSelect: (s: Summary) => void;
@@ -57,7 +60,7 @@ function valueObject(r: Summary): Record<string, unknown> | null {
 const cell = (v: unknown): string => (v === undefined ? "" : typeof v === "string" ? v : JSON.stringify(v));
 
 /** Virtualized message rows, shared by the scan view and the live tail. */
-export function MessageTable({ rows: unsorted, selected, onSelect, loading, onVisibleEnd, resetKey, empty, table, sort: serverSort, onSort }: Props) {
+export function MessageTable({ profile, topic, rows: unsorted, selected, onSelect, loading, onVisibleEnd, resetKey, empty, table, sort: serverSort, onSort }: Props) {
   const [localSort, setSort] = useState<{ key: SortKey; dir: 1 | -1 } | null>(null);
   const sort = onSort ? null : localSort;
   // Sorting orders what has been loaded so far; the scan itself always walks newest first.
@@ -158,11 +161,16 @@ export function MessageTable({ rows: unsorted, selected, onSelect, loading, onVi
             }
             const isSelected = selected?.partition === row.partition && selected.offset === row.offset;
             return (
-              <div
+              <a
                 key={`${row.partition}:${row.offset}`}
                 className={`row${isSelected ? " selected" : ""}`}
                 style={style}
-                onClick={() => onSelect(row)}
+                href={messageHref(profile, topic, row.partition, row.offset)}
+                onClick={(e) => {
+                  if (!isPlainLeftClick(e)) return;
+                  e.preventDefault();
+                  onSelect(row);
+                }}
               >
                 {asColumns ? (
                   <>
@@ -189,7 +197,7 @@ export function MessageTable({ rows: unsorted, selected, onSelect, loading, onVi
                     <span className="fmt">{row.value.format}</span>
                   </>
                 )}
-              </div>
+              </a>
             );
           })}
         </div>
