@@ -7,6 +7,8 @@ import { formatCount } from "./format";
 import { GroupList, GroupView } from "./Groups";
 import { RegisterDialog, SchemasHome, SubjectList, SubjectView } from "./Schemas";
 import { CreateTopicDialog } from "./TopicAdmin";
+import { BulkBar, BulkTopicsDialog, type BulkKind } from "./BulkTopics";
+import { filterTopics } from "./bulk";
 import { TopicView, type ProduceInitial } from "./TopicView";
 import { readParams, setParams } from "./urlState";
 import { usePolling } from "./usePolling";
@@ -78,6 +80,7 @@ export function App() {
   const [groupsKey, setGroupsKey] = useState(0);
   const [newSubject, setNewSubject] = useState(false);
   const [newTopic, setNewTopic] = useState(false);
+  const [bulk, setBulk] = useState<{ kind: BulkKind; topics: string[] } | null>(null);
 
   // <details> menus close when you click elsewhere (or pick an item).
   useEffect(() => {
@@ -218,6 +221,7 @@ export function App() {
                   + new
                 </button>
               </div>
+              <BulkBar topics={filterTopics(visibleTopics, topicFilter).map((t) => t.name)} onAction={(kind) => setBulk({ kind, topics: filterTopics(visibleTopics, topicFilter).map((t) => t.name) })} />
               {error && <div className="err pad">{error}</div>}
               {!topics && !error && <div className="dim pad">loading topics…</div>}
               <ul>
@@ -302,6 +306,19 @@ export function App() {
           <Placeholder text="Pick a topic." />
         )}
       </main>
+
+      {bulk && route.profile && (
+        <BulkTopicsDialog
+          profile={route.profile}
+          kind={bulk.kind}
+          topics={bulk.topics}
+          onClose={() => setBulk(null)}
+          onFinished={() => {
+            loadTopics();
+            if (bulk.kind === "delete" && bulk.topics.includes(route.item)) go("topics");
+          }}
+        />
+      )}
 
       {newTopic && route.profile && (
         <CreateTopicDialog

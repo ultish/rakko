@@ -13,6 +13,7 @@ over dumping raw commit subjects.
 
 ### Added
 
+- Web: with a filter in the topics sidebar, a bulk bar shows the number of matching topics with "Delete topics" and "Clear messages". Each opens a confirmation listing the affected topics and requiring you to type their count; results are shown per topic so one failure doesn't hide the others, and the topic list refreshes afterwards.
 - Web: a Consumers panel on each topic lists the consumer groups that have committed offsets on it, with state and lag on that topic; each name links to the group's page.
 
 ### Fixed

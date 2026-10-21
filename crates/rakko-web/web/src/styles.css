@@ -268,3 +268,6 @@ button.toggle.on { border-color: var(--accent); color: var(--accent); }
 .consumers summary { cursor: pointer; font-weight: 600; }
 .consumers table { margin: 4px 0; }
 button.link.copy-failed { color: var(--err, #e5484d); }
+.bulk-bar { display: flex; gap: 8px; align-items: center; padding: 4px 8px; font-size: 12px; flex-wrap: wrap; }
+.bulk-bar span { flex: 1; color: var(--dim, inherit); }
+.bulk-list { max-height: 240px; overflow: auto; margin: 0; padding-left: 18px; }
