@@ -49,6 +49,10 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
     loadedRows.current = [];
   }, [profile, topic]);
 
+  const onRows = useCallback((rows: Summary[]) => {
+    loadedRows.current = rows;
+  }, []);
+
   const onApplied = useCallback((text: string, query: string, range: Range) => setApplied({ text, query, range }), []);
 
   const importFile = async (file: File) => {
@@ -153,10 +157,10 @@ export function TopicView({ profile, topic, info, selected, onSelect, onChanged,
           onSelect={onSelect}
           onApplied={onApplied}
           onStored={setStored}
-          onRows={(rows) => (loadedRows.current = rows)}
+          onRows={onRows}
         />
       ) : (
-        <Tail profile={profile} topic={topic} selected={selected} onSelect={onSelect} initialText={applied.text} initialQuery={applied.query} loaded={loadedRows.current} />
+        <Tail key={`${profile}/${topic}`} profile={profile} topic={topic} selected={selected} onSelect={onSelect} initialText={applied.text} initialQuery={applied.query} loaded={loadedRows.current} />
       )}
       {admin === "config" && <TopicConfigDialog profile={profile} topic={topic} onClose={() => setAdmin(null)} />}
       {admin === "clear" && (
