@@ -11,6 +11,8 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-22
+
 ### Added
 
 - In the web UI, message rows are real links, so middle-click, Ctrl/Cmd-click and "Open in new tab" open the message details in a new tab. A plain click still opens the details in place.
