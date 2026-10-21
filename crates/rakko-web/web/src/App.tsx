@@ -10,6 +10,7 @@ import { CreateTopicDialog } from "./TopicAdmin";
 import { BulkBar, BulkTopicsDialog, type BulkKind } from "./BulkTopics";
 import { filterTopics } from "./bulk";
 import { TopicView, type ProduceInitial } from "./TopicView";
+import { parseMsgParam } from "./messageLink";
 import { readParams, setParams } from "./urlState";
 import { usePolling } from "./usePolling";
 
@@ -150,11 +151,11 @@ export function App() {
 
   // A link can name the open message (?msg=partition:offset); the detail panel loads it by coordinates.
   useEffect(() => {
-    const m = /^(\d+):(\d+)$/.exec(readParams().get("msg") ?? "");
+    const m = parseMsgParam(readParams().get("msg"));
     const none = { format: "", preview: "", size: null };
     setSelected(
       m && route.view === "topics" && route.item
-        ? { partition: Number(m[1]), offset: Number(m[2]), timestamp_ms: null, key: none, value: none, header_count: 0 }
+        ? { partition: m.partition, offset: m.offset, timestamp_ms: null, key: none, value: none, header_count: 0 }
         : null,
     );
   }, [route.profile, route.view, route.item]);

@@ -313,6 +313,8 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
       </div>
 
       <MessageTable
+        profile={profile}
+        topic={topic}
         rows={rows}
         selected={selected}
         onSelect={onSelect}

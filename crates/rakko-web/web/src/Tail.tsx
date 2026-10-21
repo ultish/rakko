@@ -137,7 +137,7 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
         {dropped > 0 && <span className="warn">⚠ {formatCount(dropped)} message(s) skipped — the browser couldn't keep up</span>}
         {error && <span className="err">{error}</span>}
       </div>
-      <MessageTable rows={shown} selected={selected} onSelect={onSelect} onVisibleEnd={noop} empty="Waiting for new messages…" />
+      <MessageTable profile={profile} topic={topic} rows={shown} selected={selected} onSelect={onSelect} onVisibleEnd={noop} empty="Waiting for new messages…" />
     </div>
   );
 }
