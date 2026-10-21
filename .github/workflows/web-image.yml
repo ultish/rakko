@@ -1,7 +1,8 @@
 name: rakko-web image
 
 # Builds the rakko-web container image, pushes it to GHCR, and (on a release tag)
-# attaches a docker-save archive to the GitHub Release for air-gapped installs.
+# creates the GitHub Release if needed and attaches a docker-save archive to it for
+# air-gapped installs.
 on:
   push:
     tags: ["v*"]
@@ -63,11 +64,22 @@ jobs:
           archive="rakko-web-${{ steps.meta.outputs.version }}-linux-amd64.tar.gz"
           docker save "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}" | gzip -9 > "$archive"
           sha256sum "$archive" > "$archive.sha256"
-          # Releases are cut by hand; only attach if one exists for this tag.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$archive" "$archive.sha256" --clobber
-          else
-            echo "::notice::no GitHub Release for $GITHUB_REF_NAME yet; archive not attached (image was pushed)"
+          # Create the Release if it doesn't exist yet (notes from CHANGELOG.md, falling
+          # back to auto-generated notes); a hand-made Release is left as-is.
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            version="${{ steps.meta.outputs.version }}"
+            awk -v v="$version" '
+              /^## \[/ { if (found) exit; if (index($0, "## [" v "]") == 1) { found = 1; next } }
+              found { print }
+            ' CHANGELOG.md > notes.md
+            flags=()
+            [[ "$version" == *-* ]] && flags+=(--prerelease)
+            if [[ -s notes.md ]]; then
+              gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md "${flags[@]}"
+            else
+              gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes "${flags[@]}"
+            fi
           fi
+          gh release upload "$GITHUB_REF_NAME" "$archive" "$archive.sha256" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
