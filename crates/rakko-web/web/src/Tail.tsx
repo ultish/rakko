@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { urls, type Summary } from "./api";
 import { formatCount } from "./format";
 import { MessageTable } from "./MessageTable";
+import { liveView, prependLive } from "./liveRows";
 import { QueryInput } from "./QueryInput";
 import { readParams, setParams } from "./urlState";
 
@@ -14,15 +15,19 @@ type Props = {
   onSelect: (s: Summary) => void;
   initialText: string;
   initialQuery: string;
+  /** Messages loaded in the browse view before switching to live (newest first). */
+  loaded: Summary[];
 };
 
 /** Live tail: new messages from the log end, newest first, via server-sent events. */
-export function Tail({ profile, topic, selected, onSelect, initialText, initialQuery }: Props) {
+export function Tail({ profile, topic, selected, onSelect, initialText, initialQuery, loaded }: Props) {
   const start = { text: readParams().get("text") ?? initialText, query: readParams().get("query") ?? initialQuery };
   const [text, setText] = useState(start.text);
   const [query, setQuery] = useState(start.query);
   const [applied, setApplied] = useState(start);
   const [rows, setRows] = useState<Summary[]>([]);
+  const [keep, setKeep] = useState(true);
+  const [seed, setSeed] = useState(loaded);
   const [paused, setPaused] = useState(false);
   const [state, setState] = useState<"connecting" | "live" | "error">("connecting");
   const [error, setError] = useState<string | null>(null);
@@ -74,9 +79,9 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
       setTotal(received.current);
       setDropped(skipped.current);
       if (buffer.current.length === 0) return;
-      const incoming = buffer.current.reverse();
+      const incoming = buffer.current;
       buffer.current = [];
-      setRows((prev) => incoming.concat(prev).slice(0, MAX_ROWS));
+      setRows((prev) => prependLive(prev, incoming, MAX_ROWS));
     }, 250);
     return () => {
       window.clearInterval(flush);
@@ -85,9 +90,11 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
   }, [profile, topic, applied]);
 
   const submit = () => {
+    if (text !== applied.text || query !== applied.query) setSeed([]);
     setApplied({ text, query });
     setParams({ text: text.trim() ? text : undefined, query: query.trim() ? query : undefined });
   };
+  const shown = liveView(rows, seed, keep, MAX_ROWS);
   const noop = useCallback(() => {}, []);
 
   return (
@@ -107,9 +114,18 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
         <button type="button" onClick={() => setPaused((p) => !p)}>
           {paused ? "Resume" : "Pause"}
         </button>
-        <button type="button" onClick={() => setRows([])}>
+        <button
+          type="button"
+          onClick={() => {
+            setRows([]);
+            setSeed([]);
+          }}
+        >
           Clear
         </button>
+        <label className="toggle-check" title="Keep the messages already loaded and add new ones above them">
+          <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} /> Keep existing messages
+        </label>
       </form>
       <div className="status" role="status">
         <span className={`dot ${state}`} aria-hidden />
@@ -121,7 +137,7 @@ export function Tail({ profile, topic, selected, onSelect, initialText, initialQ
         {dropped > 0 && <span className="warn">⚠ {formatCount(dropped)} message(s) skipped — the browser couldn't keep up</span>}
         {error && <span className="err">{error}</span>}
       </div>
-      <MessageTable rows={rows} selected={selected} onSelect={onSelect} onVisibleEnd={noop} empty="Waiting for new messages…" />
+      <MessageTable rows={shown} selected={selected} onSelect={onSelect} onVisibleEnd={noop} empty="Waiting for new messages…" />
     </div>
   );
 }

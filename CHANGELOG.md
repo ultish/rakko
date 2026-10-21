@@ -15,6 +15,8 @@ over dumping raw commit subjects.
 
 ### Added
 
+- Web: the live view has a "Keep existing messages" toggle (on by default). Switching a topic to live now keeps the messages already loaded and adds new ones above them; turn it off to start from an empty list as before.
+
 - Web: a Consumers panel on each topic lists the consumer groups that have committed offsets on it, with state and lag on that topic; each name links to the group's page.
 
 ### Fixed

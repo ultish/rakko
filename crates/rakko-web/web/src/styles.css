@@ -268,3 +268,4 @@ button.toggle.on { border-color: var(--accent); color: var(--accent); }
 .consumers summary { cursor: pointer; font-weight: 600; }
 .consumers table { margin: 4px 0; }
 button.link.copy-failed { color: var(--err, #e5484d); }
+.toggle-check { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 12px; }
