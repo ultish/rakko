@@ -41,6 +41,8 @@ type Props = {
   table?: boolean;
   /** Reports how many messages the topic really holds once an unfiltered scan completes. */
   onStored?: (count: number | null) => void;
+  /** Reports the rows currently loaded, so the live view can start from them. */
+  onRows?: (rows: Summary[]) => void;
 };
 
 /**
@@ -48,7 +50,7 @@ type Props = {
  * optionally filtered. The list is virtualized and pulls more matches from the scan as
  * you scroll, so a filter keeps finding results without ever loading the topic here.
  */
-export function Messages({ profile, topic, selected, onSelect, onApplied, table = false, onStored }: Props) {
+export function Messages({ profile, topic, selected, onSelect, onApplied, table = false, onStored, onRows }: Props) {
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Summary[]>([]);
@@ -233,6 +235,7 @@ export function Messages({ profile, topic, selected, onSelect, onApplied, table 
   const filtered = text.trim() !== "" || query.trim() !== "" || rangeLabel !== "";
   const stored = !table && !filtered && status?.done && !status.error && !error ? rows.length : null;
   useEffect(() => onStored?.(stored), [stored, onStored]);
+  useEffect(() => onRows?.(rows), [rows, onRows]);
 
   return (
     <div className="messages">
