@@ -11,6 +11,8 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-23
+
 ### Changed
 
 - Web: the topic view's Consumers panel is collapsed by default (the header shows the group count; click to expand). Expanded, it spans the full width in the groups-view table style, with separate group, state, members and lag columns.
