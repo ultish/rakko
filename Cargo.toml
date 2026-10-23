@@ -3,7 +3,7 @@ members = [".", "crates/rakko-core", "crates/rakko-web"]
 
 [package]
 name = "rakko"
-version = "0.24.0"
+version = "0.24.1"
 edition = "2021"
 
 [dependencies]

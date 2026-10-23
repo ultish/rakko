@@ -2293,7 +2293,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rakko"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "anyhow",
  "apache-avro",
@@ -2316,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "rakko-core"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "apache-avro",
  "base64",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "rakko-web"
-version = "0.24.0"
+version = "0.24.1"
 dependencies = [
  "apache-avro",
  "axum",
