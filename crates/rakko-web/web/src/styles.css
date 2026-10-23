@@ -265,9 +265,13 @@ button.toggle.on { border-color: var(--accent); color: var(--accent); }
 
 .saved-item { display: flex; align-items: center; }
 .saved-item > button:first-child { flex: 1; }
-.consumers { padding: 4px 12px; }
-.consumers summary { cursor: pointer; font-weight: 600; }
-.consumers table { margin: 4px 0; }
+.consumers { align-self: stretch; margin: 0 12px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); overflow: hidden; }
+.consumers-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 12px; border: 0; background: transparent; color: var(--title); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; text-align: left; cursor: pointer; }
+.consumers-head:hover { color: var(--accent); }
+.consumers .grid { table-layout: fixed; }
+.consumers .grid th { position: static; background: transparent; }
+.consumers .grid th:nth-child(1) { width: 50%; }
+.consumers .grid td { vertical-align: middle; overflow-wrap: anywhere; }
 button.link.copy-failed { color: var(--err, #e5484d); }
 .bulk-bar { display: flex; gap: 8px; align-items: center; padding: 4px 8px; font-size: 12px; flex-wrap: wrap; }
 .bulk-bar span { flex: 1; color: var(--dim, inherit); }

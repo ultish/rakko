@@ -86,6 +86,7 @@ pub struct TopicConsumer {
     pub state: String,
     /// Lag summed over this topic's partitions only.
     pub total_lag: i64,
+    pub members: usize,
 }
 
 /// Groups that have committed offsets on `topic`, by name, with their lag on that topic.
@@ -98,6 +99,7 @@ pub fn topic_consumers(details: &[GroupDetail], topic: &str) -> Vec<TopicConsume
                 group: d.name.clone(),
                 state: d.state.clone(),
                 total_lag: mine.iter().filter_map(|l| l.lag).sum(),
+                members: d.members.len(),
             })
         })
         .collect();
@@ -403,6 +405,17 @@ mod tests {
         let got = topic_consumers(&details, "orders");
         let got: Vec<_> = got.iter().map(|c| (c.group.as_str(), c.state.as_str(), c.total_lag)).collect();
         assert_eq!(got, vec![("alpha", "Stable", 6), ("zeta", "Empty", 0)]);
+    }
+
+    #[test]
+    fn topic_consumers_reports_each_groups_active_member_count() {
+        let member = |id: &str| GroupMember { id: id.into(), client_id: "c".into(), client_host: "h".into() };
+        let mut busy = detail("busy", "Stable", vec![lag("orders", 0, Some(1), 2)]);
+        busy.members = vec![member("m1"), member("m2")];
+        let idle = detail("idle", "Empty", vec![lag("orders", 0, Some(1), 2)]);
+        let got = topic_consumers(&[busy, idle], "orders");
+        let got: Vec<_> = got.iter().map(|c| (c.group.as_str(), c.members)).collect();
+        assert_eq!(got, vec![("busy", 2), ("idle", 0)]);
     }
 
     #[test]
