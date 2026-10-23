@@ -46,7 +46,7 @@ export type Detail = {
 
 export type Group = { name: string; state: string; members: number; protocol: string };
 
-export type TopicConsumer = { name: string; state: string; total_lag: number };
+export type TopicConsumer = { name: string; state: string; total_lag: number; members: number };
 
 export type GroupDetail = {
   name: string;

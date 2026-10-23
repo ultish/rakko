@@ -123,6 +123,7 @@ struct TopicConsumerInfo {
     name: String,
     state: String,
     total_lag: i64,
+    members: usize,
 }
 
 /// Consumer groups with committed offsets on the topic. Kafka has no topic-to-groups index,
@@ -144,7 +145,7 @@ async fn topic_consumer_groups(State(state): Shared, Path((p, topic)): Path<(Str
     Ok(Json(
         topic_consumers(&details, &topic)
             .into_iter()
-            .map(|c| TopicConsumerInfo { name: c.group, state: c.state, total_lag: c.total_lag })
+            .map(|c| TopicConsumerInfo { name: c.group, state: c.state, total_lag: c.total_lag, members: c.members })
             .collect(),
     ))
 }
