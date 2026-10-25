@@ -18,7 +18,7 @@ By hand: `tmux new-session -d -s S -x 140 -y 40 "target/release/rakko --config-d
 
 | Keys | Screen text to expect |
 |---|---|
-| `Enter` (welcome) | profile table with `local   127.0.0.1:19092   plain` |
+| `Enter` (welcome) | profile table with one row: `local`, `127.0.0.1:19092`, `plain` (TLS column) |
 | `Enter` | `1 Topics   2 Groups   3 Brokers   4 Settings`, then the topic table (status line `detected message.max.bytes=20971520 from broker; saved to profile 'local'`) |
 | `/` `<topic>` `Enter`, `Enter` | `Topic: <topic> · 1 partitions · mode seek · sort newest↑`; rows `0   <offset>   raw   k3   json ...` newest first |
 | `/` `paid` `Enter` | header gains `filter: "paid"`; only rows whose value contains `paid` remain |
@@ -28,6 +28,6 @@ By hand: `tmux new-session -d -s S -x 140 -y 40 "target/release/rakko --config-d
 ## Gotchas
 
 - Always pass `--config-dir`; the app writes back to `config.toml` (detected `message.max.bytes`, theme) and a first run with no profiles opens the create-profile form where typed keys become field text.
-- A `detected message.max.bytes…` popup overlays the top-right of the first row for a few seconds; assert on key/offset columns, not the value column of row one.
+- A `detected message.max.bytes…` popup overlays the first row of the message table for a few seconds; assert on key/offset columns, not the value column of row one.
 - The banner animation fills the top of the screen; filter it out of captures (`grep -v '▀'`).
 - `q` asks for confirmation; `Ctrl-c` force quits. Kill the tmux session in cleanup.
