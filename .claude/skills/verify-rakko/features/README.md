@@ -17,6 +17,7 @@ T=verify-$$                                         # scratch topic
 | [live-tail.md](live-tail.md) | server-sent-event tail of new messages |
 | [consumer-groups.md](consumer-groups.md) | group lag, confirmed offset reset, delete |
 | [brokers-and-schemas.md](brokers-and-schemas.md) | broker list/config, ACLs, Schema Registry subjects, Avro decode |
+| [release-version-check.md](release-version-check.md) | version in all manifests + lockfiles, dated changelog section, build and tests |
 | [tui.md](tui.md) | the terminal UI: profile, topics, messages, filter, message view, groups |
 
 `scripts/drive-web.sh` covers the first four web pages and the groups page in one run; `scripts/drive-tui.sh` covers the TUI page.
