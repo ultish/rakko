@@ -4,6 +4,8 @@ import { LagChart } from "./LagChart";
 import { usePolling } from "./usePolling";
 import { Dialog } from "./Dialog";
 import { formatCount } from "./format";
+import { NavLink } from "./NavLink";
+import { routeHref } from "./routeLink";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -36,10 +38,10 @@ export function GroupList({ profile, selected, onSelect, refreshKey = 0 }: { pro
           .filter((g) => g.name.toLowerCase().includes(needle))
           .map((g) => (
             <li key={g.name}>
-              <button className={g.name === selected ? "topic active" : "topic"} onClick={() => onSelect(g.name)}>
+              <NavLink className={g.name === selected ? "topic active" : "topic"} href={routeHref(profile, "groups", g.name)} onNavigate={() => onSelect(g.name)}>
                 <span className="name">{g.name}</span>
                 <span className="count">{g.state}</span>
-              </button>
+              </NavLink>
             </li>
           ))}
       </ul>
@@ -199,9 +201,9 @@ export function GroupView({ profile, group, onOpenTopic, onGone }: { profile: st
               {detail.lags.map((l) => (
                 <tr key={`${l.topic}:${l.partition}`}>
                   <td>
-                    <button className="link" onClick={() => onOpenTopic(l.topic)}>
+                    <NavLink className="link" href={routeHref(profile, "topics", l.topic)} onNavigate={() => onOpenTopic(l.topic)}>
                       {l.topic}
-                    </button>
+                    </NavLink>
                   </td>
                   <td>{l.partition}</td>
                   <td className="num">{l.committed ?? "—"}</td>

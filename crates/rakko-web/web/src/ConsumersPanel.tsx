@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type TopicConsumer } from "./api";
+import { routeHref } from "./routeLink";
 import { COLLAPSED_BY_DEFAULT, consumerRows, consumersHeading, toggle } from "./consumerList";
 
 /** Consumer groups with committed offsets on this topic, each linking to the group's page. */
@@ -47,7 +48,7 @@ export function ConsumersPanel({ profile, topic }: { profile: string; topic: str
                 {rows.map((r) => (
                   <tr key={r.name}>
                     <td>
-                      <a href={`#/${encodeURIComponent(profile)}/groups/${encodeURIComponent(r.name)}`}>{r.name}</a>
+                      <a href={routeHref(profile, "groups", r.name)}>{r.name}</a>
                     </td>
                     <td>{r.state}</td>
                     <td className="num">{r.members}</td>

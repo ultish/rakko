@@ -11,6 +11,11 @@ over dumping raw commit subjects.
 
 ## [Unreleased]
 
+### Changed
+
+- Topic, consumer group and schema names in the web UI are real links: middle-click, Ctrl/Cmd-click and "open in new tab" work, and a plain click still navigates in place.
+
+
 ## [0.24.1] - 2026-10-23
 
 No functional changes since 0.24.0. This release only bumps the version.
