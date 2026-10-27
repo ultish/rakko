@@ -3,6 +3,8 @@ import { readParams, setParams } from "./urlState";
 import { usePolling } from "./usePolling";
 import { api, type SchemaDraft, type SchemaReference, type SubjectVersion } from "./api";
 import { Dialog } from "./Dialog";
+import { NavLink } from "./NavLink";
+import { routeHref } from "./routeLink";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const LEVELS = ["BACKWARD", "BACKWARD_TRANSITIVE", "FORWARD", "FORWARD_TRANSITIVE", "FULL", "FULL_TRANSITIVE", "NONE"];
@@ -55,9 +57,9 @@ export function SubjectList({
           .filter((s) => s.toLowerCase().includes(needle))
           .map((s) => (
             <li key={s}>
-              <button className={s === selected ? "topic active" : "topic"} onClick={() => onSelect(s)} title={s}>
+              <NavLink className={s === selected ? "topic active" : "topic"} href={routeHref(profile, "schemas", s)} onNavigate={() => onSelect(s)} title={s}>
                 <span className="name">{s}</span>
-              </button>
+              </NavLink>
             </li>
           ))}
       </ul>
@@ -391,7 +393,10 @@ export function SubjectView({ profile, subject, onChanged, onGone }: { profile: 
                         <tr key={r.name}>
                           <td>{r.name}</td>
                           <td>
-                            {r.subject} v{r.version}
+                            <NavLink href={routeHref(profile, "schemas", r.subject)} onNavigate={() => { window.location.hash = routeHref(profile, "schemas", r.subject); }}>
+                              {r.subject}
+                            </NavLink>{" "}
+                            v{r.version}
                           </td>
                         </tr>
                       ))}

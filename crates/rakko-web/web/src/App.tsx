@@ -11,10 +11,11 @@ import { BulkBar, BulkTopicsDialog, type BulkKind } from "./BulkTopics";
 import { filterTopics } from "./bulk";
 import { TopicView, type ProduceInitial } from "./TopicView";
 import { parseMsgParam } from "./messageLink";
+import { NavLink } from "./NavLink";
+import { routeHref, type View } from "./routeLink";
 import { readParams, setParams } from "./urlState";
 import { usePolling } from "./usePolling";
 
-type View = "topics" | "groups" | "schemas" | "brokers" | "acls";
 type Route = { profile: string; view: View; item: string };
 
 // #/<profile>/<topics|groups|brokers>/<item>
@@ -25,8 +26,7 @@ function readRoute(): Route {
 }
 
 function writeRoute(r: Route) {
-  const parts = [r.profile, r.view, ...(r.item ? [r.item] : [])].map(encodeURIComponent);
-  const hash = r.profile ? `#/${parts.join("/")}` : "";
+  const hash = r.profile ? routeHref(r.profile, r.view, r.item) : "";
   if (window.location.hash !== hash) window.location.hash = hash;
 }
 
@@ -228,13 +228,13 @@ export function App() {
               <ul>
                 {visibleTopics.map((t) => (
                   <li key={t.name}>
-                    <button className={t.name === route.item ? "topic active" : "topic"} onClick={() => go("topics", t.name)}>
+                    <NavLink className={t.name === route.item ? "topic active" : "topic"} href={routeHref(route.profile, "topics", t.name)} onNavigate={() => go("topics", t.name)}>
                       <span className="name">{t.name}</span>
                       {t.name.startsWith("__strimzi") && <span className="tag" title="Internal topic of a Strimzi operator">strimzi</span>}
                       <span className="count" title="offsets: an upper bound on the messages kept (compaction and retention remove some)">
                         {formatCount(t.messages)}
                       </span>
-                    </button>
+                    </NavLink>
                   </li>
                 ))}
               </ul>
